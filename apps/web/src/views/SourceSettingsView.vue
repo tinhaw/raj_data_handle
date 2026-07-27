@@ -182,21 +182,6 @@ async function remove(row: SourceConfig): Promise<void> {
   }
 }
 
-async function test(row: SourceConfig): Promise<void> {
-  try {
-    const result = await testSourceConnection(row.sourceId)
-    if (result.status === 'passed') {
-      ElMessage.success(result.message)
-    } else {
-      ElMessage.warning(result.message)
-    }
-  } catch (error) {
-    ElMessage.warning(apiErrorMessage(error, '连接测试失败。'))
-  } finally {
-    await load()
-  }
-}
-
 async function clearCredentials(row: SourceConfig): Promise<void> {
   try {
     await ElMessageBox.confirm(
@@ -281,7 +266,6 @@ onMounted(load)
         <el-table-column label="操作" width="330" fixed="right">
           <template #default="{ row }">
             <el-button text type="primary" :icon="Edit" @click="edit(row)">编辑</el-button>
-            <el-button text :icon="Connection" @click="test(row)">测试</el-button>
             <el-button
               v-if="row.credentialConfigured"
               text
