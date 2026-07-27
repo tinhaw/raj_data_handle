@@ -20,7 +20,7 @@ const saving = ref(false)
 const rows = ref<SourceConfig[]>([])
 const dialogVisible = ref(false)
 const editingId = ref<string | null>(null)
-const protectedSourceIds = new Set(['rajwin', 'rajluck'])
+const presetSourceIds = new Set(['rajwin', 'rajluck'])
 const form = reactive({
   sourceId: '',
   displayName: '',
@@ -178,7 +178,7 @@ onMounted(load)
       <div>
         <span class="page-eyebrow">Admin settings</span>
         <h1>盘口配置</h1>
-        <p>内置 RajWin、RajLuck，也可新增使用同一连接器契约的盘口；各盘口运行状态完全隔离。</p>
+        <p>集中维护远端盘口的连接地址、访问凭据、业务时区与启用状态。</p>
       </div>
       <div class="header-actions">
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
@@ -200,12 +200,12 @@ onMounted(load)
           <template #default="{ row }">
             <span>{{ row.sourceId }}</span>
             <el-tag
-              v-if="protectedSourceIds.has(row.sourceId)"
+              v-if="presetSourceIds.has(row.sourceId)"
               type="info"
               size="small"
               style="margin-left: 8px"
             >
-              内置
+              预设
             </el-tag>
           </template>
         </el-table-column>
@@ -247,10 +247,7 @@ onMounted(load)
             >
               清除凭据
             </el-button>
-            <el-tooltip
-              v-if="!protectedSourceIds.has(row.sourceId)"
-              :content="row.enabled ? '请先停用盘口再删除' : '永久删除盘口'"
-            >
+            <el-tooltip :content="row.enabled ? '请先停用盘口再删除' : '永久删除盘口'">
               <span>
                 <el-button
                   text

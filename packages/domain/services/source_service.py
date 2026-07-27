@@ -30,7 +30,6 @@ from packages.domain.schemas.source import (
 from packages.domain.services.auth_service import write_audit
 from packages.domain.services.remote_charge_service import RajAdminChargeClient, RemoteChargeError
 
-PROTECTED_SOURCE_IDS = {"rajwin", "rajluck"}
 SOURCE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 
 
@@ -249,8 +248,6 @@ async def delete_source(
     actor_user_id: int,
 ) -> None:
     source = await get_source(session, source_id)
-    if source.source_id in PROTECTED_SOURCE_IDS:
-        raise SourceConflictError("RajWin 和 RajLuck 是内置盘口，不能删除。")
     if source.enabled:
         raise SourceConflictError("请先停用盘口，再执行删除。")
     historical_batch_id = await session.scalar(

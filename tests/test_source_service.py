@@ -100,14 +100,14 @@ async def test_custom_source_can_be_created_and_deleted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_builtin_or_historically_used_source_cannot_be_deleted() -> None:
+async def test_preset_source_can_be_deleted_but_historically_used_source_cannot() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
 
     async with factory() as session:
-        builtin = SourceConfig(
+        preset = SourceConfig(
             source_id="rajwin",
             display_name="RajWin",
             business_timezone="Asia/Kolkata",
@@ -119,11 +119,11 @@ async def test_builtin_or_historically_used_source_cannot_be_deleted() -> None:
             business_timezone="Asia/Kolkata",
             currency="INR",
         )
-        session.add_all([builtin, custom])
+        session.add_all([preset, custom])
         await session.commit()
 
-        with pytest.raises(SourceConflictError, match="内置盘口"):
-            await delete_source(session, source_id="rajwin", actor_user_id=1)
+        await delete_source(session, source_id="rajwin", actor_user_id=1)
+        assert await session.get(SourceConfig, "rajwin") is None
 
         batch = ReconciliationBatch(
             source_id="rajstar",
