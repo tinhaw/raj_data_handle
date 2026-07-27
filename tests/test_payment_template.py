@@ -23,10 +23,16 @@ AELLOPAY_HEADERS = [
 ]
 
 
-def workbook_upload(headers: list[str]) -> UploadFile:
+def workbook_upload(
+    headers: list[str],
+    *,
+    leading_rows: list[list[str]] | None = None,
+) -> UploadFile:
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "payin_5047_test"
+    for row in leading_rows or []:
+        worksheet.append(row)
     worksheet.append(headers)
     buffer = BytesIO()
     workbook.save(buffer)
@@ -97,4 +103,48 @@ async def test_unknown_header_does_not_silently_match() -> None:
 
     assert detection.status == "unknown"
     assert detection.template is None
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_selected_header_row_is_used_for_template_detection() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        platform = PaymentPlatform(
+            platform_key="aelopay",
+            display_name="aelopay",
+            active=True,
+        )
+        session.add(platform)
+        await session.flush()
+        session.add(
+            PaymentTemplateVersion(
+                platform_id=platform.id,
+                business_type="payin",
+                version=1,
+                sheet_name_pattern="^payin_",
+                header_signature_json=AELLOPAY_HEADERS,
+                column_mapping_json={"merchant_order_no": "商户订单号"},
+                success_status_values_json=["成功"],
+                match_rules_json=[],
+                active=True,
+            )
+        )
+        await session.commit()
+
+        detection = await detect_payment_template(
+            session,
+            workbook_upload(
+                AELLOPAY_HEADERS,
+                leading_rows=[["aelopay 充值明细"], ["导出日期：2026-07-28"]],
+            ),
+            header_row=3,
+        )
+
+    assert detection.status == "matched"
+    assert detection.header_row == 3
+    assert detection.detected_headers == AELLOPAY_HEADERS
     await engine.dispose()

@@ -113,6 +113,7 @@ async def operational_summary(
 async def create_batch(
     source_id: str = Form(..., alias="sourceId"),
     business_type: str = Form(..., alias="businessType"),
+    header_row: int = Form(1, alias="headerRow", ge=1, le=100),
     parameters_json: str = Form("{}", alias="parametersJson"),
     upload: UploadFile = File(...),
     auth: AuthContext = Depends(get_auth_context),
@@ -135,6 +136,7 @@ async def create_batch(
             upload=upload,
             source_id=source_id,
             business_type=business_type,
+            header_row=header_row,
             parameters=parameters,
             actor_user_id=auth.user.id,
         )

@@ -4,9 +4,13 @@ import type {
   TemplateDetection,
 } from '../types'
 
-export async function detectPaymentTemplate(file: File): Promise<TemplateDetection> {
+export async function detectPaymentTemplate(
+  file: File,
+  headerRow: number,
+): Promise<TemplateDetection> {
   const form = new FormData()
   form.set('upload', file)
+  form.set('headerRow', String(headerRow))
   const response = await api.post<TemplateDetection>(
     '/payment-template-versions/detect',
     form,

@@ -45,12 +45,14 @@ export async function fetchBatchResults(
 export async function createBatch(payload: {
   sourceId: string
   businessType: 'payin' | 'payout'
+  headerRow: number
   file: File
   parameters?: Record<string, unknown>
 }): Promise<{ batch: BatchRecord; duplicateOfExisting: boolean }> {
   const form = new FormData()
   form.set('sourceId', payload.sourceId)
   form.set('businessType', payload.businessType)
+  form.set('headerRow', String(payload.headerRow))
   form.set('parametersJson', JSON.stringify(payload.parameters || {}))
   form.set('upload', payload.file)
   return (

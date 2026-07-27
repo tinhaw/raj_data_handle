@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import get_auth_context
@@ -48,12 +48,13 @@ async def payment_templates(
     response_model=TemplateDetectionResponse,
 )
 async def detect_template(
+    header_row: int = Form(1, alias="headerRow", ge=1, le=100),
     upload: UploadFile = File(...),
     _: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_db_session),
 ) -> TemplateDetectionResponse:
     try:
-        return await detect_payment_template(session, upload)
+        return await detect_payment_template(session, upload, header_row=header_row)
     except TemplateDetectionError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

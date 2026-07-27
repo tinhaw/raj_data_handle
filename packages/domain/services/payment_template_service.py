@@ -41,12 +41,35 @@ def _normalize_headers(values: list[object]) -> list[str]:
     return [str(value).strip() if value is not None else "" for value in values]
 
 
-def _xlsx_candidates(file_object: BinaryIO) -> list[HeaderCandidate]:
+def _xlsx_candidates(
+    file_object: BinaryIO,
+    *,
+    header_row: int | None = None,
+) -> list[HeaderCandidate]:
     file_object.seek(0)
     workbook = load_workbook(file_object, read_only=True, data_only=True)
     candidates: list[HeaderCandidate] = []
     try:
         for worksheet in workbook.worksheets:
+            if header_row is not None:
+                row = next(
+                    worksheet.iter_rows(
+                        min_row=header_row,
+                        max_row=header_row,
+                        values_only=True,
+                    ),
+                    None,
+                )
+                headers = _normalize_headers(list(row or ()))
+                if any(headers):
+                    candidates.append(
+                        HeaderCandidate(
+                            sheet_name=worksheet.title,
+                            header_row=header_row,
+                            headers=headers,
+                        )
+                    )
+                continue
             for row_number, row in enumerate(
                 worksheet.iter_rows(max_row=20, values_only=True),
                 start=1,
@@ -67,7 +90,11 @@ def _xlsx_candidates(file_object: BinaryIO) -> list[HeaderCandidate]:
     return candidates
 
 
-def _csv_candidate(file_object: BinaryIO) -> list[HeaderCandidate]:
+def _csv_candidate(
+    file_object: BinaryIO,
+    *,
+    header_row: int | None = None,
+) -> list[HeaderCandidate]:
     file_object.seek(0)
     raw = file_object.read(256 * 1024)
     file_object.seek(0)
@@ -83,6 +110,20 @@ def _csv_candidate(file_object: BinaryIO) -> list[HeaderCandidate]:
     rows = csv.reader(io.StringIO(decoded))
     for row_number, row in enumerate(rows, start=1):
         headers = _normalize_headers(list(row))
+        if header_row is not None:
+            if row_number == header_row:
+                return (
+                    [
+                        HeaderCandidate(
+                            sheet_name="CSV",
+                            header_row=row_number,
+                            headers=headers,
+                        )
+                    ]
+                    if any(headers)
+                    else []
+                )
+            continue
         if any(headers):
             return [
                 HeaderCandidate(
@@ -91,18 +132,30 @@ def _csv_candidate(file_object: BinaryIO) -> list[HeaderCandidate]:
                     headers=headers,
                 )
             ]
-        if row_number >= 20:
+        if header_row is None and row_number >= 20:
             break
     return []
 
 
-async def read_header_candidates(upload: UploadFile) -> list[HeaderCandidate]:
+async def read_header_candidates(
+    upload: UploadFile,
+    *,
+    header_row: int | None = None,
+) -> list[HeaderCandidate]:
     suffix = Path(upload.filename or "").suffix.lower()
     try:
         if suffix == ".xlsx":
-            candidates = await asyncio.to_thread(_xlsx_candidates, upload.file)
+            candidates = await asyncio.to_thread(
+                _xlsx_candidates,
+                upload.file,
+                header_row=header_row,
+            )
         elif suffix == ".csv":
-            candidates = await asyncio.to_thread(_csv_candidate, upload.file)
+            candidates = await asyncio.to_thread(
+                _csv_candidate,
+                upload.file,
+                header_row=header_row,
+            )
         else:
             raise TemplateDetectionError("当前只支持 .xlsx 和 .csv 文件。")
     except TemplateDetectionError:
@@ -112,6 +165,8 @@ async def read_header_candidates(upload: UploadFile) -> list[HeaderCandidate]:
     finally:
         await upload.seek(0)
     if not candidates:
+        if header_row is not None:
+            raise TemplateDetectionError(f"第 {header_row} 行没有可识别的表头字段。")
         raise TemplateDetectionError("文件前 20 行内没有可识别的表头。")
     return candidates
 
@@ -200,8 +255,10 @@ async def list_channel_bindings(
 async def detect_payment_template(
     session: AsyncSession,
     upload: UploadFile,
+    *,
+    header_row: int | None = None,
 ) -> TemplateDetectionResponse:
-    candidates = await read_header_candidates(upload)
+    candidates = await read_header_candidates(upload, header_row=header_row)
     templates = await list_payment_templates(session)
     best: (
         tuple[

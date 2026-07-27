@@ -19,7 +19,7 @@ import type {
 
 const router = useRouter()
 const loading = ref(false)
-const detecting = ref(false)
+const parsing = ref(false)
 const sources = ref<SourceConfig[]>([])
 const channelBindings = ref<PaymentChannelBinding[]>([])
 const file = ref<File | null>(null)
@@ -28,6 +28,7 @@ const timeRange = ref<[string, string] | null>(null)
 const form = reactive({
   sourceId: '',
   businessType: 'payin' as const,
+  headerRow: 1,
   selectedChannelCodes: [] as string[],
   paymentTimeField: '',
   paymentTimezone: 'Asia/Kolkata',
@@ -42,27 +43,52 @@ const selectedSource = computed(() =>
 )
 
 const paymentTimeOptions = computed<string[]>(() => {
-  const value = detection.value?.template?.columnMapping.candidate_time_fields
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string')
-    : []
+  const headers = detection.value?.detectedHeaders || []
+  return [...new Set(headers.map((header) => header.trim()).filter(Boolean))]
 })
 
-async function selectFile(event: Event): Promise<void> {
-  const input = event.target as HTMLInputElement
-  file.value = input.files?.[0] || null
+function resetParsedFile(): void {
   detection.value = null
   form.paymentTimeField = ''
-  if (!file.value) return
-  detecting.value = true
+  timeRange.value = null
+}
+
+function preferredPaymentTimeField(): string {
+  const configuredCandidates = detection.value?.template?.columnMapping
+    .candidate_time_fields
+  const templateCandidate = Array.isArray(configuredCandidates)
+    ? configuredCandidates.find(
+        (field): field is string =>
+          typeof field === 'string' && paymentTimeOptions.value.includes(field),
+      )
+    : undefined
+  if (templateCandidate) return templateCandidate
+  return (
+    paymentTimeOptions.value.find((field) => /时间|日期|time|date/i.test(field)) ||
+    ''
+  )
+}
+
+function selectFile(event: Event): void {
+  const input = event.target as HTMLInputElement
+  file.value = input.files?.[0] || null
+  resetParsedFile()
+}
+
+async function parseFile(): Promise<void> {
+  if (!file.value) {
+    ElMessage.warning('请先选择支付平台导出文件。')
+    return
+  }
+  resetParsedFile()
+  parsing.value = true
   try {
-    detection.value = await detectPaymentTemplate(file.value)
-    const firstTimeField = paymentTimeOptions.value[0]
-    if (firstTimeField) form.paymentTimeField = firstTimeField
+    detection.value = await detectPaymentTemplate(file.value, form.headerRow)
+    form.paymentTimeField = preferredPaymentTimeField()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '文件模板探测失败。'))
   } finally {
-    detecting.value = false
+    parsing.value = false
   }
 }
 
@@ -83,8 +109,12 @@ async function loadChannels(): Promise<void> {
 }
 
 async function submit(): Promise<void> {
-  if (!form.sourceId || !file.value) {
-    ElMessage.warning('请选择已启用盘口并上传支付平台文件。')
+  if (!form.sourceId || !file.value || !detection.value) {
+    ElMessage.warning('请选择已启用盘口，上传文件并完成表格解析。')
+    return
+  }
+  if (!form.paymentTimeField || !timeRange.value) {
+    ElMessage.warning('请从解析出的表头中选择支付平台时间列，并确认时间范围。')
     return
   }
   loading.value = true
@@ -92,6 +122,7 @@ async function submit(): Promise<void> {
     const result = await createBatch({
       sourceId: form.sourceId,
       businessType: form.businessType,
+      headerRow: form.headerRow,
       file: file.value,
       parameters: {
         selectedChannels: channelBindings.value
@@ -101,18 +132,16 @@ async function submit(): Promise<void> {
             label: item.remoteChannelLabel,
             platformKey: item.platformKey,
           })),
-        comparisonWindow: timeRange.value
-          ? {
-              start: timeRange.value[0],
-              end: timeRange.value[1],
-              paymentTimeField: form.paymentTimeField || null,
-              paymentTimezone: form.paymentTimezone,
-              remoteTimeField: form.remoteTimeField,
-              remoteBusinessTimezone: selectedSource.value?.businessTimezone,
-              bufferBeforeHours: form.bufferBeforeHours,
-              bufferAfterHours: form.bufferAfterHours,
-            }
-          : null,
+        comparisonWindow: {
+          start: timeRange.value[0],
+          end: timeRange.value[1],
+          paymentTimeField: form.paymentTimeField,
+          paymentTimezone: form.paymentTimezone,
+          remoteTimeField: form.remoteTimeField,
+          remoteBusinessTimezone: selectedSource.value?.businessTimezone,
+          bufferBeforeHours: form.bufferBeforeHours,
+          bufferAfterHours: form.bufferAfterHours,
+        },
         currency: form.currency,
       },
     })
@@ -177,14 +206,43 @@ watch(() => form.sourceId, loadChannels)
           </el-form-item>
         </div>
 
+        <el-divider content-position="left">1. 上传支付平台导出文件</el-divider>
         <el-form-item label="支付平台导出文件">
           <label class="upload-zone">
             <el-icon><UploadFilled /></el-icon>
-            <strong>{{ detecting ? '正在识别模板…' : file?.name || '选择 .xlsx 或 .csv 文件' }}</strong>
-            <span>订单号始终按文本读取；当前限制 50 MB</span>
+            <strong>{{ file?.name || '选择 .xlsx 或 .csv 文件' }}</strong>
+            <span>
+              {{ file ? '文件已选择，请设置表头行后解析。' : '订单号始终按文本读取；当前限制 50 MB' }}
+            </span>
             <input type="file" accept=".xlsx,.csv" @change="selectFile" />
           </label>
         </el-form-item>
+
+        <el-divider content-position="left">2. 设置表头并解析</el-divider>
+        <div class="parse-controls">
+          <el-form-item label="表头所在行">
+            <el-input-number
+              v-model="form.headerRow"
+              :min="1"
+              :max="100"
+              :disabled="parsing"
+              @change="resetParsedFile"
+            />
+            <span class="field-help">默认第 1 行；如文件前有说明或空行，请先填写实际表头行再解析。</span>
+          </el-form-item>
+          <el-form-item label="解析操作">
+            <el-button
+              type="primary"
+              plain
+              :loading="parsing"
+              :disabled="!file"
+              @click="parseFile"
+            >
+              {{ parsing ? '正在解析…' : '解析表格' }}
+            </el-button>
+            <span class="field-help">解析后才会提供支付平台时间列和后续比较口径。</span>
+          </el-form-item>
+        </div>
 
         <el-alert
           v-if="detection"
@@ -199,78 +257,95 @@ watch(() => form.sourceId, loadChannels)
           :closable="false"
         />
 
-        <el-divider content-position="left">比较口径（草稿快照）</el-divider>
-        <el-form-item label="远端充值渠道">
-          <el-select
-            v-model="form.selectedChannelCodes"
-            multiple
-            filterable
-            collapse-tags
-            placeholder="可多选；启动比对前至少确认一个渠道"
-            style="width: 100%"
-          >
-            <el-option
-              v-for="channel in channelBindings"
-              :key="channel.id"
-              :label="`${channel.remoteChannelCode} · ${channel.remoteChannelLabel}`"
-              :value="channel.remoteChannelCode"
-            />
-          </el-select>
-          <span v-if="form.sourceId && !channelBindings.length" class="field-help">
-            当前盘口尚无已登记渠道；后续连接器会从远端渠道字典同步。
-          </span>
-        </el-form-item>
+        <el-alert
+          v-else
+          type="info"
+          :closable="false"
+          show-icon
+          title="请先解析表格"
+          description="选择文件后，确认表头所在行并点击“解析表格”。系统会读取该行字段，再提供时间列与比较口径。"
+        />
 
-        <div class="form-grid">
-          <el-form-item label="支付平台时间列">
+        <template v-if="detection">
+          <el-divider content-position="left">3. 比较口径（草稿快照）</el-divider>
+          <el-form-item label="远端充值渠道">
             <el-select
-              v-model="form.paymentTimeField"
-              placeholder="由识别模板提供，用户确认"
+              v-model="form.selectedChannelCodes"
+              multiple
+              filterable
+              collapse-tags
+              placeholder="可多选；启动比对前至少确认一个渠道"
               style="width: 100%"
             >
-              <el-option v-for="field in paymentTimeOptions" :key="field" :label="field" :value="field" />
+              <el-option
+                v-for="channel in channelBindings"
+                :key="channel.id"
+                :label="`${channel.remoteChannelCode} · ${channel.remoteChannelLabel}`"
+                :value="channel.remoteChannelCode"
+              />
             </el-select>
+            <span v-if="form.sourceId && !channelBindings.length" class="field-help">
+              当前盘口尚无已登记渠道；后续连接器会从远端渠道字典同步。
+            </span>
           </el-form-item>
-          <el-form-item label="远端对应时间字段">
-            <el-select v-model="form.remoteTimeField" style="width: 100%">
-              <el-option label="创建时间（create_time）" value="create_time" />
-              <el-option label="支付时间（pay_time）" value="pay_time" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="支付平台时区">
-            <el-input v-model="form.paymentTimezone" />
-          </el-form-item>
-          <el-form-item label="盘口业务时区">
-            <el-input :model-value="selectedSource?.businessTimezone || '选择盘口后显示'" disabled />
-          </el-form-item>
-        </div>
 
-        <el-form-item label="用户确认的支付平台时间范围">
-          <el-date-picker
-            v-model="timeRange"
-            type="datetimerange"
-            value-format="YYYY-MM-DD HH:mm:ss"
-            format="YYYY-MM-DD HH:mm:ss"
-            range-separator="至"
-            start-placeholder="开始时间"
-            end-placeholder="结束时间"
-            style="width: 100%"
-          />
-        </el-form-item>
+          <div class="form-grid">
+            <el-form-item label="支付平台时间列">
+              <el-select
+                v-model="form.paymentTimeField"
+                placeholder="请选择解析出的表头字段"
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="field in paymentTimeOptions"
+                  :key="field"
+                  :label="field"
+                  :value="field"
+                />
+              </el-select>
+              <span class="field-help">选项来自第 {{ detection.headerRow }} 行解析出的表头。</span>
+            </el-form-item>
+            <el-form-item label="远端对应时间字段">
+              <el-select v-model="form.remoteTimeField" style="width: 100%">
+                <el-option label="创建时间（create_time）" value="create_time" />
+                <el-option label="支付时间（pay_time）" value="pay_time" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="支付平台时区">
+              <el-input v-model="form.paymentTimezone" />
+            </el-form-item>
+            <el-form-item label="盘口业务时区">
+              <el-input :model-value="selectedSource?.businessTimezone || '选择盘口后显示'" disabled />
+            </el-form-item>
+          </div>
 
-        <div class="form-grid">
-          <el-form-item label="查询窗口前置缓冲（小时）">
-            <el-input-number v-model="form.bufferBeforeHours" :min="0" :max="168" />
+          <el-form-item label="用户确认的支付平台时间范围">
+            <el-date-picker
+              v-model="timeRange"
+              type="datetimerange"
+              value-format="YYYY-MM-DD HH:mm:ss"
+              format="YYYY-MM-DD HH:mm:ss"
+              range-separator="至"
+              start-placeholder="开始时间"
+              end-placeholder="结束时间"
+              style="width: 100%"
+            />
           </el-form-item>
-          <el-form-item label="查询窗口后置缓冲（小时）">
-            <el-input-number v-model="form.bufferAfterHours" :min="0" :max="168" />
-          </el-form-item>
-          <el-form-item label="默认币种">
-            <el-select v-model="form.currency" style="width: 100%">
-              <el-option label="INR · 印度卢比" value="INR" />
-            </el-select>
-          </el-form-item>
-        </div>
+
+          <div class="form-grid">
+            <el-form-item label="查询窗口前置缓冲（小时）">
+              <el-input-number v-model="form.bufferBeforeHours" :min="0" :max="168" />
+            </el-form-item>
+            <el-form-item label="查询窗口后置缓冲（小时）">
+              <el-input-number v-model="form.bufferAfterHours" :min="0" :max="168" />
+            </el-form-item>
+            <el-form-item label="默认币种">
+              <el-select v-model="form.currency" style="width: 100%">
+                <el-option label="INR · 印度卢比" value="INR" />
+              </el-select>
+            </el-form-item>
+          </div>
+        </template>
 
         <div class="form-actions">
           <el-button @click="router.push('/batches')">返回</el-button>
@@ -316,5 +391,25 @@ watch(() => form.sourceId, loadChannels)
 
 .upload-zone input {
   display: none;
+}
+
+.parse-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.field-help {
+  display: block;
+  margin-top: 6px;
+  color: #829ab1;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+@media (max-width: 720px) {
+  .parse-controls {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

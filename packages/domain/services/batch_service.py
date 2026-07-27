@@ -157,6 +157,7 @@ async def create_batch_from_upload(
     upload: UploadFile,
     source_id: str,
     business_type: str,
+    header_row: int | None = None,
     parameters: dict[str, Any],
     actor_user_id: int,
     settings: Settings | None = None,
@@ -174,7 +175,7 @@ async def create_batch_from_upload(
         raise BatchValidationError("请选择已启用的盘口。")
 
     try:
-        detection = await detect_payment_template(session, upload)
+        detection = await detect_payment_template(session, upload, header_row=header_row)
     except TemplateDetectionError as exc:
         raise BatchValidationError(str(exc)) from exc
     if detection.template is not None and detection.template.business_type != business_type:
