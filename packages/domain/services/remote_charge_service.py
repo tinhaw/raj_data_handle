@@ -183,6 +183,8 @@ class RajAdminChargeClient:
             if not code or not label:
                 raise RemoteResponseError("远端充值渠道字典缺少代码或名称。")
             channels.append({"code": code, "label": label})
+        if not channels:
+            raise RemoteResponseError("远端充值渠道名称字典为空。")
         return channels
 
     def _charge_params(

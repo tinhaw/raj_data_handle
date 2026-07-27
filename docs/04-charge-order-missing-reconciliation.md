@@ -475,6 +475,7 @@ count(result_status = confirmed_missing
 payment_platforms
 payment_template_versions
 payment_channel_bindings
+data_dictionary_entries
 time_calibration_profiles
 stored_file_objects
 stored_file_references
@@ -485,6 +486,10 @@ fact_charge_orders
 order_reconciliation_results
 export_jobs
 ```
+
+`data_dictionary_entries` 按 `source_id + dictionary_type + entry_code` 唯一保存远端稳定
+枚举。充值连接测试使用 `/api/operate/chargeOrder/payChannel` 的 `label/value`
+同步 `payment_channel_name` 字典；缺席条目转为停用，保留首次和最近发现时间。
 
 文件元数据至少包含：
 
@@ -731,6 +736,8 @@ MVP 不在这里汇总订单量、金额、确认遗漏数或遗漏率，避免�
 - 能按表头特征自动识别已登记的支付平台模板；
 - 未知格式必须进入映射确认，不能静默套用其他平台模板；
 - 用户可为当前批次配置标准字段和精确比对规则；
+- 解析完成后必须展示并确认表格列到远端 `order_num`、`out_trade_no` 的映射，批次执行使用确认后的映射而不是仅依赖隐藏模板默认值；
+- 渠道选择展示远端名称与 ID 的字典，所选 ID 作为充值列表请求的 `pay_method`；
 - 用户不能配置任意远端路径、SQL、脚本或未登记的远端字段；
 - 管理员发布全局模板时创建新版本，历史批次仍能复现旧版本；
 - 用户可选择支付平台和远端时间字段并保存校准版本；

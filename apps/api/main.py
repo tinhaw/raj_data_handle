@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.routers.auth import router as auth_router
 from apps.api.routers.batches import router as batches_router
+from apps.api.routers.data_dictionaries import router as data_dictionaries_router
 from apps.api.routers.notifications import router as notifications_router
 from apps.api.routers.payment_templates import router as payment_templates_router
 from apps.api.routers.sources import router as sources_router
@@ -41,6 +42,7 @@ app.add_middleware(
 app.include_router(auth_router, prefix=settings.api_prefix)
 app.include_router(sources_router, prefix=settings.api_prefix)
 app.include_router(system_settings_router, prefix=settings.api_prefix)
+app.include_router(data_dictionaries_router, prefix=settings.api_prefix)
 app.include_router(payment_templates_router, prefix=settings.api_prefix)
 app.include_router(batches_router, prefix=settings.api_prefix)
 app.include_router(notifications_router, prefix=settings.api_prefix)

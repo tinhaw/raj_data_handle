@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   Bell,
+  Collection,
   DataAnalysis,
   DocumentAdd,
   Setting,
@@ -91,6 +92,10 @@ onBeforeUnmount(() => {
         <el-menu-item v-if="isAdmin" index="/settings/sources">
           <el-icon><Setting /></el-icon>
           <template #title>盘口配置</template>
+        </el-menu-item>
+        <el-menu-item v-if="isAdmin" index="/settings/data-dictionaries">
+          <el-icon><Collection /></el-icon>
+          <template #title>数据字典</template>
         </el-menu-item>
         <el-menu-item v-if="isAdmin" index="/settings/users">
           <el-icon><User /></el-icon>

@@ -4,7 +4,12 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from packages.common.settings import Settings
-from packages.domain.models import Base, ReconciliationBatch, SourceConfig
+from packages.domain.models import (
+    Base,
+    DataDictionaryEntry,
+    ReconciliationBatch,
+    SourceConfig,
+)
 from packages.domain.schemas.source import SourceCreateRequest
 from packages.domain.services.source_service import (
     SourceConflictError,
@@ -84,6 +89,14 @@ async def test_custom_source_can_be_created_and_deleted() -> None:
         )
         assert created.source_id == "rajstar"
         assert created.enabled is False
+        dictionary_entry = DataDictionaryEntry(
+            source_id="rajstar",
+            dictionary_type="payment_channel_name",
+            entry_code="948",
+            entry_label="aelopay(HX)",
+        )
+        session.add(dictionary_entry)
+        await session.commit()
 
         with pytest.raises(SourceConflictError):
             await create_source(
@@ -95,6 +108,7 @@ async def test_custom_source_can_be_created_and_deleted() -> None:
 
         await delete_source(session, source_id="rajstar", actor_user_id=1)
         assert await session.get(SourceConfig, "rajstar") is None
+        assert await session.get(DataDictionaryEntry, dictionary_entry.id) is None
 
     await engine.dispose()
 

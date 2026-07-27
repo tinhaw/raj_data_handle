@@ -499,8 +499,8 @@ Gold 表保存指标版本、生成时间和来源水位，便于解释页面数
 - `payment_platforms`
 - `payment_template_versions`
 - `payment_channel_bindings`
+- `data_dictionary_entries`
 - `time_calibration_profiles`
-- `remote_channel_dictionary_items`
 - `reconciliation_batch_channels`
 - `manual_spend_revisions`
 - `audit_logs`

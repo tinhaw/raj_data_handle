@@ -218,6 +218,43 @@ class PaymentChannelBinding(Base):
     )
 
 
+class DataDictionaryEntry(Base):
+    __tablename__ = "data_dictionary_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id",
+            "dictionary_type",
+            "entry_code",
+            name="uq_data_dictionary_source_type_code",
+        ),
+        Index(
+            "ix_data_dictionary_type_active",
+            "dictionary_type",
+            "active",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    dictionary_type: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    entry_code: Mapped[str] = mapped_column(String(80), nullable=False)
+    entry_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
 class StoredFileObject(Base):
     __tablename__ = "stored_file_objects"
 

@@ -189,7 +189,7 @@ async def test_source_connection(
         status=source.last_test_status or "failed",
         request_id=request_id,
         message=(
-            "连接成功，已同步可识别的充值渠道。"
+            "连接成功，已同步支付渠道名称字典和可识别的充值渠道。"
             if source.last_test_status == "passed"
             else "连接失败，请检查 Base URL、账号、密码、TOTP Secret 和远端网络。"
         ),

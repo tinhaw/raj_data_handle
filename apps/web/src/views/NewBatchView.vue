@@ -31,6 +31,8 @@ const form = reactive({
   businessType: 'payin' as const,
   headerRow: 1,
   selectedChannelCodes: [] as string[],
+  merchantOrderNoField: '',
+  platformOrderNoField: '',
   paymentTimeField: '',
   paymentTimezone: 'Asia/Kolkata',
   remoteTimeField: 'create_time',
@@ -56,9 +58,21 @@ const paymentTimeOptions = computed<string[]>(() => {
   return [...new Set(headers.map((header) => header.trim()).filter(Boolean))]
 })
 
+const availableChannelBindings = computed(() => {
+  const platformKey = detection.value?.template?.platformKey
+  if (!platformKey) return channelBindings.value
+  return channelBindings.value.filter((item) => item.platformKey === platformKey)
+})
+
 const uploadReady = computed(() => Boolean(form.sourceId && file.value))
 const parsingReady = computed(() =>
-  Boolean(detection.value && form.paymentTimeField),
+  Boolean(
+    detection.value &&
+      form.merchantOrderNoField &&
+      form.platformOrderNoField &&
+      form.merchantOrderNoField !== form.platformOrderNoField &&
+      form.paymentTimeField,
+  ),
 )
 const comparisonReady = computed(() =>
   Boolean(
@@ -71,17 +85,22 @@ const comparisonReady = computed(() =>
 )
 
 const selectedChannelSummary = computed(() => {
-  const selected = channelBindings.value.filter((item) =>
+  const selected = availableChannelBindings.value.filter((item) =>
     form.selectedChannelCodes.includes(item.remoteChannelCode),
   )
   if (!selected.length) return '尚未选择'
   return selected
-    .map((item) => `${item.remoteChannelCode} · ${item.remoteChannelLabel}`)
+    .map(
+      (item) =>
+        `${item.remoteChannelLabel}（pay_method=${item.remoteChannelCode}）`,
+    )
     .join('、')
 })
 
 function resetAfterParsingChange(): void {
   detection.value = null
+  form.merchantOrderNoField = ''
+  form.platformOrderNoField = ''
   form.paymentTimeField = ''
   timeRange.value = null
   form.selectedChannelCodes = []
@@ -95,6 +114,25 @@ function goToStep(step: number): void {
       block: 'start',
     })
   })
+}
+
+function preferredOrderField(
+  mappingKey: 'merchant_order_no' | 'platform_order_no',
+): string {
+  const configured = detection.value?.template?.columnMapping[mappingKey]
+  if (
+    typeof configured === 'string' &&
+    paymentTimeOptions.value.includes(configured)
+  ) {
+    return configured
+  }
+  const preferredNames =
+    mappingKey === 'merchant_order_no'
+      ? ['商户订单号', '商户单号', '订单号']
+      : ['平台订单号', '三方订单号', '支付平台订单号']
+  return (
+    preferredNames.find((name) => paymentTimeOptions.value.includes(name)) || ''
+  )
 }
 
 function preferredPaymentTimeField(): string {
@@ -164,6 +202,8 @@ async function parseFile(): Promise<void> {
   parsing.value = true
   try {
     detection.value = await detectPaymentTemplate(file.value, form.headerRow)
+    form.merchantOrderNoField = preferredOrderField('merchant_order_no')
+    form.platformOrderNoField = preferredOrderField('platform_order_no')
     form.paymentTimeField = preferredPaymentTimeField()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '文件模板探测失败。'))
@@ -179,6 +219,14 @@ function continueToComparison(): void {
   }
   if (!form.paymentTimeField) {
     ElMessage.warning('请从解析出的表头中选择支付平台时间列。')
+    return
+  }
+  if (!form.merchantOrderNoField || !form.platformOrderNoField) {
+    ElMessage.warning('请确认表格中对应远端两个订单号的字段。')
+    return
+  }
+  if (form.merchantOrderNoField === form.platformOrderNoField) {
+    ElMessage.warning('两个远端订单号不能映射到同一表格列。')
     return
   }
   goToStep(2)
@@ -221,7 +269,11 @@ async function submit(): Promise<void> {
       headerRow: form.headerRow,
       file: file.value,
       parameters: {
-        selectedChannels: channelBindings.value
+        paymentColumnMapping: {
+          merchant_order_no: form.merchantOrderNoField,
+          platform_order_no: form.platformOrderNoField,
+        },
+        selectedChannels: availableChannelBindings.value
           .filter((item) => form.selectedChannelCodes.includes(item.remoteChannelCode))
           .map((item) => ({
             code: item.remoteChannelCode,
@@ -296,7 +348,7 @@ watch(
       <div class="wizard-progress">
         <el-steps :active="currentStep" finish-status="success" align-center>
           <el-step title="上传文件" description="选择盘口与支付平台文件" />
-          <el-step title="初步解析" description="确认表头与时间列" />
+          <el-step title="初步解析" description="确认表头、订单号与时间列" />
           <el-step title="配置比对" description="确认渠道和时间口径" />
         </el-steps>
       </div>
@@ -372,7 +424,7 @@ watch(
           <div class="step-intro">
             <span class="step-kicker">步骤 2 / 3</span>
             <h2>初步解析表格</h2>
-            <p>确认表头所在行后执行解析，再从真实表头中选择支付平台时间列。</p>
+            <p>确认表头所在行后执行解析，再校准订单号对应关系和支付平台时间列。</p>
           </div>
 
           <div class="parse-controls">
@@ -453,6 +505,62 @@ watch(
                 </div>
               </div>
 
+              <div class="order-mapping-panel">
+                <div>
+                  <strong>订单号字段映射</strong>
+                  <span>
+                    表格列在左侧，管理后台 API 字段在右侧；两个字段共同用于精确比对。
+                  </span>
+                </div>
+                <div class="form-grid">
+                  <el-form-item label="表格列 → 管理后台内部订单号（order_num）" required>
+                    <el-select
+                      v-model="form.merchantOrderNoField"
+                      filterable
+                      placeholder="选择表格中的商户订单号列"
+                      style="width: 100%"
+                    >
+                      <el-option
+                        v-for="field in paymentTimeOptions"
+                        :key="field"
+                        :label="field"
+                        :value="field"
+                      />
+                    </el-select>
+                    <span class="field-help">
+                      模板默认使用“商户订单号”，作为主匹配键。
+                    </span>
+                  </el-form-item>
+                  <el-form-item label="表格列 → 管理后台三方订单号（out_trade_no）" required>
+                    <el-select
+                      v-model="form.platformOrderNoField"
+                      filterable
+                      placeholder="选择表格中的平台订单号列"
+                      style="width: 100%"
+                    >
+                      <el-option
+                        v-for="field in paymentTimeOptions"
+                        :key="field"
+                        :label="field"
+                        :value="field"
+                      />
+                    </el-select>
+                    <span class="field-help">
+                      模板默认使用“平台订单号”，用于交叉校验与精确复查。
+                    </span>
+                  </el-form-item>
+                </div>
+                <el-alert
+                  v-if="
+                    form.merchantOrderNoField &&
+                    form.merchantOrderNoField === form.platformOrderNoField
+                  "
+                  type="error"
+                  :closable="false"
+                  title="两个远端订单号不能映射到同一表格列"
+                />
+              </div>
+
               <el-form-item label="支付平台时间列" required>
                 <el-select
                   v-model="form.paymentTimeField"
@@ -503,7 +611,8 @@ watch(
                   {{ detection?.template?.platformDisplayName || '未匹配模板' }}
                 </strong>
                 <small>
-                  表头第 {{ detection?.headerRow }} 行 · 时间列 {{ form.paymentTimeField }}
+                  order_num ← {{ form.merchantOrderNoField }} · out_trade_no ←
+                  {{ form.platformOrderNoField }}
                 </small>
               </div>
               <el-button text type="primary" @click="goToStep(1)">修改</el-button>
@@ -518,7 +627,7 @@ watch(
 
           <div class="comparison-layout">
             <div class="comparison-form">
-              <el-form-item label="远端充值渠道" required>
+              <el-form-item label="远端充值渠道（pay_method 字典）" required>
                 <el-select
                   v-model="form.selectedChannelCodes"
                   multiple
@@ -528,14 +637,21 @@ watch(
                   style="width: 100%"
                 >
                   <el-option
-                    v-for="channel in channelBindings"
+                    v-for="channel in availableChannelBindings"
                     :key="channel.id"
-                    :label="`${channel.remoteChannelCode} · ${channel.remoteChannelLabel}`"
+                    :label="`${channel.remoteChannelLabel} · ID ${channel.remoteChannelCode}`"
                     :value="channel.remoteChannelCode"
                   />
                 </el-select>
-                <span v-if="form.sourceId && !channelBindings.length" class="field-help">
-                  当前盘口尚无已登记渠道；请先完成远端渠道字典同步。
+                <span
+                  v-if="form.sourceId && !availableChannelBindings.length"
+                  class="field-help"
+                >
+                  当前盘口尚无与该支付平台绑定的渠道；请先在盘口配置中重新测试连接并同步渠道字典。
+                </span>
+                <span v-else class="field-help">
+                  名称和 ID 来自盘口连接测试同步的渠道字典；请求充值订单列表时，ID 会作为
+                  pay_method 参数。
                 </span>
               </el-form-item>
 
@@ -600,6 +716,14 @@ watch(
                 <div>
                   <dt>盘口</dt>
                   <dd>{{ selectedSource?.displayName || '—' }}</dd>
+                </div>
+                <div>
+                  <dt>表格列 → order_num</dt>
+                  <dd>{{ form.merchantOrderNoField || '—' }}</dd>
+                </div>
+                <div>
+                  <dt>表格列 → out_trade_no</dt>
+                  <dd>{{ form.platformOrderNoField || '—' }}</dd>
                 </div>
                 <div>
                   <dt>支付平台时间列</dt>
@@ -857,6 +981,35 @@ watch(
   max-height: 150px;
   gap: 8px;
   overflow-y: auto;
+}
+
+.order-mapping-panel {
+  display: grid;
+  gap: 18px;
+  padding: 18px;
+  border: 1px solid #dce6ef;
+  border-radius: 12px;
+  background: #f7fafc;
+}
+
+.order-mapping-panel > div:first-child {
+  display: grid;
+  gap: 5px;
+}
+
+.order-mapping-panel > div:first-child strong {
+  color: var(--ink-strong);
+  font-size: 15px;
+}
+
+.order-mapping-panel > div:first-child span {
+  color: var(--ink-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.order-mapping-panel :deep(.el-form-item) {
+  margin-bottom: 0;
 }
 
 .comparison-layout {

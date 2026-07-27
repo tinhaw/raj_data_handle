@@ -86,6 +86,19 @@ export interface PaymentChannelBinding {
   active: boolean
 }
 
+export interface DataDictionaryEntry {
+  id: number
+  sourceId: string
+  sourceDisplayName: string
+  dictionaryType: 'payment_channel_name'
+  entryCode: string
+  entryLabel: string
+  active: boolean
+  firstSeenAt: string
+  lastSeenAt: string
+  updatedAt: string
+}
+
 export interface BatchRecord {
   id: string
   comparisonSeriesId: string

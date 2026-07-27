@@ -17,6 +17,7 @@ from packages.common.security import (
 )
 from packages.common.settings import Settings, get_settings
 from packages.domain.models import (
+    DataDictionaryEntry,
     PaymentChannelBinding,
     PaymentPlatform,
     ReconciliationBatch,
@@ -28,6 +29,10 @@ from packages.domain.schemas.source import (
     SourceUpsertRequest,
 )
 from packages.domain.services.auth_service import write_audit
+from packages.domain.services.data_dictionary_service import (
+    DataDictionarySyncError,
+    sync_payment_channel_names,
+)
 from packages.domain.services.remote_charge_service import RajAdminChargeClient, RemoteChargeError
 
 SOURCE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
@@ -261,6 +266,9 @@ async def delete_source(
     await session.execute(
         delete(PaymentChannelBinding).where(PaymentChannelBinding.source_id == source.source_id)
     )
+    await session.execute(
+        delete(DataDictionaryEntry).where(DataDictionaryEntry.source_id == source.source_id)
+    )
     await write_audit(
         session,
         action="source.delete",
@@ -319,6 +327,16 @@ async def _sync_known_channels(
     actor_user_id: int,
 ) -> int:
     platforms = {item.platform_key: item for item in await session.scalars(select(PaymentPlatform))}
+    existing_bindings = list(
+        await session.scalars(
+            select(PaymentChannelBinding).where(
+                PaymentChannelBinding.source_id == source.source_id,
+                PaymentChannelBinding.business_type == "payin",
+            )
+        )
+    )
+    for binding in existing_bindings:
+        binding.active = False
     synced = 0
     for channel in channels:
         platform_key = _platform_key_for_channel(channel["label"])
@@ -373,6 +391,7 @@ async def test_source_connection(
         raise SourceValidationError("已保存凭据无法解密，请清除后重新配置。") from exc
     test_status = "failed"
     synced_channels = 0
+    dictionary_entries = 0
     try:
         async with RajAdminChargeClient(
             base_url=source.base_url,
@@ -382,6 +401,12 @@ async def test_source_connection(
         ) as client:
             await client.login()
             channels = await client.fetch_channels()
+        dictionary_sync = await sync_payment_channel_names(
+            session,
+            source_id=source.source_id,
+            channels=channels,
+        )
+        dictionary_entries = dictionary_sync.active_entries
         synced_channels = await _sync_known_channels(
             session,
             source=source,
@@ -389,7 +414,7 @@ async def test_source_connection(
             actor_user_id=actor_user_id,
         )
         test_status = "passed"
-    except (RemoteChargeError, KeyError):
+    except (RemoteChargeError, DataDictionarySyncError, KeyError):
         test_status = "failed"
     source.last_tested_at = datetime.now(UTC)
     source.last_test_status = test_status
@@ -403,6 +428,7 @@ async def test_source_connection(
         result=test_status,
         metadata={
             "request_id": request_id,
+            "synced_payment_channel_names": dictionary_entries,
             "synced_known_payin_channels": synced_channels,
         },
     )

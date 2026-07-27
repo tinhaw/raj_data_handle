@@ -40,6 +40,11 @@ const router = createRouter({
       meta: { navKey: '/settings/sources', admin: true },
     },
     {
+      path: '/settings/data-dictionaries',
+      component: () => import('../views/DataDictionaryView.vue'),
+      meta: { navKey: '/settings/data-dictionaries', admin: true },
+    },
+    {
       path: '/settings/users',
       component: () => import('../views/UserManagementView.vue'),
       meta: { navKey: '/settings/users', admin: true },

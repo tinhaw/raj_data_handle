@@ -71,6 +71,60 @@ async def test_remote_client_uses_login_channel_dictionary_and_complete_paginati
     assert {method for method, _ in calls} <= {"GET", "POST"}
 
 
+@pytest.mark.asyncio
+async def test_exact_search_uses_channel_id_and_both_order_references() -> None:
+    queries: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/system/login"):
+            return httpx.Response(200, json={"data": {"token": "test-token"}})
+        params = dict(request.url.params)
+        queries.append(params)
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "items": [
+                        {
+                            "id": "remote-order-1",
+                            "order_num": "merchant-1",
+                            "out_trade_no": "platform-1",
+                        }
+                    ],
+                    "pageInfo": {
+                        "total": 1,
+                        "currentPage": 1,
+                        "totalPage": 1,
+                    },
+                }
+            },
+        )
+
+    async with RajAdminChargeClient(
+        base_url="https://admin.example.test",
+        username="reader",
+        password="password",
+        totp_secret="JBSWY3DPEHPK3PXP",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await client.exact_search(
+            channels=[{"code": "948", "label": "aelopay(HX)"}],
+            merchant_order_no="merchant-1",
+            platform_order_no="platform-1",
+        )
+
+    assert result.complete is True
+    assert len(result.orders) == 1
+    assert {query["pay_method"] for query in queries} == {"948"}
+    assert {
+        (query["order_num"], query["out_trade_no"])
+        for query in queries
+    } == {
+        ("merchant-1", ""),
+        ("", "platform-1"),
+    }
+
+
 def _payment_group(**overrides: object) -> PaymentOrderGroup:
     values: dict[str, object] = {
         "order_group_id": "group",
