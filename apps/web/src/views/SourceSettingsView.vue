@@ -17,6 +17,7 @@ import { formatDateTime } from '../ui'
 
 const loading = ref(false)
 const saving = ref(false)
+const testing = ref(false)
 const rows = ref<SourceConfig[]>([])
 const dialogVisible = ref(false)
 const editingId = ref<string | null>(null)
@@ -72,7 +73,7 @@ function edit(row: SourceConfig): void {
   dialogVisible.value = true
 }
 
-async function save(): Promise<void> {
+function validateForm(): boolean {
   if (
     editingId.value === null &&
     !/^[a-z][a-z0-9_-]{1,63}$/.test(form.sourceId.trim())
@@ -80,41 +81,84 @@ async function save(): Promise<void> {
     ElMessage.warning(
       '来源 ID 须为 2-64 位，以小写字母开头，且只能包含小写字母、数字、下划线和连字符。',
     )
-    return
+    return false
   }
+  return true
+}
+
+function sourcePayload(enabled: boolean): Record<string, unknown> {
+  const credentials =
+    form.username || form.password || form.totpSecret
+      ? {
+          username: form.username || null,
+          password: form.password || null,
+          totpSecret: form.totpSecret || null,
+        }
+      : undefined
+  return {
+    displayName: form.displayName,
+    baseUrl: form.baseUrl || null,
+    businessTimezone: form.businessTimezone,
+    currency: form.currency,
+    enabled,
+    credentials,
+  }
+}
+
+async function persistSource(enabled: boolean): Promise<string> {
+  if (editingId.value === null) {
+    const sourceId = form.sourceId.trim()
+    await createSource({
+      sourceId,
+      ...sourcePayload(false),
+    })
+    editingId.value = sourceId
+    return sourceId
+  }
+  await updateSource(editingId.value, sourcePayload(enabled))
+  return editingId.value
+}
+
+async function save(): Promise<void> {
+  if (!validateForm()) return
+  const wasCreating = editingId.value === null
   saving.value = true
   try {
-    const credentials =
-      form.username || form.password || form.totpSecret
-        ? {
-            username: form.username || null,
-            password: form.password || null,
-            totpSecret: form.totpSecret || null,
-          }
-        : undefined
-    const payload = {
-      displayName: form.displayName,
-      baseUrl: form.baseUrl || null,
-      businessTimezone: form.businessTimezone,
-      currency: form.currency,
-      enabled: editingId.value === null ? false : form.enabled,
-      credentials,
-    }
-    if (editingId.value === null) {
-      await createSource({
-        sourceId: form.sourceId.trim(),
-        ...payload,
-      })
-    } else {
-      await updateSource(editingId.value, payload)
-    }
-    ElMessage.success(editingId.value === null ? '盘口草稿已创建。' : '盘口草稿已保存。')
+    await persistSource(wasCreating ? false : form.enabled)
+    ElMessage.success(wasCreating ? '盘口草稿已创建。' : '盘口配置已保存。')
     dialogVisible.value = false
     await load()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '盘口配置保存失败。'))
   } finally {
     saving.value = false
+  }
+}
+
+async function saveAndTest(): Promise<void> {
+  if (!validateForm()) return
+  const enableAfterPassed = form.enabled
+  testing.value = true
+  try {
+    const sourceId = await persistSource(false)
+    const result = await testSourceConnection(sourceId)
+    if (result.status !== 'passed') {
+      form.enabled = false
+      ElMessage.warning(result.message)
+      return
+    }
+    if (enableAfterPassed) {
+      await updateSource(sourceId, { enabled: true })
+    }
+    ElMessage.success(
+      enableAfterPassed ? '连接测试通过，盘口已启用。' : '连接测试通过，盘口草稿已保存。',
+    )
+    dialogVisible.value = false
+  } catch (error) {
+    ElMessage.warning(apiErrorMessage(error, '保存或连接测试失败。'))
+  } finally {
+    await load()
+    testing.value = false
   }
 }
 
@@ -288,8 +332,10 @@ onMounted(load)
             <el-input v-model="form.currency" maxlength="3" />
           </el-form-item>
           <el-form-item label="启用">
-            <el-switch v-model="form.enabled" :disabled="editingId === null" />
-            <span v-if="editingId === null" class="field-help">创建后请先测试连接，再启用。</span>
+            <el-switch v-model="form.enabled" />
+            <span class="field-help">
+              选择启用时，请使用“保存并测试”；连接通过后会自动启用。
+            </span>
           </el-form-item>
         </div>
         <el-form-item label="Base URL">
@@ -310,8 +356,17 @@ onMounted(load)
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="save">
-          {{ editingId === null ? '创建草稿' : '保存草稿' }}
+        <el-button :loading="saving" :disabled="testing" @click="save">
+          {{ editingId === null ? '创建草稿' : '保存配置' }}
+        </el-button>
+        <el-button
+          type="primary"
+          :icon="Connection"
+          :loading="testing"
+          :disabled="saving"
+          @click="saveAndTest"
+        >
+          保存并测试
         </el-button>
       </template>
     </el-dialog>
