@@ -1,0 +1,34 @@
+# Copy to configs/deployments.local.yml and fill only local target metadata.
+# Raj Data Handle reads its one ECS entry here. RajWin and RajLuck are remote
+# data sources, not deployment entries. RDS credentials and application secrets
+# belong only in deploy/secrets/raj-data-handle.env.
+
+deployments:
+  raj-data-handle:
+    project:
+      name: raj-data-handle
+      display_name: Raj 数据分析
+      type: data_analysis
+      remote_dir: /opt/raj_data_handle
+    host:
+      name: Raj Data Handle host
+      role: data_analysis
+      ecs_host: 203.0.113.10
+      ssh_user: root
+      ssh_port: 22
+      ssh_authentication: public_key
+      ssh_host_key_checking: strict
+    web:
+      access_mode: cloudflare_reverse_proxy
+      hostname: analysis.example.com
+      port: 18080
+    runtime:
+      node_id: raj-data-handle
+    rds:
+      connection_type: aliyun_vpc_rds
+      host: pgm-example.pg.cnhk.rds.aliyuncs.com
+      host_scope: vpc
+      connect_via: ecs
+      public_access: false
+      port: 5432
+      database: data_handle

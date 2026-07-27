@@ -1,0 +1,49 @@
+# Local credentials and account notes
+docs/远端账号.txt
+
+# Raw business exports may contain real order and merchant data.
+data/*
+!data/.gitkeep
+
+# Browser-captured requests may contain Authorization headers and real records.
+remote_api_templates/**/*.txt
+!remote_api_templates/**/*.example.txt
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# Node / frontend
+node_modules/
+dist/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.secret
+*.secrets
+deploy/secrets/*.env
+!deploy/secrets/*.env.example
+deploy/香港复审ECS信息.txt
+deploy/香港复审主机数据处理数据库信息.txt
+deploy/香港数据分析ECS信息.txt
+deploy/香港数据处理主机数据库信息.txt
+configs/deployments.local.yml
+deploy/deployments.local.yml
+
+# Runtime output
+runtime/
+logs/
+tmp/
+exports/
+uploads/
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/

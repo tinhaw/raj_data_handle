@@ -1,0 +1,385 @@
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+def utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def new_uuid() -> str:
+    return str(uuid.uuid4())
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class AppUser(Base):
+    __tablename__ = "app_users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    username_normalized: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    password_changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    client_ip_hash: Mapped[str | None] = mapped_column(String(64))
+    user_agent_hash: Mapped[str | None] = mapped_column(String(64))
+
+
+class SecurityAuditLog(Base):
+    __tablename__ = "security_audit_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    actor_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL"), index=True
+    )
+    action: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    target_type: Mapped[str | None] = mapped_column(String(80))
+    target_id: Mapped[str | None] = mapped_column(String(120))
+    result: Mapped[str] = mapped_column(String(30), nullable=False, default="success")
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
+    )
+
+
+class SystemRetentionSetting(Base):
+    __tablename__ = "system_retention_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    uploaded_file_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    result_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    remote_cache_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class SourceConfig(Base):
+    __tablename__ = "source_configs"
+
+    source_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    base_url: Mapped[str | None] = mapped_column(String(500))
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    business_timezone: Mapped[str] = mapped_column(
+        String(80), nullable=False, default="Asia/Kolkata"
+    )
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
+    config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    encrypted_credentials: Mapped[str | None] = mapped_column(Text)
+    credential_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    credential_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_test_status: Mapped[str | None] = mapped_column(String(30))
+    last_test_request_id: Mapped[str | None] = mapped_column(String(64))
+
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class PaymentPlatform(Base):
+    __tablename__ = "payment_platforms"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    platform_key: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class PaymentTemplateVersion(Base):
+    __tablename__ = "payment_template_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "platform_id",
+            "business_type",
+            "version",
+            name="uq_payment_template_business_version",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    platform_id: Mapped[int] = mapped_column(
+        ForeignKey("payment_platforms.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    business_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    sheet_name_pattern: Mapped[str | None] = mapped_column(String(200))
+    header_signature_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    column_mapping_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    success_status_values_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    match_rules_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    published_by: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PaymentChannelBinding(Base):
+    __tablename__ = "payment_channel_bindings"
+    __table_args__ = (
+        UniqueConstraint(
+            "platform_id",
+            "source_id",
+            "business_type",
+            "remote_channel_code",
+            name="uq_payment_channel_binding",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    platform_id: Mapped[int] = mapped_column(
+        ForeignKey("payment_platforms.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    business_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    remote_channel_code: Mapped[str] = mapped_column(String(80), nullable=False)
+    remote_channel_label: Mapped[str] = mapped_column(String(160), nullable=False)
+    merchant_discriminator: Mapped[str | None] = mapped_column(String(160))
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
+class StoredFileObject(Base):
+    __tablename__ = "stored_file_objects"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    storage_key: Mapped[str] = mapped_column(String(500), nullable=False, unique=True)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_type: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ReconciliationBatch(Base):
+    __tablename__ = "reconciliation_batches"
+    __table_args__ = (
+        UniqueConstraint("comparison_series_id", "run_version", name="uq_batch_series_version"),
+        Index("ix_batch_identity_status", "comparison_identity_key", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    comparison_series_id: Mapped[str] = mapped_column(String(36), nullable=False, default=new_uuid)
+    comparison_identity_key: Mapped[str | None] = mapped_column(String(64), index=True)
+    run_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    rerun_of_batch_id: Mapped[str | None] = mapped_column(
+        ForeignKey("reconciliation_batches.id", ondelete="SET NULL")
+    )
+
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_config_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_business_timezone: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    business_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+
+    status: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="awaiting_confirmation", index=True
+    )
+    is_final: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    uploaded_file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    uploaded_file_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    parameters_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    progress_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+    execution_requested_by: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    created_by: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    error_category: Mapped[str | None] = mapped_column(String(80))
+    error_message: Mapped[str | None] = mapped_column(String(500))
+    cancellation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_by: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL")
+    )
+    cancellation_reason: Mapped[str | None] = mapped_column(String(500))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class StoredFileReference(Base):
+    __tablename__ = "stored_file_references"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "file_object_id", name="uq_batch_file_reference"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    file_object_id: Mapped[str] = mapped_column(
+        ForeignKey("stored_file_objects.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("reconciliation_batches.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
+class BatchActivityLog(Base):
+    __tablename__ = "batch_activity_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("reconciliation_batches.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    actor_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL"), index=True
+    )
+    action: Mapped[str] = mapped_column(String(80), nullable=False)
+    from_status: Mapped[str | None] = mapped_column(String(40))
+    to_status: Mapped[str | None] = mapped_column(String(40))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
+    )
+
+
+class OrderReconciliationResult(Base):
+    __tablename__ = "order_reconciliation_results"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "order_group_id", name="uq_batch_order_group_result"),
+        Index("ix_reconciliation_result_status", "batch_id", "result_status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("reconciliation_batches.id", ondelete="CASCADE"), nullable=False
+    )
+    order_group_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    result_status: Mapped[str] = mapped_column(String(50), nullable=False)
+    payment_status_raw: Mapped[str | None] = mapped_column(String(120))
+    payment_status_group: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown")
+    merchant_order_no: Mapped[str | None] = mapped_column(String(160))
+    platform_order_no: Mapped[str | None] = mapped_column(String(160))
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    is_final: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
+class UserNotification(Base):
+    __tablename__ = "user_notifications"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "batch_id",
+            "run_version",
+            "event_type",
+            name="uq_notification_batch_event",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("reconciliation_batches.id", ondelete="CASCADE"), nullable=False
+    )
+    run_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
