@@ -21,6 +21,7 @@ const testing = ref(false)
 const rows = ref<SourceConfig[]>([])
 const dialogVisible = ref(false)
 const editingId = ref<string | null>(null)
+const credentialsConfigured = ref(false)
 const presetSourceIds = new Set(['rajwin', 'rajluck'])
 const form = reactive({
   sourceId: '',
@@ -47,6 +48,7 @@ async function load(): Promise<void> {
 
 function add(): void {
   editingId.value = null
+  credentialsConfigured.value = false
   form.sourceId = ''
   form.displayName = ''
   form.baseUrl = ''
@@ -61,6 +63,7 @@ function add(): void {
 
 function edit(row: SourceConfig): void {
   editingId.value = row.sourceId
+  credentialsConfigured.value = row.credentialConfigured
   form.sourceId = row.sourceId
   form.displayName = row.displayName
   form.baseUrl = row.baseUrl || ''
@@ -105,6 +108,10 @@ function sourcePayload(enabled: boolean): Record<string, unknown> {
   }
 }
 
+function credentialsWereProvided(): boolean {
+  return Boolean(form.username || form.password || form.totpSecret)
+}
+
 async function persistSource(enabled: boolean): Promise<string> {
   if (editingId.value === null) {
     const sourceId = form.sourceId.trim()
@@ -113,9 +120,11 @@ async function persistSource(enabled: boolean): Promise<string> {
       ...sourcePayload(false),
     })
     editingId.value = sourceId
+    credentialsConfigured.value ||= credentialsWereProvided()
     return sourceId
   }
   await updateSource(editingId.value, sourcePayload(enabled))
+  credentialsConfigured.value ||= credentialsWereProvided()
   return editingId.value
 }
 
@@ -325,17 +334,39 @@ onMounted(load)
         <el-form-item label="Base URL">
           <el-input v-model="form.baseUrl" placeholder="https://admin.example.com" />
         </el-form-item>
-        <el-divider content-position="left">远端凭据（留空则保持原值）</el-divider>
+        <el-divider content-position="left">
+          {{
+            credentialsConfigured
+              ? '远端凭据（已设置；留空则保持原值）'
+              : '远端凭据（首次配置需填写账号、密码和 TOTP Secret）'
+          }}
+        </el-divider>
         <div class="form-grid">
           <el-form-item label="登录账号">
-            <el-input v-model="form.username" autocomplete="off" />
+            <el-input
+              v-model="form.username"
+              :placeholder="credentialsConfigured ? '已设置，留空则保持原值' : '请输入登录账号'"
+              autocomplete="off"
+            />
           </el-form-item>
           <el-form-item label="登录密码">
-            <el-input v-model="form.password" type="password" show-password autocomplete="new-password" />
+            <el-input
+              v-model="form.password"
+              :placeholder="credentialsConfigured ? '已设置，留空则保持原值' : '请输入登录密码'"
+              type="password"
+              show-password
+              autocomplete="new-password"
+            />
           </el-form-item>
         </div>
         <el-form-item label="TOTP Secret">
-          <el-input v-model="form.totpSecret" type="password" show-password autocomplete="off" />
+          <el-input
+            v-model="form.totpSecret"
+            :placeholder="credentialsConfigured ? '已设置，留空则保持原值' : '请输入 TOTP Secret'"
+            type="password"
+            show-password
+            autocomplete="off"
+          />
         </el-form-item>
       </el-form>
       <template #footer>
