@@ -308,6 +308,8 @@ class RajAdminChargeClient:
         *,
         channels: list[dict[str, str]],
         platform_order_no: str | None,
+        create_start: str,
+        create_end: str,
     ) -> ExactSearchResult:
         found: dict[str, dict[str, Any]] = {}
         complete = True
@@ -315,15 +317,30 @@ class RajAdminChargeClient:
             return ExactSearchResult(orders=[], complete=complete)
         for channel in channels:
             try:
-                items, page_info = await self._fetch_charge_page(
-                    page=1,
-                    channel_code=channel["code"],
-                    channel_label=channel["label"],
-                    out_trade_no=platform_order_no,
-                )
-                if page_info["total_page"] > 1 or len(items) != page_info["total"]:
+                page = 1
+                channel_orders: list[dict[str, Any]] = []
+                expected_total = 0
+                while True:
+                    items, page_info = await self._fetch_charge_page(
+                        page=page,
+                        channel_code=channel["code"],
+                        channel_label=channel["label"],
+                        create_start=create_start,
+                        create_end=create_end,
+                        out_trade_no=platform_order_no,
+                    )
+                    channel_orders.extend(items)
+                    expected_total = page_info["total"]
+                    total_page = page_info["total_page"]
+                    if total_page > 100_000:
+                        raise RemoteResponseError("远端精确复查分页数量异常。")
+                    if page >= total_page:
+                        break
+                    page += 1
+                if len(channel_orders) != expected_total:
                     complete = False
-                for item in items:
+                    continue
+                for item in channel_orders:
                     identity = str(
                         item.get("id")
                         or item.get("order_num")

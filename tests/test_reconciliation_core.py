@@ -110,6 +110,8 @@ async def test_exact_search_uses_channel_id_and_platform_order_reference() -> No
         result = await client.exact_search(
             channels=[{"code": "948", "label": "aelopay(HX)"}],
             platform_order_no="platform-1",
+            create_start="2026-07-01 00:00:00",
+            create_end="2026-07-01 23:59:59",
         )
 
     assert result.complete is True
@@ -118,6 +120,58 @@ async def test_exact_search_uses_channel_id_and_platform_order_reference() -> No
     assert {(query["order_num"], query["out_trade_no"]) for query in queries} == {
         ("", "platform-1"),
     }
+    assert {(query["create_time[0]"], query["create_time[1]"]) for query in queries} == {
+        ("2026-07-01 00:00:00", "2026-07-01 23:59:59"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_exact_search_paginates_all_rows_within_the_configured_window() -> None:
+    pages: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/system/login"):
+            return httpx.Response(200, json={"data": {"token": "test-token"}})
+        page = int(request.url.params["page"])
+        pages.append(str(page))
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "items": [
+                        {
+                            "id": f"remote-order-{page}",
+                            "order_num": f"merchant-{page}",
+                            "out_trade_no": "platform-1",
+                        }
+                    ],
+                    "pageInfo": {
+                        "total": 2,
+                        "currentPage": page,
+                        "totalPage": 2,
+                    },
+                }
+            },
+        )
+
+    async with RajAdminChargeClient(
+        base_url="https://admin.example.test",
+        username="reader",
+        password="password",
+        totp_secret="JBSWY3DPEHPK3PXP",
+        page_size=1,
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await client.exact_search(
+            channels=[{"code": "948", "label": "aelopay(HX)"}],
+            platform_order_no="platform-1",
+            create_start="2026-07-01 00:00:00",
+            create_end="2026-07-02 00:00:00",
+        )
+
+    assert result.complete is True
+    assert pages == ["1", "2"]
+    assert [row["order_num"] for row in result.orders] == ["merchant-1", "merchant-2"]
 
 
 def _payment_group(**overrides: object) -> PaymentOrderGroup:

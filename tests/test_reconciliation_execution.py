@@ -27,6 +27,8 @@ from packages.storage import LocalFileStorage
 
 
 class FakeChargeClient:
+    exact_search_calls: list[dict[str, Any]] = []
+
     def __init__(self, **_: Any) -> None:
         pass
 
@@ -56,7 +58,8 @@ class FakeChargeClient:
             1,
         )
 
-    async def exact_search(self, **_: Any) -> ExactSearchResult:
+    async def exact_search(self, **kwargs: Any) -> ExactSearchResult:
+        self.exact_search_calls.append(kwargs)
         return ExactSearchResult(orders=[], complete=True)
 
 
@@ -84,6 +87,7 @@ async def test_executor_persists_confirmed_missing_and_remote_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    FakeChargeClient.exact_search_calls = []
     configured = Settings(
         secret_key="test-secret-key-that-is-longer-than-32-characters",
         database_url="sqlite+aiosqlite:///:memory:",
@@ -223,4 +227,12 @@ async def test_executor_persists_confirmed_missing_and_remote_status(
         "remote_status_not_success",
     }
     assert all(row.is_final for row in rows)
+    assert FakeChargeClient.exact_search_calls == [
+        {
+            "channels": [{"code": "948", "label": "aelopay(HX)"}],
+            "platform_order_no": "platform-missing",
+            "create_start": "2026-06-30 00:00:00",
+            "create_end": "2026-07-02 23:59:59",
+        }
+    ]
     await engine.dispose()

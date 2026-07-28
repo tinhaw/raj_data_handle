@@ -329,6 +329,8 @@ async def execute_reconciliation_batch(
                     exact = await client.exact_search(
                         channels=channels,
                         platform_order_no=payment.platform_order_no,
+                        create_start=query_lower.strftime("%Y-%m-%d %H:%M:%S"),
+                        create_end=query_upper.strftime("%Y-%m-%d %H:%M:%S"),
                     )
                     decision = compare_with_remote_orders(
                         payment,
