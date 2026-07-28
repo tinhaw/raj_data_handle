@@ -121,6 +121,8 @@ else
     log "Rolling out application code (database migration remains separately gated)."
 fi
 
-dc up -d --build --remove-orphans
+# Images are tagged as `latest`; without an explicit recreate Compose may keep
+# a running container that still references the previously built image.
+dc up -d --build --force-recreate --remove-orphans
 dc ps
 log "Application rollout completed without running a schema migration."
