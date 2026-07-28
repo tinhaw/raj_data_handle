@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import type { EChartsOption } from 'echarts'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref } from 'vue'
@@ -8,7 +7,6 @@ import { useRouter } from 'vue-router'
 import { fetchBatches, fetchOperationalSummary } from '../api/batches'
 import { apiErrorMessage } from '../api/client'
 import { fetchEnabledSources } from '../api/sources'
-import ChartPanel from '../components/ChartPanel.vue'
 import type { BatchRecord, OperationalSummary, SourceConfig } from '../types'
 import { formatDateTime, statusLabel, statusTagType } from '../ui'
 
@@ -30,59 +28,48 @@ const filters = reactive({
   batchStatus: '',
 })
 
-const chartBase = {
-  textStyle: { fontFamily: 'Inter, "PingFang SC", sans-serif' },
-  tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-  grid: { left: 42, right: 18, top: 24, bottom: 34, containLabel: true },
-} satisfies EChartsOption
+const activeStatuses = new Set([
+  'queued',
+  'validating',
+  'fetching_remote',
+  'comparing',
+  'rechecking',
+  'cancelling',
+])
+const issueStatuses = new Set(['failed', 'comparison_incomplete'])
 
-const statusOption = computed<EChartsOption>(() => ({
-  ...chartBase,
-  xAxis: { type: 'category', data: summary.value.executionStatusDistribution.map((item) => statusLabel(item.status)) },
-  yAxis: { type: 'value', minInterval: 1 },
-  series: [{
-    type: 'bar',
-    data: summary.value.executionStatusDistribution.map((item) => item.count),
-    itemStyle: { color: '#2a9d8f', borderRadius: [6, 6, 0, 0] },
-  }],
-}))
+function countStatuses(statuses: Set<string>): number {
+  return summary.value.executionStatusDistribution
+    .filter((item) => statuses.has(item.status))
+    .reduce((sum, item) => sum + item.count, 0)
+}
 
-const trendOption = computed<EChartsOption>(() => ({
-  ...chartBase,
-  xAxis: { type: 'category', data: summary.value.executionCreatedTimeSeries.map((item) => item.date) },
-  yAxis: { type: 'value', minInterval: 1 },
-  series: [{
-    type: 'line',
-    smooth: true,
-    symbolSize: 8,
-    data: summary.value.executionCreatedTimeSeries.map((item) => item.count),
-    lineStyle: { color: '#1d4e89', width: 3 },
-    itemStyle: { color: '#1d4e89' },
-    areaStyle: { color: 'rgba(29, 78, 137, .12)' },
-  }],
-}))
+const awaitingCount = computed(() => countStatuses(new Set(['awaiting_confirmation'])))
+const activeCount = computed(() => countStatuses(activeStatuses))
+const issueCount = computed(() => countStatuses(issueStatuses))
 
-const durationOption = computed<EChartsOption>(() => ({
-  ...chartBase,
-  xAxis: { type: 'category', data: summary.value.executionDurationBuckets.map((item) => item.bucket) },
-  yAxis: { type: 'value', minInterval: 1 },
-  series: [{
-    type: 'bar',
-    data: summary.value.executionDurationBuckets.map((item) => item.count),
-    itemStyle: { color: '#e9c46a', borderRadius: [6, 6, 0, 0] },
-  }],
-}))
+const statusPriority: Record<string, number> = {
+  failed: 0,
+  comparison_incomplete: 0,
+  awaiting_confirmation: 1,
+  queued: 2,
+  validating: 2,
+  fetching_remote: 2,
+  comparing: 2,
+  rechecking: 2,
+  cancelling: 2,
+  completed: 3,
+  cancelled: 4,
+}
 
-const failureOption = computed<EChartsOption>(() => ({
-  ...chartBase,
-  xAxis: { type: 'value', minInterval: 1 },
-  yAxis: { type: 'category', data: summary.value.failureCategoryDistribution.map((item) => item.category) },
-  series: [{
-    type: 'bar',
-    data: summary.value.failureCategoryDistribution.map((item) => item.count),
-    itemStyle: { color: '#e76f51', borderRadius: [0, 6, 6, 0] },
-  }],
-}))
+const sortedBatches = computed(() =>
+  [...batches.value].sort((left, right) => {
+    const priorityDelta =
+      (statusPriority[left.status] ?? 5) - (statusPriority[right.status] ?? 5)
+    if (priorityDelta !== 0) return priorityDelta
+    return new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+  }),
+)
 
 function queryParams(): Record<string, string> {
   const params: Record<string, string> = {}
@@ -158,39 +145,39 @@ onMounted(async () => {
       <span class="filter-total">共 {{ total }} 条任务记录</span>
     </section>
 
-    <div class="chart-grid">
-      <ChartPanel
-        title="执行状态分布"
-        :option="statusOption"
-        :empty="!summary.executionStatusDistribution.length"
-      />
-      <ChartPanel
-        title="执行数量趋势"
-        :option="trendOption"
-        :empty="!summary.executionCreatedTimeSeries.length"
-      />
-      <ChartPanel
-        title="完成耗时分布"
-        :option="durationOption"
-        :empty="!summary.executionDurationBuckets.length"
-      />
-      <ChartPanel
-        title="失败 / 不完整原因"
-        :option="failureOption"
-        :empty="!summary.failureCategoryDistribution.length"
-      />
-    </div>
+    <section class="task-summary surface-card" aria-label="任务状态摘要">
+      <article class="task-summary__item">
+        <span>任务总数</span>
+        <strong>{{ total }}</strong>
+        <small>当前筛选结果</small>
+      </article>
+      <article class="task-summary__item task-summary__item--warning">
+        <span>待确认</span>
+        <strong>{{ awaitingCount }}</strong>
+        <small>确认后才会开始执行</small>
+      </article>
+      <article class="task-summary__item task-summary__item--active">
+        <span>执行中</span>
+        <strong>{{ activeCount }}</strong>
+        <small>正在查询或比对</small>
+      </article>
+      <article class="task-summary__item task-summary__item--danger">
+        <span>失败 / 不完整</span>
+        <strong>{{ issueCount }}</strong>
+        <small>需要优先处理</small>
+      </article>
+    </section>
 
     <section class="surface-card table-card">
       <div class="section-heading">
         <div>
           <h2>任务记录</h2>
-          <p>每次新建或重新比对都会生成一条记录，并保留对应的执行版本。</p>
+          <p>异常、待确认与执行中的任务优先展示；每次重新比对都会保留执行版本。</p>
         </div>
       </div>
       <el-table
         v-loading="loading"
-        :data="batches"
+        :data="sortedBatches"
         empty-text="暂无对比任务，请点击右上角“新建对比”"
         @row-click="(row: BatchRecord) => router.push(`/batches/${row.id}`)"
       >
@@ -222,3 +209,83 @@ onMounted(async () => {
     </section>
   </div>
 </template>
+
+<style scoped>
+.task-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  overflow: hidden;
+}
+
+.task-summary__item {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 18px 20px;
+}
+
+.task-summary__item + .task-summary__item {
+  border-left: 1px solid var(--border);
+}
+
+.task-summary__item span,
+.task-summary__item small {
+  color: var(--ink-muted);
+}
+
+.task-summary__item span {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.task-summary__item strong {
+  color: var(--ink-strong);
+  font-size: 30px;
+  line-height: 1.1;
+}
+
+.task-summary__item small {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-summary__item--warning strong {
+  color: #b7791f;
+}
+
+.task-summary__item--active strong {
+  color: var(--primary);
+}
+
+.task-summary__item--danger strong {
+  color: var(--danger);
+}
+
+@media (max-width: 980px) {
+  .task-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .task-summary__item:nth-child(3) {
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+
+  .task-summary__item:nth-child(4) {
+    border-top: 1px solid var(--border);
+  }
+}
+
+@media (max-width: 640px) {
+  .task-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .task-summary__item + .task-summary__item {
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+}
+</style>
