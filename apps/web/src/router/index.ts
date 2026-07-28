@@ -22,7 +22,7 @@ const router = createRouter({
     {
       path: '/batches/new',
       component: () => import('../views/NewBatchView.vue'),
-      meta: { navKey: '/batches/new' },
+      meta: { navKey: '/batches' },
     },
     {
       path: '/batches/:batchId',

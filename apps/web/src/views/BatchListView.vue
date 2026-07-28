@@ -123,9 +123,9 @@ onMounted(async () => {
   <div class="page-stack">
     <header class="page-header">
       <div>
-        <span class="page-eyebrow">Shared workspace</span>
-        <h1>比对批次中心</h1>
-        <p>团队共享查看所有执行版本；这里的图表只统计运行状态，不跨批次累加订单。</p>
+        <span class="page-eyebrow">COMPARISON TASKS</span>
+        <h1>对比任务</h1>
+        <p>集中查看历史任务、运行状态和处理结果，并从这里发起新的数据对比。</p>
       </div>
       <div class="header-actions">
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
@@ -155,7 +155,7 @@ onMounted(async () => {
         <el-option label="失败" value="failed" />
         <el-option label="已取消" value="cancelled" />
       </el-select>
-      <span class="filter-total">共 {{ total }} 个执行版本</span>
+      <span class="filter-total">共 {{ total }} 条任务记录</span>
     </section>
 
     <div class="chart-grid">
@@ -184,14 +184,14 @@ onMounted(async () => {
     <section class="surface-card table-card">
       <div class="section-heading">
         <div>
-          <h2>执行版本</h2>
-          <p>重新比对会作为新版本显示，但仍归属于原比较系列。</p>
+          <h2>任务记录</h2>
+          <p>每次新建或重新比对都会生成一条记录，并保留对应的执行版本。</p>
         </div>
       </div>
       <el-table
         v-loading="loading"
         :data="batches"
-        empty-text="暂无批次，请先创建一个比对草稿"
+        empty-text="暂无对比任务，请点击右上角“新建对比”"
         @row-click="(row: BatchRecord) => router.push(`/batches/${row.id}`)"
       >
         <el-table-column label="盘口" min-width="130" prop="sourceDisplayName" />

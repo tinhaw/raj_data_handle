@@ -314,8 +314,8 @@ watch(
   <div class="page-stack narrow-page">
     <header class="page-header">
       <div>
-        <span class="page-eyebrow">New reconciliation</span>
-        <h1>新建比对草稿</h1>
+        <span class="page-eyebrow">COMPARISON TASKS / NEW</span>
+        <h1>新建对比</h1>
         <p>按步骤上传文件、确认解析结果并配置比对口径；创建草稿不会立即请求远端。</p>
       </div>
     </header>
@@ -382,7 +382,7 @@ watch(
           </el-form-item>
 
           <div class="wizard-actions">
-            <el-button @click="router.push('/batches')">返回批次中心</el-button>
+            <el-button @click="router.push('/batches')">返回对比任务</el-button>
             <el-button
               type="primary"
               :disabled="!uploadReady"

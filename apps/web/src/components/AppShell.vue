@@ -3,7 +3,6 @@ import {
   Bell,
   Collection,
   DataAnalysis,
-  DocumentAdd,
   Setting,
   SwitchButton,
   User,
@@ -79,11 +78,7 @@ onBeforeUnmount(() => {
       <el-menu :default-active="activeMenu" router :collapse="collapsed">
         <el-menu-item index="/batches">
           <el-icon><DataAnalysis /></el-icon>
-          <template #title>批次中心</template>
-        </el-menu-item>
-        <el-menu-item index="/batches/new">
-          <el-icon><DocumentAdd /></el-icon>
-          <template #title>新建比对</template>
+          <template #title>对比任务</template>
         </el-menu-item>
         <el-menu-item index="/settings/system">
           <el-icon><Setting /></el-icon>

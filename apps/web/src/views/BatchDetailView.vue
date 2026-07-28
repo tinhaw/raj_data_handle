@@ -380,7 +380,7 @@ onBeforeUnmount(() => {
     <header class="result-page-header">
       <div class="result-title-block">
         <div class="result-title-row">
-          <h1>{{ batch?.sourceDisplayName || '盘口' }} · 批次结果</h1>
+          <h1>{{ batch?.sourceDisplayName || '盘口' }} · 对比结果</h1>
           <el-tag v-if="batch" :type="statusTagType(batch.status)" effect="light">
             {{ statusLabel(batch.status) }}
           </el-tag>
@@ -457,7 +457,7 @@ onBeforeUnmount(() => {
       "
     />
 
-    <section class="result-overview" aria-label="批次结果汇总">
+    <section class="result-overview" aria-label="对比结果汇总">
       <article class="overview-metric">
         <div class="metric-label">
           <span>表格总订单数</span>
