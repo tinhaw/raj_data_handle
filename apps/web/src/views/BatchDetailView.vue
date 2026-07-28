@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import type { EChartsOption } from 'echarts'
 import {
   Calendar,
   Check,
@@ -19,15 +18,12 @@ import {
   confirmBatch,
   downloadBatchExport,
   fetchBatch,
-  fetchBatchCharts,
   fetchBatchResults,
   fetchBatchSummary,
   rerunBatch,
 } from '../api/batches'
 import { apiErrorMessage } from '../api/client'
-import ChartPanel from '../components/ChartPanel.vue'
 import type {
-  BatchCharts,
   BatchRecord,
   BatchSummary,
   OrderResult,
@@ -41,10 +37,9 @@ const loading = ref(false)
 const acting = ref(false)
 const batch = ref<BatchRecord | null>(null)
 const summary = ref<BatchSummary | null>(null)
-const charts = ref<BatchCharts | null>(null)
 const missingResults = ref<OrderResultList>({ items: [], total: 0 })
 const allResults = ref<OrderResultList>({ items: [], total: 0 })
-const activeContentTab = ref<'missing' | 'orders' | 'charts'>('missing')
+const activeContentTab = ref<'missing' | 'orders'>('missing')
 const resultStatus = ref('')
 const missingCurrentPage = ref(1)
 const pageSize = 10
@@ -62,14 +57,14 @@ const rerunnable = computed(() =>
   ),
 )
 const awaitingConfirmation = computed(() => batch.value?.status === 'awaiting_confirmation')
-const statusOptions = computed(() =>
-  (charts.value?.resultStatusDistribution || []).map((item) => item.status),
-)
 const resultCounts = computed(() =>
   Object.fromEntries(
-    (charts.value?.resultStatusDistribution || []).map((item) => [item.status, item.count]),
+    Object.entries(summary.value?.counts || {}).filter(
+      ([status]) => status !== 'confirmed_missing_success',
+    ),
   ),
 )
+const statusOptions = computed(() => Object.keys(resultCounts.value).sort())
 const totalOrders = computed(() =>
   Object.values(resultCounts.value).reduce((total, count) => total + Number(count || 0), 0),
 )
@@ -132,75 +127,6 @@ function paymentStatusDisplay(row: OrderResult): string {
         : ''
   return normalized && raw !== normalized ? `${raw} / ${normalized}` : raw
 }
-
-const resultDistributionOption = computed<EChartsOption>(() => ({
-  tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-  grid: { left: 28, right: 20, top: 24, bottom: 34, containLabel: true },
-  xAxis: { type: 'value', minInterval: 1 },
-  yAxis: {
-    type: 'category',
-    data: (charts.value?.resultStatusDistribution || []).map((item) =>
-      resultStatusLabel(item.status),
-    ),
-  },
-  series: [{
-    type: 'bar',
-    data: (charts.value?.resultStatusDistribution || []).map((item) => item.count),
-    itemStyle: { color: '#2a9d8f', borderRadius: [0, 6, 6, 0] },
-  }],
-}))
-
-const matrixOption = computed<EChartsOption>(() => ({
-  tooltip: { trigger: 'axis' },
-  grid: { left: 28, right: 20, top: 24, bottom: 80, containLabel: true },
-  xAxis: {
-    type: 'category',
-    axisLabel: { rotate: 35 },
-    data: (charts.value?.paymentStatusResultMatrix || []).map(
-      (item) =>
-        `${String(item.paymentStatus)} / ${resultStatusLabel(String(item.resultStatus))}`,
-    ),
-  },
-  yAxis: { type: 'value', minInterval: 1 },
-  series: [{
-    type: 'bar',
-    data: (charts.value?.paymentStatusResultMatrix || []).map((item) => Number(item.count)),
-    itemStyle: { color: '#457b9d' },
-  }],
-}))
-
-const timeSeriesOption = computed<EChartsOption>(() => ({
-  tooltip: { trigger: 'axis' },
-  grid: { left: 28, right: 20, top: 24, bottom: 34, containLabel: true },
-  xAxis: {
-    type: 'category',
-    data: (charts.value?.timeSeries || []).map((item) => String(item.date)),
-  },
-  yAxis: { type: 'value', minInterval: 1 },
-  series: [{
-    type: 'line',
-    smooth: true,
-    data: (charts.value?.timeSeries || []).map((item) => Number(item.count)),
-    areaStyle: { opacity: 0.12 },
-    itemStyle: { color: '#e76f51' },
-  }],
-}))
-
-const channelOption = computed<EChartsOption>(() => ({
-  tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-  grid: { left: 28, right: 20, top: 24, bottom: 54, containLabel: true },
-  xAxis: {
-    type: 'category',
-    axisLabel: { rotate: 25 },
-    data: (charts.value?.channelComparison || []).map((item) => String(item.channel)),
-  },
-  yAxis: { type: 'value', minInterval: 1 },
-  series: [{
-    type: 'bar',
-    data: (charts.value?.channelComparison || []).map((item) => Number(item.count)),
-    itemStyle: { color: '#f4a261' },
-  }],
-}))
 
 function remoteValue(row: OrderResult, key: string): string {
   const value = row.payloadJson.remoteOrder?.[key]
@@ -336,14 +262,12 @@ async function loadVisibleResults(): Promise<void> {
 async function load(showLoading = true): Promise<void> {
   if (showLoading) loading.value = true
   try {
-    const [detail, aggregate, chartData] = await Promise.all([
+    const [detail, aggregate] = await Promise.all([
       fetchBatch(batchId.value),
       fetchBatchSummary(batchId.value),
-      fetchBatchCharts(batchId.value),
     ])
     batch.value = detail
     summary.value = aggregate
-    charts.value = chartData
     await loadVisibleResults()
     if (!activeStatuses.includes(detail.status) && pollTimer) {
       window.clearInterval(pollTimer)
@@ -747,22 +671,6 @@ onBeforeUnmount(() => {
         </section>
       </el-tab-pane>
 
-      <el-tab-pane name="charts" label="图表分析">
-        <section class="result-content-pane chart-pane">
-          <div class="content-heading">
-            <div>
-              <h2>图表分析</h2>
-              <p>从结果状态、支付状态、时间和渠道四个维度观察本批次。</p>
-            </div>
-          </div>
-          <div class="chart-grid">
-            <ChartPanel title="结果状态分布" :option="resultDistributionOption" :empty="!charts?.resultStatusDistribution.length" :active="activeContentTab === 'charts'" />
-            <ChartPanel title="支付状态 × 比对结果" :option="matrixOption" :empty="!charts?.paymentStatusResultMatrix.length" :active="activeContentTab === 'charts'" />
-            <ChartPanel title="订单与异常趋势" :option="timeSeriesOption" :empty="!charts?.timeSeries.length" :active="activeContentTab === 'charts'" />
-            <ChartPanel title="渠道对比" :option="channelOption" :empty="!charts?.channelComparison.length" :active="activeContentTab === 'charts'" />
-          </div>
-        </section>
-      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -1225,10 +1133,6 @@ onBeforeUnmount(() => {
 .pagination-footer > span {
   color: #5f7284;
   font-size: 13px;
-}
-
-.chart-pane .chart-grid {
-  padding-bottom: 2px;
 }
 
 @media (max-width: 1280px) {
