@@ -9,8 +9,9 @@ import {
   RefreshRight,
   VideoPause,
 } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
+import type { Column } from 'element-plus'
+import { computed, h, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import {
@@ -46,8 +47,10 @@ const allResults = ref<OrderResultList>({ items: [], total: 0 })
 const activeContentTab = ref<'missing' | 'orders' | 'charts'>('missing')
 const resultStatus = ref('')
 const missingCurrentPage = ref(1)
-const ordersCurrentPage = ref(1)
 const pageSize = 10
+const orderChunkSize = 200
+const orderResultsLoading = ref(false)
+const orderResultsInitialized = ref(false)
 const batchId = computed(() => String(route.params.batchId))
 let pollTimer: number | undefined
 
@@ -92,6 +95,9 @@ const matchedRate = computed(() =>
 )
 const differenceRate = computed(() =>
   totalOrders.value ? (differenceOrders.value / totalOrders.value) * 100 : 0,
+)
+const orderResultsCanLoadMore = computed(
+  () => !orderResultsInitialized.value || allResults.value.items.length < allResults.value.total,
 )
 const executionTime = computed(
   () => batch.value?.completedAt || batch.value?.startedAt || batch.value?.createdAt,
@@ -196,9 +202,80 @@ const channelOption = computed<EChartsOption>(() => ({
   }],
 }))
 
-function remoteValue(row: OrderResult, key: string): unknown {
-  return row.payloadJson.remoteOrder?.[key] ?? '—'
+function remoteValue(row: OrderResult, key: string): string {
+  const value = row.payloadJson.remoteOrder?.[key]
+  return value === null || value === undefined || value === '' ? '—' : String(value)
 }
+
+function virtualText(value: unknown): ReturnType<typeof h> {
+  const text = value === null || value === undefined || value === '' ? '—' : String(value)
+  return h('span', { class: 'virtual-cell-truncate', title: text }, text)
+}
+
+const orderTableColumns = computed<Column<OrderResult>[]>(() => [
+  {
+    key: 'resultStatus',
+    dataKey: 'resultStatus',
+    title: '比对结果',
+    width: 165,
+    fixed: true,
+    cellRenderer: ({ rowData }) =>
+      h(
+        ElTag,
+        { type: resultTagType(rowData.resultStatus), effect: 'light', size: 'small' },
+        { default: () => resultStatusLabel(rowData.resultStatus) },
+      ),
+  },
+  {
+    key: 'paymentStatus',
+    title: '支付状态',
+    width: 180,
+    cellRenderer: ({ rowData }) =>
+      h('span', { class: 'payment-status' }, [
+        h('i', { class: `payment-status-dot payment-status-dot--${rowData.paymentStatusGroup}` }),
+        h('span', paymentStatusDisplay(rowData)),
+      ]),
+  },
+  {
+    key: 'merchantOrderNo',
+    dataKey: 'merchantOrderNo',
+    title: '商户订单号',
+    width: 230,
+    cellRenderer: ({ rowData }) => virtualText(rowData.merchantOrderNo),
+  },
+  {
+    key: 'platformOrderNo',
+    dataKey: 'platformOrderNo',
+    title: '支付平台订单号',
+    width: 230,
+    cellRenderer: ({ rowData }) => virtualText(rowData.platformOrderNo),
+  },
+  {
+    key: 'amount',
+    title: '金额 / 币种',
+    width: 150,
+    cellRenderer: ({ rowData }) =>
+      virtualText(`${rowData.payloadJson.amount || '—'} ${rowData.payloadJson.currency || ''}`.trim()),
+  },
+  {
+    key: 'remoteStatus',
+    title: '远端状态',
+    width: 130,
+    cellRenderer: ({ rowData }) => virtualText(remoteValue(rowData, 'status')),
+  },
+  {
+    key: 'remoteChannel',
+    title: '远端渠道',
+    width: 180,
+    cellRenderer: ({ rowData }) => virtualText(remoteValue(rowData, '_remote_channel_label')),
+  },
+  {
+    key: 'sourceRows',
+    title: '来源行',
+    width: 130,
+    cellRenderer: ({ rowData }) => virtualText(rowData.payloadJson.sourceRowNumbers?.join(', ') || '—'),
+  },
+])
 
 async function loadMissingResults(): Promise<void> {
   missingResults.value = await fetchBatchResults(batchId.value, {
@@ -208,12 +285,44 @@ async function loadMissingResults(): Promise<void> {
   })
 }
 
-async function loadAllResults(): Promise<void> {
-  allResults.value = await fetchBatchResults(batchId.value, {
-    result_status: resultStatus.value || undefined,
-    limit: pageSize,
-    offset: (ordersCurrentPage.value - 1) * pageSize,
-  })
+async function loadAllResults(reset = false): Promise<void> {
+  if (orderResultsLoading.value) return
+  if (reset) {
+    allResults.value = { items: [], total: 0 }
+    orderResultsInitialized.value = false
+  }
+  if (
+    orderResultsInitialized.value &&
+    allResults.value.items.length >= allResults.value.total
+  ) {
+    return
+  }
+  orderResultsLoading.value = true
+  const offset = allResults.value.items.length
+  try {
+    const response = await fetchBatchResults(batchId.value, {
+      result_status: resultStatus.value || undefined,
+      limit: orderChunkSize,
+      offset,
+    })
+    const existingIds = new Set(allResults.value.items.map((item) => item.id))
+    allResults.value = {
+      items: [
+        ...allResults.value.items,
+        ...response.items.filter((item) => !existingIds.has(item.id)),
+      ],
+      total: response.total,
+    }
+    orderResultsInitialized.value = true
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '订单明细加载失败。'))
+  } finally {
+    orderResultsLoading.value = false
+  }
+}
+
+function loadNextOrderChunk(): void {
+  void loadAllResults()
 }
 
 async function loadVisibleResults(): Promise<void> {
@@ -326,8 +435,7 @@ async function copyBatchId(): Promise<void> {
 }
 
 async function changeResultFilter(): Promise<void> {
-  ordersCurrentPage.value = 1
-  await loadAllResults()
+  await loadAllResults(true)
 }
 
 async function changeContentTab(): Promise<void> {
@@ -598,48 +706,43 @@ onBeforeUnmount(() => {
               <el-button :disabled="!batch?.isFinal" @click="download('csv')">完整 CSV</el-button>
             </div>
           </div>
-          <el-table border class="result-table" :data="allResults.items" empty-text="当前筛选条件下没有结果">
-            <el-table-column label="比对结果" min-width="190">
-              <template #default="{ row }">
-                <el-tag :type="resultTagType(row.resultStatus)" effect="light">
-                  {{ resultStatusLabel(row.resultStatus) }}
-                </el-tag>
+          <div v-loading="orderResultsLoading" class="virtual-orders-table" aria-label="全部订单明细虚拟化表格">
+            <el-auto-resizer>
+              <template #default="{ height, width }">
+                <el-table-v2
+                  :columns="orderTableColumns"
+                  :data="allResults.items"
+                  :height="height"
+                  :width="width"
+                  :header-height="52"
+                  :row-height="64"
+                  row-key="id"
+                  fixed
+                  scrollbar-always-on
+                  :on-end-reached="loadNextOrderChunk"
+                >
+                  <template #empty>
+                    <el-empty description="当前筛选条件下没有结果" />
+                  </template>
+                </el-table-v2>
               </template>
-            </el-table-column>
-            <el-table-column label="支付状态" min-width="150">
-              <template #default="{ row }">
-                <span class="payment-status">
-                  <i :class="`payment-status-dot payment-status-dot--${row.paymentStatusGroup}`" />
-                  {{ paymentStatusDisplay(row) }}
-                </span>
-              </template>
-            </el-table-column>
-            <el-table-column label="商户订单号" min-width="190" prop="merchantOrderNo" show-overflow-tooltip />
-            <el-table-column label="支付平台订单号" min-width="190" prop="platformOrderNo" show-overflow-tooltip />
-            <el-table-column label="金额 / 币种" min-width="130">
-              <template #default="{ row }">{{ row.payloadJson.amount || '—' }} {{ row.payloadJson.currency || '' }}</template>
-            </el-table-column>
-            <el-table-column label="远端状态" min-width="110">
-              <template #default="{ row }">{{ remoteValue(row, 'status') }}</template>
-            </el-table-column>
-            <el-table-column label="远端渠道" min-width="160">
-              <template #default="{ row }">{{ remoteValue(row, '_remote_channel_label') }}</template>
-            </el-table-column>
-            <el-table-column label="来源行" min-width="120">
-              <template #default="{ row }">{{ row.payloadJson.sourceRowNumbers?.join(', ') || '—' }}</template>
-            </el-table-column>
-          </el-table>
-          <div class="pagination-footer">
-            <span>共 {{ formatCount(allResults.total) }} 条</span>
-            <el-pagination
-              v-model:current-page="ordersCurrentPage"
-              class="result-pagination"
-              background
-              :page-size="pageSize"
-              :total="allResults.total"
-              layout="prev, pager, next"
-              @current-change="loadAllResults"
-            />
+            </el-auto-resizer>
+          </div>
+          <div class="virtual-table-footer">
+            <span>已加载 {{ formatCount(allResults.items.length) }} / {{ formatCount(allResults.total) }} 条</span>
+            <div>
+              <span v-if="orderResultsCanLoadMore">继续向下滚动即可加载下一批</span>
+              <span v-else>已加载全部结果</span>
+              <el-button
+                v-if="orderResultsCanLoadMore"
+                text
+                type="primary"
+                :loading="orderResultsLoading"
+                @click="loadNextOrderChunk"
+              >
+                加载下一批
+              </el-button>
+            </div>
           </div>
         </section>
       </el-tab-pane>
@@ -998,6 +1101,68 @@ onBeforeUnmount(() => {
 
 .result-table :deep(.el-tag) {
   font-weight: 650;
+}
+
+.virtual-orders-table {
+  width: 100%;
+  min-height: 440px;
+  height: min(64vh, 640px);
+  overflow: hidden;
+  border: 1px solid #dce6ee;
+  border-radius: 6px;
+  --el-table-border-color: #dce6ee;
+  --el-table-header-bg-color: #f5f8fb;
+  --el-table-row-hover-bg-color: #f7fbfb;
+  --el-table-text-color: #43576a;
+  --el-table-header-text-color: #183955;
+}
+
+.virtual-orders-table :deep(.el-table-v2__header-cell) {
+  padding: 0 16px;
+  color: #183955;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.virtual-orders-table :deep(.el-table-v2__row-cell) {
+  padding: 0 16px;
+  color: #43576a;
+  font-size: 12px;
+}
+
+.virtual-orders-table :deep(.el-table-v2__header-cell + .el-table-v2__header-cell),
+.virtual-orders-table :deep(.el-table-v2__row-cell + .el-table-v2__row-cell) {
+  border-left: 1px solid #dce6ee;
+}
+
+.virtual-orders-table :deep(.el-table-v2__row-cell .el-tag) {
+  font-weight: 650;
+}
+
+.virtual-cell-truncate {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.virtual-table-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 40px;
+  margin-top: 12px;
+  color: #5f7284;
+  font-size: 13px;
+}
+
+.virtual-table-footer > div {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #8a9cac;
+  font-size: 12px;
 }
 
 .payment-status {
