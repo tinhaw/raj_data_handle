@@ -14,10 +14,12 @@ const props = withDefaults(
     option: EChartsOption
     empty?: boolean
     height?: number
+    active?: boolean
   }>(),
   {
     empty: false,
     height: 280,
+    active: true,
   },
 )
 
@@ -28,9 +30,10 @@ const emit = defineEmits<{
 const chartElement = ref<HTMLDivElement | null>(null)
 let chart: EChartsType | null = null
 let resizeObserver: ResizeObserver | null = null
+let renderFrame: number | null = null
 
 function render(): void {
-  if (!chartElement.value || props.empty) {
+  if (!chartElement.value || !props.active || props.empty) {
     chart?.clear()
     return
   }
@@ -41,18 +44,41 @@ function render(): void {
   chart.setOption(props.option, true)
 }
 
-watch(() => props.option, () => nextTick(render), { deep: true })
-watch(() => props.empty, () => nextTick(render))
+function renderAtVisibleSize(): void {
+  void nextTick(() => {
+    if (renderFrame !== null) window.cancelAnimationFrame(renderFrame)
+    renderFrame = window.requestAnimationFrame(() => {
+      renderFrame = null
+      if (
+        !chartElement.value ||
+        !props.active ||
+        chartElement.value.clientWidth === 0 ||
+        chartElement.value.clientHeight === 0
+      ) {
+        return
+      }
+      render()
+      chart?.resize()
+    })
+  })
+}
+
+watch(() => props.option, renderAtVisibleSize, { deep: true })
+watch(() => props.empty, renderAtVisibleSize)
+watch(() => props.active, renderAtVisibleSize)
 
 onMounted(() => {
-  render()
+  renderAtVisibleSize()
   if (chartElement.value) {
-    resizeObserver = new ResizeObserver(() => chart?.resize())
+    resizeObserver = new ResizeObserver(() => {
+      if (props.active) chart?.resize()
+    })
     resizeObserver.observe(chartElement.value)
   }
 })
 
 onBeforeUnmount(() => {
+  if (renderFrame !== null) window.cancelAnimationFrame(renderFrame)
   resizeObserver?.disconnect()
   chart?.dispose()
   chart = null
