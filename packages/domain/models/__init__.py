@@ -14,6 +14,7 @@ from packages.domain.models.entities import (
     StoredFileObject,
     StoredFileReference,
     SystemRetentionSetting,
+    SystemSessionSetting,
     UserNotification,
 )
 
@@ -32,6 +33,7 @@ __all__ = [
     "SourceConfig",
     "StoredFileObject",
     "StoredFileReference",
+    "SystemSessionSetting",
     "SystemRetentionSetting",
     "UserNotification",
 ]

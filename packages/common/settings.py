@@ -27,7 +27,10 @@ class Settings(BaseSettings):
     secret_key: str = "development-only-change-me-please-32chars"
     credential_encryption_key: str | None = None
 
-    session_ttl_minutes: int = Field(default=480, ge=15, le=10_080)
+    # The database-backed system setting takes precedence once its migration has
+    # been applied.  This value is the safe fallback during bootstrap and while
+    # rolling out the application before the corresponding schema migration.
+    session_ttl_days: int = Field(default=30, ge=1, le=365)
     session_cookie_name: str = "raj_session"
     session_cookie_secure: bool = False
     session_cookie_samesite: str = "lax"

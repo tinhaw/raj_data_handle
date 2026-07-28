@@ -20,6 +20,7 @@ from packages.common.security import (
 )
 from packages.common.settings import Settings, get_settings
 from packages.domain.models import AppUser, AuthSession, SecurityAuditLog
+from packages.domain.services.session_setting_service import get_session_settings
 
 ALLOWED_ROLES = {"admin", "user"}
 ADMIN_ROLE = "admin"
@@ -72,6 +73,7 @@ async def authenticate_user(
     settings: Settings | None = None,
 ) -> tuple[AuthContext, str]:
     current_settings = settings or get_settings()
+    session_settings = await get_session_settings(session, defaults=current_settings)
     normalized = normalize_username(username)
     user = await session.scalar(select(AppUser).where(AppUser.username_normalized == normalized))
     if user is None or not user.is_active or not verify_password(password, user.password_hash):
@@ -85,7 +87,14 @@ async def authenticate_user(
         raise AuthError("用户名或密码错误。")
 
     secret = new_session_secret()
-    expires_at = session_expiry(current_settings)
+    expires_at = session_expiry(
+        current_settings,
+        ttl_days=(
+            session_settings.session_ttl_days
+            if session_settings is not None
+            else current_settings.session_ttl_days
+        ),
+    )
     auth_session = AuthSession(
         token_hash=sha256_text(secret),
         user_id=user.id,

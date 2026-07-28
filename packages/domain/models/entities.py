@@ -103,6 +103,18 @@ class SystemRetentionSetting(Base):
     )
 
 
+class SystemSessionSetting(Base):
+    __tablename__ = "system_session_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    session_ttl_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
 class SourceConfig(Base):
     __tablename__ = "source_configs"
 

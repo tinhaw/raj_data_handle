@@ -92,9 +92,14 @@ def decode_session_jwt(token: str, settings: Settings | None = None) -> dict[str
         raise SecurityValidationError("登录会话无效或已过期。") from exc
 
 
-def session_expiry(settings: Settings | None = None) -> datetime:
+def session_expiry(
+    settings: Settings | None = None,
+    *,
+    ttl_days: int | None = None,
+) -> datetime:
     current_settings = settings or get_settings()
-    return datetime.now(UTC) + timedelta(minutes=current_settings.session_ttl_minutes)
+    active_ttl_days = ttl_days if ttl_days is not None else current_settings.session_ttl_days
+    return datetime.now(UTC) + timedelta(days=active_ttl_days)
 
 
 def _credential_key(settings: Settings) -> bytes:
