@@ -10,7 +10,7 @@ from packages.domain.models import (
     ReconciliationBatch,
     SourceConfig,
 )
-from packages.domain.schemas.source import SourceCreateRequest
+from packages.domain.schemas.source import SourceCreateRequest, SourceCredentialsWrite
 from packages.domain.services.source_service import (
     SourceConflictError,
     SourceValidationError,
@@ -110,6 +110,35 @@ async def test_custom_source_can_be_created_and_deleted() -> None:
         assert await session.get(SourceConfig, "rajstar") is None
         assert await session.get(DataDictionaryEntry, dictionary_entry.id) is None
 
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_new_source_accepts_initial_credentials_before_database_flush() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with factory() as session:
+        created = await create_source(
+            session,
+            request=SourceCreateRequest(
+                source_id="rajstar",
+                display_name="RajStar",
+                base_url="https://admin.example.test",
+                credentials=SourceCredentialsWrite(
+                    username="reader",
+                    password="test-password",
+                    totp_secret="JBSWY3DPEHPK3PXP",
+                ),
+            ),
+            actor_user_id=1,
+            settings=development_settings(),
+        )
+
+    assert created.credential_version == 1
+    assert created.encrypted_credentials is not None
     await engine.dispose()
 
 

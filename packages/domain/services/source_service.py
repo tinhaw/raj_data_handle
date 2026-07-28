@@ -158,6 +158,7 @@ async def upsert_source(
             display_name=request.display_name,
             business_timezone=current_settings.default_business_timezone,
             currency=current_settings.default_currency,
+            credential_version=0,
             created_by=actor_user_id,
             updated_by=actor_user_id,
         )
@@ -206,7 +207,7 @@ async def upsert_source(
         required = {"username", "password", "totp_secret"}
         if not required.issubset(existing):
             raise SourceValidationError("首次配置必须同时提供账号、密码和 TOTP Secret。")
-        source.credential_version += 1
+        source.credential_version = (source.credential_version or 0) + 1
         source.encrypted_credentials = encrypt_credentials(
             existing,
             source_id=source.source_id,
