@@ -72,7 +72,7 @@ async def test_remote_client_uses_login_channel_dictionary_and_complete_paginati
 
 
 @pytest.mark.asyncio
-async def test_exact_search_uses_channel_id_and_both_order_references() -> None:
+async def test_exact_search_uses_channel_id_and_platform_order_reference() -> None:
     queries: list[dict[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -109,18 +109,13 @@ async def test_exact_search_uses_channel_id_and_both_order_references() -> None:
     ) as client:
         result = await client.exact_search(
             channels=[{"code": "948", "label": "aelopay(HX)"}],
-            merchant_order_no="merchant-1",
             platform_order_no="platform-1",
         )
 
     assert result.complete is True
     assert len(result.orders) == 1
     assert {query["pay_method"] for query in queries} == {"948"}
-    assert {
-        (query["order_num"], query["out_trade_no"])
-        for query in queries
-    } == {
-        ("merchant-1", ""),
+    assert {(query["order_num"], query["out_trade_no"]) for query in queries} == {
         ("", "platform-1"),
     }
 
@@ -145,14 +140,16 @@ def _payment_group(**overrides: object) -> PaymentOrderGroup:
     return PaymentOrderGroup(**values)  # type: ignore[arg-type]
 
 
-def test_payment_import_filters_window_and_marks_conflicting_duplicates(tmp_path: Path) -> None:
+def test_payment_import_uses_platform_order_number_when_merchant_number_is_missing(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "sample.xlsx"
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "payin_test"
     sheet.append(["商户订单号", "平台订单号", "订单金额", "订单状态", "订单时间", "到账时间"])
-    sheet.append(["merchant-1", "platform-1", "100.00", "成功", "2026-07-01 12:00:00", ""])
-    sheet.append(["merchant-1", "platform-2", "100.00", "成功", "2026-07-01 12:00:00", ""])
+    sheet.append(["", "platform-1", "100.00", "成功", "2026-07-01 12:00:00", ""])
+    sheet.append(["merchant-2", "platform-2", "100.00", "成功", "2026-07-01 12:00:00", ""])
     sheet.append(["merchant-2", "platform-3", "20.00", "失败", "2026-06-30 12:00:00", ""])
     workbook.save(path)
 
@@ -178,12 +175,14 @@ def test_payment_import_filters_window_and_marks_conflicting_duplicates(tmp_path
     assert imported.source_rows == 3
     assert imported.included_rows == 2
     assert imported.excluded_outside_window == 1
-    assert imported.groups[0].preliminary_result_status == "duplicate_payment_conflict"
+    assert [group.platform_order_no for group in imported.groups] == ["platform-1", "platform-2"]
+    assert imported.groups[0].merchant_order_no is None
+    assert all(group.preliminary_result_status is None for group in imported.groups)
 
 
-def test_comparison_marks_status_and_reference_conflicts() -> None:
+def test_comparison_uses_out_trade_no_and_marks_duplicate_remote_references() -> None:
     remote = {
-        "order_num": "merchant-1",
+        "order_num": "unrelated-internal-order-number",
         "out_trade_no": "platform-1",
         "amount": "100.00",
         "status": 0,
@@ -192,9 +191,16 @@ def test_comparison_marks_status_and_reference_conflicts() -> None:
     assert status_decision is not None
     assert status_decision.result_status == "remote_status_not_success"
 
-    conflict_decision = compare_with_remote_orders(
-        _payment_group(platform_order_no="different-platform"),
+    platform_only_decision = compare_with_remote_orders(
+        _payment_group(merchant_order_no=None),
         [remote],
+    )
+    assert platform_only_decision is not None
+    assert platform_only_decision.result_status == "remote_status_not_success"
+
+    conflict_decision = compare_with_remote_orders(
+        _payment_group(),
+        [remote, {**remote, "id": "same-out-trade-no"}],
     )
     assert conflict_decision is not None
     assert conflict_decision.result_status == "order_reference_conflict"

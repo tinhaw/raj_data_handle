@@ -148,7 +148,6 @@ async def test_executor_persists_confirmed_missing_and_remote_status(
                     {"code": "948", "label": "aelopay(HX)", "platformKey": "aelopay"}
                 ],
                 "paymentColumnMapping": {
-                    "merchant_order_no": "商户单号（自定义）",
                     "platform_order_no": "三方单号（自定义）",
                 },
                 "comparisonWindow": {

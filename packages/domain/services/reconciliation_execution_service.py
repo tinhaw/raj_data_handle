@@ -328,7 +328,6 @@ async def execute_reconciliation_batch(
                         return
                     exact = await client.exact_search(
                         channels=channels,
-                        merchant_order_no=payment.merchant_order_no or "",
                         platform_order_no=payment.platform_order_no,
                     )
                     decision = compare_with_remote_orders(

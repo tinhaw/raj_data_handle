@@ -69,44 +69,16 @@ def compare_with_remote_orders(
 ) -> ReconciliationDecision | None:
     if payment.preliminary_result_status:
         return ReconciliationDecision(payment.preliminary_result_status, None)
-    if not payment.merchant_order_no:
+    if not payment.platform_order_no:
         return ReconciliationDecision("invalid_payment_row", None)
 
-    primary = [
+    matches = [
         order
         for order in remote_orders
-        if str(order.get("order_num") or "").strip() == payment.merchant_order_no
+        if str(order.get("out_trade_no") or "").strip() == payment.platform_order_no
     ]
-    secondary = (
-        [
-            order
-            for order in remote_orders
-            if str(order.get("out_trade_no") or "").strip() == payment.platform_order_no
-        ]
-        if payment.platform_order_no
-        else []
-    )
-    if primary:
-        if payment.platform_order_no:
-            exact = [
-                order
-                for order in primary
-                if str(order.get("out_trade_no") or "").strip() == payment.platform_order_no
-            ]
-            if len(exact) == 1:
-                return _evaluate_found_order(payment, exact[0], after_recheck=after_recheck)
-            if len(exact) > 1:
-                return ReconciliationDecision("order_reference_conflict", None)
-            return ReconciliationDecision(
-                "order_reference_conflict",
-                _safe_remote_payload(primary[0]),
-            )
-        if len(primary) == 1:
-            return _evaluate_found_order(payment, primary[0], after_recheck=after_recheck)
+    if len(matches) == 1:
+        return _evaluate_found_order(payment, matches[0], after_recheck=after_recheck)
+    if len(matches) > 1:
         return ReconciliationDecision("order_reference_conflict", None)
-    if secondary:
-        return ReconciliationDecision(
-            "order_reference_conflict",
-            _safe_remote_payload(secondary[0]),
-        )
     return None

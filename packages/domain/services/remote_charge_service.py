@@ -307,35 +307,31 @@ class RajAdminChargeClient:
         self,
         *,
         channels: list[dict[str, str]],
-        merchant_order_no: str,
         platform_order_no: str | None,
     ) -> ExactSearchResult:
         found: dict[str, dict[str, Any]] = {}
         complete = True
-        lookups = [("order_num", merchant_order_no)]
-        if platform_order_no:
-            lookups.append(("out_trade_no", platform_order_no))
+        if not platform_order_no:
+            return ExactSearchResult(orders=[], complete=complete)
         for channel in channels:
-            for field, value in lookups:
-                try:
-                    items, page_info = await self._fetch_charge_page(
-                        page=1,
-                        channel_code=channel["code"],
-                        channel_label=channel["label"],
-                        order_num=value if field == "order_num" else "",
-                        out_trade_no=value if field == "out_trade_no" else "",
-                    )
-                    if page_info["total_page"] > 1 or len(items) != page_info["total"]:
-                        complete = False
-                    for item in items:
-                        identity = str(
-                            item.get("id")
-                            or item.get("order_num")
-                            or item.get("out_trade_no")
-                            or ""
-                        )
-                        if identity:
-                            found[identity] = item
-                except RemoteChargeError:
+            try:
+                items, page_info = await self._fetch_charge_page(
+                    page=1,
+                    channel_code=channel["code"],
+                    channel_label=channel["label"],
+                    out_trade_no=platform_order_no,
+                )
+                if page_info["total_page"] > 1 or len(items) != page_info["total"]:
                     complete = False
+                for item in items:
+                    identity = str(
+                        item.get("id")
+                        or item.get("order_num")
+                        or item.get("out_trade_no")
+                        or ""
+                    )
+                    if identity:
+                        found[identity] = item
+            except RemoteChargeError:
+                complete = False
         return ExactSearchResult(orders=list(found.values()), complete=complete)

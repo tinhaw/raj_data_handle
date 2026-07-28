@@ -37,7 +37,7 @@ class BatchValidationError(ValueError):
     pass
 
 
-ORDER_COLUMN_MAPPING_KEYS = ("merchant_order_no", "platform_order_no")
+ORDER_COLUMN_MAPPING_KEYS = ("platform_order_no",)
 
 
 def resolve_payment_column_mapping(
@@ -67,19 +67,16 @@ def _validate_payment_column_mapping(
     raw_template = detection.get("template")
     template = raw_template if isinstance(raw_template, dict) else {"columnMapping": {}}
     mapping = resolve_payment_column_mapping(parameters, template)
-    merchant_column = str(mapping.get("merchant_order_no") or "").strip()
     platform_column = str(mapping.get("platform_order_no") or "").strip()
-    if not merchant_column or not platform_column:
+    if not platform_column:
         raise BatchValidationError(
-            "请确认表格中对应远端 order_num 和 out_trade_no 的两个订单号字段。"
+            "请确认表格中对应管理后台三方订单号 out_trade_no 的字段。"
         )
-    if merchant_column == platform_column:
-        raise BatchValidationError("远端内部订单号与三方订单号不能映射到同一表格列。")
     detected_headers = detection.get("detectedHeaders")
     if isinstance(detected_headers, list):
         header_set = {str(value).strip() for value in detected_headers if str(value).strip()}
-        if merchant_column not in header_set or platform_column not in header_set:
-            raise BatchValidationError("订单号映射必须选择本次解析出的表头字段。")
+        if platform_column not in header_set:
+            raise BatchValidationError("三方订单号映射必须选择本次解析出的表头字段。")
 
 
 def _identity_key(

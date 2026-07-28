@@ -31,7 +31,6 @@ const form = reactive({
   businessType: 'payin' as const,
   headerRow: 1,
   selectedChannelCodes: [] as string[],
-  merchantOrderNoField: '',
   platformOrderNoField: '',
   paymentTimeField: '',
   paymentTimezone: 'Asia/Kolkata',
@@ -68,9 +67,7 @@ const uploadReady = computed(() => Boolean(form.sourceId && file.value))
 const parsingReady = computed(() =>
   Boolean(
     detection.value &&
-      form.merchantOrderNoField &&
       form.platformOrderNoField &&
-      form.merchantOrderNoField !== form.platformOrderNoField &&
       form.paymentTimeField,
   ),
 )
@@ -99,7 +96,6 @@ const selectedChannelSummary = computed(() => {
 
 function resetAfterParsingChange(): void {
   detection.value = null
-  form.merchantOrderNoField = ''
   form.platformOrderNoField = ''
   form.paymentTimeField = ''
   timeRange.value = null
@@ -116,20 +112,15 @@ function goToStep(step: number): void {
   })
 }
 
-function preferredOrderField(
-  mappingKey: 'merchant_order_no' | 'platform_order_no',
-): string {
-  const configured = detection.value?.template?.columnMapping[mappingKey]
+function preferredPlatformOrderField(): string {
+  const configured = detection.value?.template?.columnMapping.platform_order_no
   if (
     typeof configured === 'string' &&
     paymentTimeOptions.value.includes(configured)
   ) {
     return configured
   }
-  const preferredNames =
-    mappingKey === 'merchant_order_no'
-      ? ['商户订单号', '商户单号', '订单号']
-      : ['平台订单号', '三方订单号', '支付平台订单号']
+  const preferredNames = ['平台订单号', '三方订单号', '支付平台订单号']
   return (
     preferredNames.find((name) => paymentTimeOptions.value.includes(name)) || ''
   )
@@ -202,8 +193,7 @@ async function parseFile(): Promise<void> {
   parsing.value = true
   try {
     detection.value = await detectPaymentTemplate(file.value, form.headerRow)
-    form.merchantOrderNoField = preferredOrderField('merchant_order_no')
-    form.platformOrderNoField = preferredOrderField('platform_order_no')
+    form.platformOrderNoField = preferredPlatformOrderField()
     form.paymentTimeField = preferredPaymentTimeField()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '文件模板探测失败。'))
@@ -221,12 +211,8 @@ function continueToComparison(): void {
     ElMessage.warning('请从解析出的表头中选择支付平台时间列。')
     return
   }
-  if (!form.merchantOrderNoField || !form.platformOrderNoField) {
-    ElMessage.warning('请确认表格中对应远端两个订单号的字段。')
-    return
-  }
-  if (form.merchantOrderNoField === form.platformOrderNoField) {
-    ElMessage.warning('两个远端订单号不能映射到同一表格列。')
+  if (!form.platformOrderNoField) {
+    ElMessage.warning('请选择表格中对应管理后台三方订单号的列。')
     return
   }
   goToStep(2)
@@ -270,7 +256,6 @@ async function submit(): Promise<void> {
       file: file.value,
       parameters: {
         paymentColumnMapping: {
-          merchant_order_no: form.merchantOrderNoField,
           platform_order_no: form.platformOrderNoField,
         },
         selectedChannels: availableChannelBindings.value
@@ -424,7 +409,7 @@ watch(
           <div class="step-intro">
             <span class="step-kicker">步骤 2 / 3</span>
             <h2>初步解析表格</h2>
-            <p>确认表头所在行后执行解析，再校准订单号对应关系和支付平台时间列。</p>
+            <p>确认表头所在行后执行解析，再选择支付平台订单号和时间列。</p>
           </div>
 
           <div class="parse-controls">
@@ -509,56 +494,27 @@ watch(
                 <div>
                   <strong>订单号字段映射</strong>
                   <span>
-                    表格列在左侧，管理后台 API 字段在右侧；两个字段共同用于精确比对。
+                    选择支付平台导出表中的订单号列，与管理后台三方订单号进行精确比对。
                   </span>
                 </div>
-                <div class="form-grid">
-                  <el-form-item label="表格列 → 管理后台内部订单号（order_num）" required>
-                    <el-select
-                      v-model="form.merchantOrderNoField"
-                      filterable
-                      placeholder="选择表格中的商户订单号列"
-                      style="width: 100%"
-                    >
-                      <el-option
-                        v-for="field in paymentTimeOptions"
-                        :key="field"
-                        :label="field"
-                        :value="field"
-                      />
-                    </el-select>
-                    <span class="field-help">
-                      模板默认使用“商户订单号”，作为主匹配键。
-                    </span>
-                  </el-form-item>
-                  <el-form-item label="表格列 → 管理后台三方订单号（out_trade_no）" required>
-                    <el-select
-                      v-model="form.platformOrderNoField"
-                      filterable
-                      placeholder="选择表格中的平台订单号列"
-                      style="width: 100%"
-                    >
-                      <el-option
-                        v-for="field in paymentTimeOptions"
-                        :key="field"
-                        :label="field"
-                        :value="field"
-                      />
-                    </el-select>
-                    <span class="field-help">
-                      模板默认使用“平台订单号”，用于交叉校验与精确复查。
-                    </span>
-                  </el-form-item>
-                </div>
-                <el-alert
-                  v-if="
-                    form.merchantOrderNoField &&
-                    form.merchantOrderNoField === form.platformOrderNoField
-                  "
-                  type="error"
-                  :closable="false"
-                  title="两个远端订单号不能映射到同一表格列"
-                />
+                <el-form-item label="表格列 → 管理后台三方订单号（out_trade_no）" required>
+                  <el-select
+                    v-model="form.platformOrderNoField"
+                    filterable
+                    placeholder="选择表格中的平台订单号列"
+                    style="width: 100%"
+                  >
+                    <el-option
+                      v-for="field in paymentTimeOptions"
+                      :key="field"
+                      :label="field"
+                      :value="field"
+                    />
+                  </el-select>
+                  <span class="field-help">
+                    管理后台的 out_trade_no 即支付平台订单号；order_num 仅是管理后台内部编号，不参与匹配。
+                  </span>
+                </el-form-item>
               </div>
 
               <el-form-item label="支付平台时间列" required>
@@ -611,8 +567,7 @@ watch(
                   {{ detection?.template?.platformDisplayName || '未匹配模板' }}
                 </strong>
                 <small>
-                  order_num ← {{ form.merchantOrderNoField }} · out_trade_no ←
-                  {{ form.platformOrderNoField }}
+                  out_trade_no ← {{ form.platformOrderNoField }}
                 </small>
               </div>
               <el-button text type="primary" @click="goToStep(1)">修改</el-button>
@@ -716,10 +671,6 @@ watch(
                 <div>
                   <dt>盘口</dt>
                   <dd>{{ selectedSource?.displayName || '—' }}</dd>
-                </div>
-                <div>
-                  <dt>表格列 → order_num</dt>
-                  <dd>{{ form.merchantOrderNoField || '—' }}</dd>
                 </div>
                 <div>
                   <dt>表格列 → out_trade_no</dt>
