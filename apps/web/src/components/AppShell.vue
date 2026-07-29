@@ -18,9 +18,23 @@ const route = useRoute()
 const router = useRouter()
 const collapsed = ref(false)
 const delivered = new Set<string>()
+const currentTime = ref(new Date())
 let timer: number | undefined
+let clockTimer: number | undefined
 
 const activeMenu = computed(() => String(route.meta.navKey || route.path))
+const beijingTime = computed(() => formatTime('Asia/Shanghai'))
+const indiaTime = computed(() => formatTime('Asia/Kolkata'))
+
+function formatTime(timeZone: string): string {
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(currentTime.value)
+}
 
 async function signOut(): Promise<void> {
   await clearSession()
@@ -55,12 +69,17 @@ async function pollNotifications(): Promise<void> {
 }
 
 onMounted(() => {
+  currentTime.value = new Date()
+  clockTimer = window.setInterval(() => {
+    currentTime.value = new Date()
+  }, 1_000)
   void pollNotifications()
   timer = window.setInterval(pollNotifications, 15_000)
 })
 
 onBeforeUnmount(() => {
   if (timer) window.clearInterval(timer)
+  if (clockTimer) window.clearInterval(clockTimer)
 })
 </script>
 
@@ -74,6 +93,18 @@ onBeforeUnmount(() => {
           <small>对账分析中心</small>
         </span>
       </button>
+
+      <section v-if="!collapsed" class="time-panel" aria-label="当前时间">
+        <span class="time-panel__eyebrow">CURRENT TIME</span>
+        <div class="time-card">
+          <span>北京时间</span>
+          <strong>{{ beijingTime }}</strong>
+        </div>
+        <div class="time-card">
+          <span>印度时间</span>
+          <strong>{{ indiaTime }}</strong>
+        </div>
+      </section>
 
       <el-menu :default-active="activeMenu" router :collapse="collapsed">
         <el-menu-item index="/batches">
@@ -181,6 +212,46 @@ onBeforeUnmount(() => {
   color: rgba(255, 255, 255, 0.62);
 }
 
+.time-panel {
+  display: grid;
+  gap: 8px;
+  margin: 0 14px 10px;
+  padding: 14px;
+  border: 1px solid rgba(233, 196, 106, 0.2);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.time-panel__eyebrow {
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.time-card {
+  display: grid;
+  gap: 2px;
+  padding: 10px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(11, 31, 51, 0.32);
+}
+
+.time-card span {
+  color: rgba(255, 255, 255, 0.65);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.time-card strong {
+  color: #fff;
+  font-size: 23px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  line-height: 1.1;
+}
+
 .side-nav :deep(.el-menu) {
   flex: 1;
   border-right: 0;
@@ -245,7 +316,8 @@ onBeforeUnmount(() => {
   }
 
   .brand-copy,
-  .side-footer > div {
+  .side-footer > div,
+  .time-panel {
     display: none;
   }
 }
