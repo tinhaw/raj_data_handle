@@ -10,8 +10,15 @@ from packages.common.totp import generate_totp
 LOGIN_PATH = "/api/system/login"
 CHARGE_ORDER_INDEX_PATH = "/api/operate/chargeOrder/index"
 CHARGE_CHANNEL_PATH = "/api/operate/chargeOrder/payChannel"
+WITHDRAW_ORDER_INDEX_PATH = "/api/operate/withdrawOrder/index"
+WITHDRAW_STATUS_DICTIONARY_PATH = "/api/system/dataDict/list"
 REMOTE_SUCCESS_STATUS = 1
-REMOTE_READ_PATHS = {CHARGE_ORDER_INDEX_PATH, CHARGE_CHANNEL_PATH}
+REMOTE_GET_PATHS = {
+    CHARGE_ORDER_INDEX_PATH,
+    CHARGE_CHANNEL_PATH,
+    WITHDRAW_STATUS_DICTIONARY_PATH,
+}
+REMOTE_POST_PATHS = {WITHDRAW_ORDER_INDEX_PATH}
 AUTH_FAILURE_STATUSES = {401, 403, 419, 440}
 
 
@@ -148,8 +155,8 @@ class RajAdminChargeClient:
         params: dict[str, Any] | None = None,
         allow_relogin: bool = True,
     ) -> object:
-        if path not in REMOTE_READ_PATHS:
-            raise RemoteChargeError("请求路径不在充值只读 Allowlist 中。")
+        if path not in REMOTE_GET_PATHS:
+            raise RemoteChargeError("GET 请求路径不在远端只读 Allowlist 中。")
         token = await self.login()
         headers = {**self._base_headers(), "authorization": f"Bearer {token}"}
         try:
@@ -163,6 +170,35 @@ class RajAdminChargeClient:
         if response.status_code in AUTH_FAILURE_STATUSES and allow_relogin:
             await self.login(force=True)
             return await self._get_json(path, params=params, allow_relogin=False)
+        if response.status_code >= 400:
+            raise RemoteResponseError("远端只读接口返回非成功 HTTP 状态。")
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise RemoteResponseError("远端只读接口响应不是有效 JSON。") from exc
+
+    async def _post_json(
+        self,
+        path: str,
+        *,
+        body: dict[str, Any],
+        allow_relogin: bool = True,
+    ) -> object:
+        if path not in REMOTE_POST_PATHS:
+            raise RemoteChargeError("POST 请求路径不在远端只读 Allowlist 中。")
+        token = await self.login()
+        headers = {**self._base_headers(), "authorization": f"Bearer {token}"}
+        try:
+            response = await self._client.post(
+                f"{self.base_url}{path}",
+                headers=headers,
+                json=body,
+            )
+        except httpx.HTTPError as exc:
+            raise RemoteResponseError("远端只读请求失败。") from exc
+        if response.status_code in AUTH_FAILURE_STATUSES and allow_relogin:
+            await self.login(force=True)
+            return await self._post_json(path, body=body, allow_relogin=False)
         if response.status_code >= 400:
             raise RemoteResponseError("远端只读接口返回非成功 HTTP 状态。")
         try:

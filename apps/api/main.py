@@ -12,6 +12,7 @@ from apps.api.routers.notifications import router as notifications_router
 from apps.api.routers.payment_templates import router as payment_templates_router
 from apps.api.routers.sources import router as sources_router
 from apps.api.routers.system_settings import router as system_settings_router
+from apps.api.routers.withdraw_orders import router as withdraw_orders_router
 from packages.common.settings import get_settings
 from packages.storage import LocalFileStorage
 
@@ -46,6 +47,7 @@ app.include_router(data_dictionaries_router, prefix=settings.api_prefix)
 app.include_router(payment_templates_router, prefix=settings.api_prefix)
 app.include_router(batches_router, prefix=settings.api_prefix)
 app.include_router(notifications_router, prefix=settings.api_prefix)
+app.include_router(withdraw_orders_router, prefix=settings.api_prefix)
 
 
 @app.get("/")

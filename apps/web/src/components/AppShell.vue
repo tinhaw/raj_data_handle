@@ -6,6 +6,7 @@ import {
   Setting,
   SwitchButton,
   User,
+  Wallet,
 } from '@element-plus/icons-vue'
 import { ElNotification } from 'element-plus'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
@@ -110,6 +111,10 @@ onBeforeUnmount(() => {
         <el-menu-item index="/batches">
           <el-icon><DataAnalysis /></el-icon>
           <template #title>对比任务</template>
+        </el-menu-item>
+        <el-menu-item index="/withdraw-orders">
+          <el-icon><Wallet /></el-icon>
+          <template #title>提现订单</template>
         </el-menu-item>
         <el-menu-item index="/settings/system">
           <el-icon><Setting /></el-icon>

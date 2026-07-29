@@ -30,6 +30,11 @@ const router = createRouter({
       meta: { navKey: '/batches' },
     },
     {
+      path: '/withdraw-orders',
+      component: () => import('../views/WithdrawOrdersView.vue'),
+      meta: { navKey: '/withdraw-orders' },
+    },
+    {
       path: '/settings/system',
       component: () => import('../views/SystemSettingsView.vue'),
       meta: { navKey: '/settings/system' },

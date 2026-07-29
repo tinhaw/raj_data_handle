@@ -91,13 +91,23 @@ export interface DataDictionaryEntry {
   id: number
   sourceId: string
   sourceDisplayName: string
-  dictionaryType: 'payment_channel_name'
+  dictionaryType: 'payment_channel_name' | 'withdraw_status'
   entryCode: string
   entryLabel: string
   active: boolean
   firstSeenAt: string
   lastSeenAt: string
   updatedAt: string
+}
+
+export interface WithdrawStatusSyncResult {
+  sourceId: string
+  sourceDisplayName: string
+  fetchedAt: string
+  remoteTotal: number
+  createdEntries: number
+  refreshedEntries: number
+  entries: DataDictionaryEntry[]
 }
 
 export interface BatchRecord {
@@ -202,4 +212,63 @@ export interface UserNotification {
   createdAt: string
   deliveredAt: string | null
   readAt: string | null
+}
+
+export interface WithdrawOrder {
+  id: string
+  uid: string
+  amount: string | null
+  realAmount: string | null
+  createTime: string | null
+  updateTime: string | null
+  submitTime: string | null
+  auditAdmin: string | null
+  status: string
+}
+
+export interface WithdrawStatusSummary {
+  status: string
+  count: number
+  amount: string
+  realAmount: string
+}
+
+export interface WithdrawTimeSummary {
+  bucket: string
+  count: number
+  amount: string
+  realAmount: string
+}
+
+export interface WithdrawOrderSummary {
+  orderCount: number
+  amount: string
+  realAmount: string
+  averageAmount: string
+  statusDistribution: WithdrawStatusSummary[]
+  timeSeries: WithdrawTimeSummary[]
+}
+
+export interface WithdrawStatusDictionaryEntry {
+  code: string
+  label: string
+  active: boolean
+}
+
+export interface WithdrawOrderQueryResponse {
+  items: WithdrawOrder[]
+  total: number
+  remoteTotal: number
+  page: number
+  pageSize: number
+  fetchedPages: number
+  complete: boolean
+  sourceId: string
+  sourceDisplayName: string
+  businessTimezone: string
+  currency: string
+  effectiveCreateTimeEnd: string
+  fetchedAt: string
+  statusDictionary: WithdrawStatusDictionaryEntry[]
+  summary: WithdrawOrderSummary
 }
