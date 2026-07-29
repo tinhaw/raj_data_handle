@@ -31,6 +31,9 @@ async def get_retention_settings(
         uploaded_file_retention_days=current_defaults.uploaded_file_retention_days,
         result_retention_days=current_defaults.result_retention_days,
         remote_cache_retention_days=current_defaults.remote_cache_retention_days,
+        withdraw_order_refresh_interval_hours=(
+            current_defaults.withdraw_order_refresh_interval_hours
+        ),
     )
     session.add(row)
     await session.commit()
@@ -53,11 +56,14 @@ async def update_retention_settings(
         "uploadedFileRetentionDays": row.uploaded_file_retention_days,
         "resultRetentionDays": row.result_retention_days,
         "remoteCacheRetentionDays": row.remote_cache_retention_days,
+        "withdrawOrderRefreshIntervalHours": row.withdraw_order_refresh_interval_hours,
         "sessionTtlDays": session_settings.session_ttl_days,
     }
     row.uploaded_file_retention_days = payload.uploaded_file_retention_days
     row.result_retention_days = payload.result_retention_days
     row.remote_cache_retention_days = payload.remote_cache_retention_days
+    if payload.withdraw_order_refresh_interval_hours is not None:
+        row.withdraw_order_refresh_interval_hours = payload.withdraw_order_refresh_interval_hours
     row.config_version += 1
     row.updated_by = actor_user_id
     row.updated_at = datetime.now(UTC)
@@ -77,6 +83,9 @@ async def update_retention_settings(
                     "uploadedFileRetentionDays": row.uploaded_file_retention_days,
                     "resultRetentionDays": row.result_retention_days,
                     "remoteCacheRetentionDays": row.remote_cache_retention_days,
+                    "withdrawOrderRefreshIntervalHours": (
+                        row.withdraw_order_refresh_interval_hours
+                    ),
                     "sessionTtlDays": session_settings.session_ttl_days,
                 },
                 "configVersion": row.config_version,

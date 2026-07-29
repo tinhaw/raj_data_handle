@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { Refresh, Search } from '@element-plus/icons-vue'
-import type { EChartsOption } from 'echarts'
 import { ElMessage } from 'element-plus'
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 
 import { apiErrorMessage } from '../api/client'
 import { fetchEnabledSources } from '../api/sources'
+import { fetchRetentionSettings } from '../api/systemSettings'
 import { queryWithdrawOrders } from '../api/withdrawOrders'
-import ChartPanel from '../components/ChartPanel.vue'
 import type {
   SourceConfig,
   WithdrawOrder,
@@ -34,7 +33,7 @@ const rows = ref<WithdrawOrder[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(50)
-const refreshSeconds = ref(60)
+const refreshIntervalHours = ref<number | null>(null)
 const knownStatuses = ref<string[]>([])
 const filters = reactive({
   sourceId: '',
@@ -60,9 +59,10 @@ const timezone = computed(
 const lastUpdatedText = computed(() =>
   response.value ? formatDateTime(response.value.fetchedAt) : '尚未查询',
 )
-const refreshLabel = computed(() =>
-  refreshSeconds.value ? `每 ${refreshSeconds.value < 60 ? `${refreshSeconds.value} 秒` : `${refreshSeconds.value / 60} 分钟`}刷新` : '自动刷新已关闭',
-)
+const refreshLabel = computed(() => {
+  const hours = refreshIntervalHours.value
+  return hours === null ? '自动刷新未配置' : `每 ${hours} 小时刷新`
+})
 
 function businessDate(timeZone: string): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -95,12 +95,9 @@ function amountText(value: string | null | undefined): string {
 }
 
 function statusLabel(status: string): string {
-  const label = statusEntryByCode.value.get(status)?.label
-  return label ? `${label}（${status}）` : `状态 ${status || '—'}`
-}
-
-function statusTagType(_status: string): 'info' {
-  return 'info'
+  const code = status.trim()
+  const label = statusEntryByCode.value.get(code)?.label.trim()
+  return label || code || '—'
 }
 
 const statusOptions = computed(() => {
@@ -124,83 +121,10 @@ function statusOptionLabel(entry: WithdrawStatusDictionaryEntry): string {
 }
 
 function mergeKnownStatuses(values: string[]): void {
-  knownStatuses.value = [...new Set([...knownStatuses.value, ...values])].sort((left, right) =>
-    left.localeCompare(right, undefined, { numeric: true }),
-  )
+  knownStatuses.value = [
+    ...new Set([...knownStatuses.value, ...values.map((value) => value.trim()).filter(Boolean)]),
+  ].sort((left, right) => left.localeCompare(right, undefined, { numeric: true }))
 }
-
-const trendOption = computed<EChartsOption>(() => ({
-  color: ['#1d4e89', '#2a9d8f'],
-  tooltip: { trigger: 'axis' },
-  legend: { bottom: 0, data: ['订单数', '提现金额'] },
-  grid: { left: 54, right: 66, top: 30, bottom: 58 },
-  xAxis: {
-    type: 'category',
-    boundaryGap: false,
-    data: summary.value.timeSeries.map((item) => item.bucket),
-    axisLabel: { color: '#829ab1', hideOverlap: true },
-  },
-  yAxis: [
-    {
-      type: 'value',
-      name: '订单数',
-      minInterval: 1,
-      axisLabel: { color: '#829ab1' },
-      splitLine: { lineStyle: { color: '#edf2f7' } },
-    },
-    {
-      type: 'value',
-      name: currency.value,
-      axisLabel: { color: '#829ab1' },
-      splitLine: { show: false },
-    },
-  ],
-  series: [
-    {
-      name: '订单数',
-      type: 'line',
-      smooth: true,
-      symbol: 'circle',
-      symbolSize: 6,
-      areaStyle: { color: 'rgba(29, 78, 137, 0.08)' },
-      data: summary.value.timeSeries.map((item) => item.count),
-    },
-    {
-      name: '提现金额',
-      type: 'line',
-      smooth: true,
-      yAxisIndex: 1,
-      symbol: 'none',
-      data: summary.value.timeSeries.map((item) => Number(item.amount)),
-    },
-  ],
-}))
-
-const statusOption = computed<EChartsOption>(() => ({
-  color: ['#2a9d8f'],
-  tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-  grid: { left: 50, right: 24, top: 26, bottom: 48 },
-  xAxis: {
-    type: 'category',
-    data: summary.value.statusDistribution.map((item) => statusLabel(item.status)),
-    axisLabel: { color: '#829ab1', interval: 0 },
-  },
-  yAxis: {
-    type: 'value',
-    minInterval: 1,
-    axisLabel: { color: '#829ab1' },
-    splitLine: { lineStyle: { color: '#edf2f7' } },
-  },
-  series: [
-    {
-      name: '订单数',
-      type: 'bar',
-      barMaxWidth: 46,
-      borderRadius: [6, 6, 0, 0],
-      data: summary.value.statusDistribution.map((item) => item.count),
-    },
-  ],
-}))
 
 function validateFilters(): boolean {
   if (!filters.sourceId) {
@@ -246,19 +170,36 @@ async function load(resetPage = false, quiet = false): Promise<void> {
 function resetTimer(): void {
   if (refreshTimer) window.clearInterval(refreshTimer)
   refreshTimer = undefined
-  if (refreshSeconds.value > 0) {
+  if (refreshIntervalHours.value !== null) {
     refreshTimer = window.setInterval(() => {
       void load(false, true)
-    }, refreshSeconds.value * 1_000)
+    }, refreshIntervalHours.value * 60 * 60 * 1_000)
+  }
+}
+
+async function loadRefreshInterval(): Promise<void> {
+  try {
+    const settings = await fetchRetentionSettings()
+    const hours = settings.withdrawOrderRefreshIntervalHours
+    if (!Number.isInteger(hours) || hours < 1 || hours > 24) {
+      throw new Error('自动刷新间隔必须为 1–24 小时。')
+    }
+    refreshIntervalHours.value = hours
+    resetTimer()
+  } catch (error) {
+    refreshIntervalHours.value = null
+    ElMessage.warning(apiErrorMessage(error, '自动刷新配置加载失败，已关闭自动刷新。'))
   }
 }
 
 function handleSourceChange(): void {
   setTodayRange()
   page.value = 1
+  filters.status = ''
   response.value = null
   rows.value = []
   total.value = 0
+  knownStatuses.value = []
 }
 
 function handlePageChange(nextPage: number): void {
@@ -271,9 +212,8 @@ function handlePageSizeChange(nextPageSize: number): void {
   void load(true)
 }
 
-watch(refreshSeconds, resetTimer)
-
 onMounted(async () => {
+  const refreshIntervalPromise = loadRefreshInterval()
   sourcesLoading.value = true
   try {
     sources.value = await fetchEnabledSources()
@@ -287,7 +227,7 @@ onMounted(async () => {
   } finally {
     sourcesLoading.value = false
   }
-  resetTimer()
+  await refreshIntervalPromise
 })
 
 onBeforeUnmount(() => {
@@ -305,7 +245,7 @@ onBeforeUnmount(() => {
       </div>
       <div class="header-actions">
         <div class="refresh-state">
-          <span class="refresh-state__dot" :class="{ 'is-live': refreshSeconds > 0 }" />
+          <span class="refresh-state__dot" :class="{ 'is-live': refreshIntervalHours !== null }" />
           <div>
             <strong>{{ refreshLabel }}</strong>
             <small>更新于 {{ lastUpdatedText }}</small>
@@ -364,15 +304,6 @@ onBeforeUnmount(() => {
           <span>操作人员</span>
           <el-input v-model.trim="filters.auditAdmin" clearable placeholder="包含匹配" />
         </label>
-        <label class="query-field">
-          <span>自动刷新</span>
-          <el-select v-model="refreshSeconds">
-            <el-option label="关闭" :value="0" />
-            <el-option label="每 30 秒" :value="30" />
-            <el-option label="每 1 分钟" :value="60" />
-            <el-option label="每 5 分钟" :value="300" />
-          </el-select>
-        </label>
       </div>
       <div class="query-card__footer">
         <span>
@@ -405,21 +336,6 @@ onBeforeUnmount(() => {
         <strong>{{ amountText(summary.averageAmount) }}</strong>
         <small>提现金额 / 订单数</small>
       </article>
-    </section>
-
-    <section class="chart-grid">
-      <ChartPanel
-        title="订单与金额趋势"
-        :option="trendOption"
-        :empty="summary.timeSeries.length === 0"
-        :height="300"
-      />
-      <ChartPanel
-        title="订单状态分布"
-        :option="statusOption"
-        :empty="summary.statusDistribution.length === 0"
-        :height="300"
-      />
     </section>
 
     <section class="surface-card table-card">
@@ -459,7 +375,7 @@ onBeforeUnmount(() => {
         </el-table-column>
         <el-table-column label="状态" min-width="130" fixed="right">
           <template #default="{ row }">
-            <el-tag :type="statusTagType(row.status)" effect="light">
+            <el-tag type="info" effect="light">
               {{ statusLabel(row.status) }}
             </el-tag>
           </template>
@@ -527,7 +443,7 @@ onBeforeUnmount(() => {
 
 .query-card__grid {
   display: grid;
-  grid-template-columns: minmax(160px, 0.8fr) minmax(360px, 1.8fr) repeat(4, minmax(150px, 0.8fr));
+  grid-template-columns: minmax(160px, 0.8fr) minmax(360px, 1.8fr) repeat(3, minmax(150px, 0.8fr));
   gap: 14px;
   padding: 18px;
 }

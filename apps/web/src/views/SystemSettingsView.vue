@@ -19,6 +19,7 @@ const form = reactive({
   uploadedFileRetentionDays: 3,
   resultRetentionDays: 30,
   remoteCacheRetentionDays: 30,
+  withdrawOrderRefreshIntervalHours: 1,
   sessionTtlDays: 30,
 })
 
@@ -27,6 +28,7 @@ function applySettings(settings: RetentionSettings): void {
   form.uploadedFileRetentionDays = settings.uploadedFileRetentionDays
   form.resultRetentionDays = settings.resultRetentionDays
   form.remoteCacheRetentionDays = settings.remoteCacheRetentionDays
+  form.withdrawOrderRefreshIntervalHours = settings.withdrawOrderRefreshIntervalHours
   form.sessionTtlDays = settings.sessionTtlDays
 }
 
@@ -45,7 +47,7 @@ async function save(): Promise<void> {
   saving.value = true
   try {
     applySettings(await updateRetentionSettings({ ...form }))
-    ElMessage.success('系统配置已更新；登录有效期仅影响之后的新登录。')
+    ElMessage.success('系统配置已更新；提现订单下次进入页面时会使用新的刷新间隔。')
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '保留策略保存失败。'))
   } finally {
@@ -87,7 +89,7 @@ onMounted(load)
       <div class="settings-heading">
         <div>
           <h2>全局配置</h2>
-          <p>登录与数据保留策略集中维护。</p>
+          <p>登录、提现订单与数据保留策略集中维护。</p>
         </div>
         <el-tag v-if="current" type="info">配置版本 V{{ current.configVersion }}</el-tag>
       </div>
@@ -108,6 +110,27 @@ onMounted(load)
                 :disabled="!isAdmin"
               />
               <span class="field-help">默认 30 天；到期后需重新登录。</span>
+            </el-form-item>
+          </div>
+        </el-form>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-heading">
+          <h2>提现订单刷新</h2>
+          <p>配置提现订单页面的统一自动刷新频率。</p>
+        </div>
+        <el-form label-position="top">
+          <div class="form-grid">
+            <el-form-item label="自动刷新间隔（小时）">
+              <el-input-number
+                v-model="form.withdrawOrderRefreshIntervalHours"
+                :min="1"
+                :max="24"
+                :precision="0"
+                :disabled="!isAdmin"
+              />
+              <span class="field-help">允许范围为 1–24 小时；保存后由提现订单页面使用。</span>
             </el-form-item>
           </div>
         </el-form>

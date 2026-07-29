@@ -43,6 +43,7 @@ export interface RetentionSettings {
   uploadedFileRetentionDays: number
   resultRetentionDays: number
   remoteCacheRetentionDays: number
+  withdrawOrderRefreshIntervalHours: number
   sessionTtlDays: number
   configVersion: number
   updatedBy: number | null

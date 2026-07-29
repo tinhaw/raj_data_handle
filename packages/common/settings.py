@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     uploaded_file_retention_days: int = 3
     result_retention_days: int = 30
     remote_cache_retention_days: int = 30
+    # The persisted system setting takes precedence once its migration has
+    # been applied. This fallback is used only when the singleton setting row
+    # is first initialized.
+    withdraw_order_refresh_interval_hours: int = Field(default=1, ge=1, le=24)
 
     @field_validator("environment")
     @classmethod

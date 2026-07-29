@@ -31,6 +31,7 @@ def _response(
         uploadedFileRetentionDays=retention.uploaded_file_retention_days,
         resultRetentionDays=retention.result_retention_days,
         remoteCacheRetentionDays=retention.remote_cache_retention_days,
+        withdrawOrderRefreshIntervalHours=retention.withdraw_order_refresh_interval_hours,
         sessionTtlDays=session_ttl_days,
         configVersion=retention.config_version,
         updatedBy=retention.updated_by,

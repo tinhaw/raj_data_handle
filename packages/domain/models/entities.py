@@ -96,6 +96,11 @@ class SystemRetentionSetting(Base):
     uploaded_file_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     result_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     remote_cache_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    withdraw_order_refresh_interval_hours: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+    )
     config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
     updated_at: Mapped[datetime] = mapped_column(
