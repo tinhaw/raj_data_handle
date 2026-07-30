@@ -203,6 +203,32 @@ async def test_charge_order_query_and_channel_summary_only_read_local_cache() ->
                 ),
                 ChargeOrderSnapshot(
                     source_id="rajwin",
+                    remote_order_id="same-denomination-success",
+                    uid="1006",
+                    pay_method="948",
+                    pay_channel_name="948",
+                    amount="100.00",
+                    status="1",
+                    out_trade_no="third-same-denomination",
+                    create_time="2026-07-30 12:35:00",
+                    create_time_utc=datetime(2026, 7, 30, 7, 5, tzinfo=UTC),
+                    synced_at=now,
+                ),
+                ChargeOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="other-denomination-success",
+                    uid="1007",
+                    pay_method="948",
+                    pay_channel_name="948",
+                    amount="50",
+                    status="1",
+                    out_trade_no="third-other-denomination",
+                    create_time="2026-07-30 12:38:00",
+                    create_time_utc=datetime(2026, 7, 30, 7, 8, tzinfo=UTC),
+                    synced_at=now,
+                ),
+                ChargeOrderSnapshot(
+                    source_id="rajwin",
                     remote_order_id="expired",
                     uid="1004",
                     pay_method="948",
@@ -257,9 +283,9 @@ async def test_charge_order_query_and_channel_summary_only_read_local_cache() ->
             now=now,
         )
 
-    assert result.total == 4
-    assert result.summary["successful_amount"] == "100.00"
-    assert result.summary["successful_order_count"] == 1
+    assert result.total == 6
+    assert result.summary["successful_amount"] == "250.00"
+    assert result.summary["successful_order_count"] == 3
     assert result.summary["unpaid_order_count"] == 1
     assert result.status_dictionary == [
         {"code": "-1", "label": "已失效"},
@@ -275,15 +301,19 @@ async def test_charge_order_query_and_channel_summary_only_read_local_cache() ->
         {
             "pay_method": "948",
             "pay_channel_name": "渠道名称 A",
-            "order_count": 4,
-            "successful_order_count": 1,
-            "successful_amount": "100.00",
+            "order_count": 6,
+            "successful_order_count": 3,
+            "successful_amount": "250.00",
             "unpaid_order_count": 1,
             "no_third_party_order_count": 1,
             "successful_order_share": "100.00",
             "successful_amount_share": "100.00",
-            "success_rate": "25.00",
+            "success_rate": "50.00",
         }
+    ]
+    assert summary.denomination_distribution == [
+        {"amount": "50", "successful_order_count": 1, "successful_amount": "50.00"},
+        {"amount": "100", "successful_order_count": 2, "successful_amount": "200.00"},
     ]
     await engine.dispose()
 

@@ -125,8 +125,15 @@ class ChargeChannelSummaryItem(ApiSchema):
     success_rate: str
 
 
+class ChargeDenominationSummaryItem(ApiSchema):
+    amount: str
+    successful_order_count: int
+    successful_amount: str
+
+
 class ChargeChannelSummaryResponse(ApiSchema):
     items: list[ChargeChannelSummaryItem]
+    denomination_distribution: list[ChargeDenominationSummaryItem]
     total: int
     page: int
     page_size: int

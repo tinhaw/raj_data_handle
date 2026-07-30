@@ -7,8 +7,8 @@ export function formatDateTime(value: string | null | undefined): string {
   }).format(new Date(value))
 }
 
-/** Return yesterday's full calendar day in the selected business timezone. */
-export function yesterdayFullDayRange(timeZone: string): [string, string] {
+/** Return one full calendar day in the selected business timezone. */
+export function businessFullDayRange(timeZone: string, daysAgo: number): [string, string] {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone,
     year: 'numeric',
@@ -23,9 +23,14 @@ export function yesterdayFullDayRange(timeZone: string): [string, string] {
   const year = Number(values.year)
   const month = Number(values.month)
   const day = Number(values.day)
-  const yesterday = new Date(Date.UTC(year, month - 1, day - 1))
-  const date = `${yesterday.getUTCFullYear()}-${String(yesterday.getUTCMonth() + 1).padStart(2, '0')}-${String(yesterday.getUTCDate()).padStart(2, '0')}`
+  const target = new Date(Date.UTC(year, month - 1, day - daysAgo))
+  const date = `${target.getUTCFullYear()}-${String(target.getUTCMonth() + 1).padStart(2, '0')}-${String(target.getUTCDate()).padStart(2, '0')}`
   return [`${date} 00:00:00`, `${date} 23:59:59`]
+}
+
+/** Return yesterday's full calendar day in the selected business timezone. */
+export function yesterdayFullDayRange(timeZone: string): [string, string] {
+  return businessFullDayRange(timeZone, 1)
 }
 
 const statusNames: Record<string, string> = {

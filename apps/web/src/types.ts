@@ -423,8 +423,15 @@ export interface ChargeChannelSummaryItem {
   successRate: string
 }
 
+export interface ChargeDenominationSummaryItem {
+  amount: string
+  successfulOrderCount: number
+  successfulAmount: string
+}
+
 export interface ChargeChannelSummaryResponse {
   items: ChargeChannelSummaryItem[]
+  denominationDistribution: ChargeDenominationSummaryItem[]
   total: number
   page: number
   pageSize: number

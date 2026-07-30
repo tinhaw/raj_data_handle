@@ -14,7 +14,7 @@ import type {
   ChargeOrderSummary,
   SourceConfig,
 } from '../types'
-import { formatDateTime, yesterdayFullDayRange } from '../ui'
+import { businessFullDayRange, formatDateTime, yesterdayFullDayRange } from '../ui'
 
 const RANGE_OPTIONS: Array<{ value: ChargeOrderQueryRange; label: string }> = [
   { value: 'today', label: '今日 00:00:00 至 23:59:59' },
@@ -63,6 +63,14 @@ const selectedSource = computed(() =>
 const selectedManualRefreshSource = computed(() =>
   sources.value.find((source) => source.sourceId === manualRefreshSourceId.value),
 )
+const dateRangeShortcuts = computed(() => {
+  const timeZone = selectedSource.value?.businessTimezone || 'Asia/Kolkata'
+  return [
+    { text: '昨天', value: () => businessFullDayRange(timeZone, 1) },
+    { text: '前天', value: () => businessFullDayRange(timeZone, 2) },
+    { text: '今天', value: () => businessFullDayRange(timeZone, 0) },
+  ]
+})
 const summary = computed(() => response.value?.summary || emptySummary)
 const total = computed(() => response.value?.total || 0)
 const statusOptions = computed(() => response.value?.statusDictionary || [])
@@ -245,6 +253,7 @@ onMounted(async () => {
           <el-date-picker
             v-model="filters.createTimeRange"
             type="datetimerange"
+            :shortcuts="dateRangeShortcuts"
             value-format="YYYY-MM-DD HH:mm:ss"
             format="YYYY-MM-DD HH:mm:ss"
             range-separator="至"

@@ -90,6 +90,7 @@ async def charge_channel_summary(
         ) from exc
     return ChargeChannelSummaryResponse(
         items=result.items,
+        denomination_distribution=result.denomination_distribution,
         total=result.total,
         page=payload.page,
         page_size=payload.page_size,

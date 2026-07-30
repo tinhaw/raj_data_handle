@@ -64,6 +64,7 @@ class ChargeOrderQueryResult:
 @dataclass(frozen=True, slots=True)
 class ChargeChannelSummaryResult:
     items: list[dict[str, Any]]
+    denomination_distribution: list[dict[str, Any]]
     total: int
     source_id: str
     source_display_name: str
@@ -78,6 +79,22 @@ def _decimal(value: object) -> Decimal:
         return Decimal(str(value or "0"))
     except (InvalidOperation, ValueError):
         return Decimal("0")
+
+
+def _valid_decimal(value: object) -> Decimal | None:
+    raw = "" if value is None else str(value).strip()
+    if not raw:
+        return None
+    try:
+        return Decimal(raw)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _denomination_text(value: Decimal) -> str:
+    """Return a stable exact denomination label without applying a display bucket."""
+    normalized = value.normalize()
+    return format(normalized, "f")
 
 
 def _decimal_text(value: Decimal) -> str:
@@ -382,11 +399,16 @@ async def query_charge_channel_summary(
             local_updated_at = synced_at
 
     rows: list[dict[str, Any]] = []
+    denomination_groups: dict[Decimal, list[dict[str, Any]]] = defaultdict(list)
     successful_total = 0
     successful_amount_total = Decimal("0")
     staged: list[tuple[str, list[dict[str, Any]], list[dict[str, Any]]]] = []
     for code, orders in groups.items():
         successful = [order for order in orders if str(order.get("status") or "") == "1"]
+        for order in successful:
+            amount = _valid_decimal(order.get("amount"))
+            if amount is not None:
+                denomination_groups[amount].append(order)
         successful_total += len(successful)
         successful_amount_total += sum(
             (_decimal(order.get("amount")) for order in successful), Decimal("0")
@@ -429,9 +451,20 @@ async def query_charge_channel_summary(
             }
         )
     rows.sort(key=lambda item: (-item["successful_order_count"], item["pay_channel_name"]))
+    denomination_distribution = [
+        {
+            "amount": _denomination_text(amount),
+            "successful_order_count": len(orders),
+            "successful_amount": _decimal_text(
+                sum((_decimal(order.get("amount")) for order in orders), Decimal("0"))
+            ),
+        }
+        for amount, orders in sorted(denomination_groups.items(), key=lambda item: item[0])
+    ]
     offset = (request.page - 1) * request.page_size
     return ChargeChannelSummaryResult(
         items=rows[offset : offset + request.page_size],
+        denomination_distribution=denomination_distribution,
         total=len(rows),
         source_id=source_id,
         source_display_name=source_display_name,
