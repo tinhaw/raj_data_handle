@@ -39,9 +39,14 @@
 GET /api/operate/chargeOrder/index
 GET /api/operate/chargeOrder/summary
 GET /api/operate/chargeOrder/payChannel
+GET /api/system/dataDict/list?code=pay_channel
 ```
 
-充值订单列表按 `pay_method` 过滤支付渠道。当前渠道字典样本已验证：
+充值订单列表按 `pay_method` 过滤支付渠道。`pay_channel` 数据字典返回
+`key/title`，其中 `key` 是 `pay_method` 字段值，`title` 是展示内容。
+`payChannel` 接口返回 `value/label`，其中 `value` 是 `pay_channel_name`
+字段值，`label` 是“支付渠道名称”的展示内容，两套字典独立保存。
+当前渠道字典样本已验证：
 
 ```text
 pay_method=948 -> aelopay(HX)
@@ -488,8 +493,11 @@ export_jobs
 ```
 
 `data_dictionary_entries` 按 `source_id + dictionary_type + entry_code` 唯一保存远端稳定
-枚举。充值连接测试使用 `/api/operate/chargeOrder/payChannel` 的 `label/value`
-同步 `payment_channel_name` 字典；缺席条目转为停用，保留首次和最近发现时间。
+枚举。充值连接测试同时使用 `/api/system/dataDict/list?code=pay_channel` 的
+`key/title` 同步 `payment_channel`（对应响应字段 `pay_method`），并使用
+`/api/operate/chargeOrder/payChannel` 的 `value/label` 同步
+`payment_channel_name`（对应响应字段 `pay_channel_name`）。两类字典均在缺席时
+将条目标记为停用，并保留首次和最近发现时间。
 
 文件元数据至少包含：
 
@@ -782,8 +790,9 @@ MVP 不在这里汇总订单量、金额、确认遗漏数或遗漏率，避免�
 
 ## 15. 待确认口径
 
-1. 远端 `status=1` 是否正式代表充值成功；
-2. RajWin、RajLuck 各自的初始平台与渠道代码绑定名单；
-3. `elepay` 代收文件的实际格式；
-4. 精确订单号复查的远端限流、并发数、重试次数和人工重试入口；
-5. 根据实测数据量和远端限流确定任务耗时 SLA、超时及告警阈值。
+充值订单状态已经人工核对：`-1=已失效`、`0=待支付`、`1=已支付`、`2=已退款`。
+
+1. RajWin、RajLuck 各自的初始平台与渠道代码绑定名单；
+2. `elepay` 代收文件的实际格式；
+3. 精确订单号复查的远端限流、并发数、重试次数和人工重试入口；
+4. 根据实测数据量和远端限流确定任务耗时 SLA、超时及告警阈值。

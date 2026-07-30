@@ -16,6 +16,8 @@ WithdrawOrderQueryRange = Literal[
     "last_48_hours",
 ]
 WithdrawOrderRefreshPageSize = Literal[10, 20, 30, 50, 100]
+ChargeOrderQueryRange = WithdrawOrderQueryRange
+ChargeOrderRefreshPageSize = WithdrawOrderRefreshPageSize
 
 
 class RetentionSettingsResponse(BaseModel):
@@ -34,6 +36,17 @@ class RetentionSettingsResponse(BaseModel):
     )
     withdraw_order_query_range: WithdrawOrderQueryRange = Field(
         alias="withdrawOrderQueryRange",
+    )
+    charge_order_refresh_interval_hours: int = Field(
+        ge=1,
+        le=24,
+        alias="chargeOrderRefreshIntervalHours",
+    )
+    charge_order_refresh_page_size: ChargeOrderRefreshPageSize = Field(
+        alias="chargeOrderRefreshPageSize",
+    )
+    charge_order_query_range: ChargeOrderQueryRange = Field(
+        alias="chargeOrderQueryRange",
     )
     session_ttl_days: int = Field(alias="sessionTtlDays")
     config_version: int = Field(alias="configVersion")
@@ -66,5 +79,19 @@ class RetentionSettingsUpdateRequest(BaseModel):
     withdraw_order_query_range: WithdrawOrderQueryRange | None = Field(
         default=None,
         alias="withdrawOrderQueryRange",
+    )
+    charge_order_refresh_interval_hours: int | None = Field(
+        default=None,
+        ge=1,
+        le=24,
+        alias="chargeOrderRefreshIntervalHours",
+    )
+    charge_order_refresh_page_size: ChargeOrderRefreshPageSize | None = Field(
+        default=None,
+        alias="chargeOrderRefreshPageSize",
+    )
+    charge_order_query_range: ChargeOrderQueryRange | None = Field(
+        default=None,
+        alias="chargeOrderQueryRange",
     )
     session_ttl_days: int = Field(ge=1, le=365, alias="sessionTtlDays")

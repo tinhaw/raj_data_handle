@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from packages.common.settings import Settings
@@ -89,6 +90,22 @@ async def test_custom_source_can_be_created_and_deleted() -> None:
         )
         assert created.source_id == "rajstar"
         assert created.enabled is False
+        seeded_statuses = list(
+            await session.scalars(
+                select(DataDictionaryEntry)
+                .where(
+                    DataDictionaryEntry.source_id == "rajstar",
+                    DataDictionaryEntry.dictionary_type == "charge_status",
+                )
+                .order_by(DataDictionaryEntry.entry_code)
+            )
+        )
+        assert [(entry.entry_code, entry.entry_label) for entry in seeded_statuses] == [
+            ("-1", "已失效"),
+            ("0", "待支付"),
+            ("1", "已支付"),
+            ("2", "已退款"),
+        ]
         dictionary_entry = DataDictionaryEntry(
             source_id="rajstar",
             dictionary_type="payment_channel_name",

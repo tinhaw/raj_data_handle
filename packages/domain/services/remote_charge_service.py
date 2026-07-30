@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
@@ -11,15 +13,17 @@ LOGIN_PATH = "/api/system/login"
 CHARGE_ORDER_INDEX_PATH = "/api/operate/chargeOrder/index"
 CHARGE_CHANNEL_PATH = "/api/operate/chargeOrder/payChannel"
 WITHDRAW_ORDER_INDEX_PATH = "/api/operate/withdrawOrder/index"
-WITHDRAW_STATUS_DICTIONARY_PATH = "/api/system/dataDict/list"
+DATA_DICTIONARY_PATH = "/api/system/dataDict/list"
+WITHDRAW_STATUS_DICTIONARY_PATH = DATA_DICTIONARY_PATH
 REMOTE_SUCCESS_STATUS = 1
 REMOTE_GET_PATHS = {
     CHARGE_ORDER_INDEX_PATH,
     CHARGE_CHANNEL_PATH,
-    WITHDRAW_STATUS_DICTIONARY_PATH,
+    DATA_DICTIONARY_PATH,
 }
 REMOTE_POST_PATHS = {WITHDRAW_ORDER_INDEX_PATH}
 AUTH_FAILURE_STATUSES = {401, 403, 419, 440}
+MAX_CHARGE_PAGES_PER_CHANNEL = 200
 
 
 class RemoteChargeError(RuntimeError):
@@ -38,6 +42,64 @@ class RemoteResponseError(RemoteChargeError):
 class ExactSearchResult:
     orders: list[dict[str, Any]]
     complete: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ChargeFetchResult:
+    orders: list[dict[str, Any]]
+    fetched_pages: int
+    remote_total: int
+    complete: bool
+
+    def __iter__(self):
+        """Keep the existing reconciliation-client tuple contract intact."""
+
+        yield self.orders
+        yield self.fetched_pages
+
+
+def _text(value: object) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized if normalized and normalized != "-" else None
+
+
+def _amount(value: object) -> str | None:
+    text = _text(value)
+    if text is None:
+        return None
+    try:
+        return format(Decimal(text), "f")
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def normalize_charge_order(item: dict[str, Any]) -> dict[str, Any]:
+    """Keep only the approved recharge-monitor fields from a remote item."""
+
+    return {
+        "id": _text(item.get("id")) or "",
+        "uid": _text(item.get("uid")) or "",
+        "order_num": _text(item.get("order_num")),
+        "out_trade_no": _text(item.get("out_trade_no")),
+        "pay_method": _text(item.get("pay_method") or item.get("_remote_channel_code")),
+        "pay_channel_name": _text(item.get("pay_channel_name")),
+        "amount": _amount(item.get("amount")),
+        "balance": _amount(item.get("balance")),
+        "extra": _amount(item.get("extra")),
+        "status": _text(item.get("status")) or "",
+        "create_time": _text(item.get("create_time")),
+        "pay_time": _text(item.get("pay_time")),
+        "update_time": _text(item.get("update_time")),
+        "first_pay": _text(item.get("first_pay")),
+        "notified": _text(item.get("notified")),
+        "charge_type": _text(item.get("charge_type")),
+        "channel": _text(item.get("channel")),
+        "fill_order_id": _text(item.get("fill_order_id")),
+        "fill_order_num": _text(item.get("fill_order_num")),
+        "fill_order_admin": _text(item.get("fill_order_admin")),
+    }
 
 
 def _extract_token(payload: object) -> str | None:
@@ -223,6 +285,37 @@ class RajAdminChargeClient:
             raise RemoteResponseError("远端充值渠道名称字典为空。")
         return channels
 
+    async def fetch_payment_channels(self) -> list[dict[str, str]]:
+        """Fetch the key/title dictionary whose key is the order pay_method value."""
+
+        data = _response_data(
+            await self._get_json(
+                DATA_DICTIONARY_PATH,
+                params={"code": "pay_channel"},
+            )
+        )
+        if not isinstance(data, list):
+            raise RemoteResponseError("远端支付渠道字典结构无效。")
+
+        channels_by_code: dict[str, str] = {}
+        for item in data:
+            if not isinstance(item, dict):
+                raise RemoteResponseError("远端支付渠道字典包含无效条目。")
+            code = _text(item.get("key"))
+            label = _text(item.get("title"))
+            if not code or not label:
+                raise RemoteResponseError("远端支付渠道字典缺少 pay_method 值或展示内容。")
+            previous = channels_by_code.get(code)
+            if previous is not None and previous != label:
+                raise RemoteResponseError("远端支付渠道字典中同一 pay_method 对应多个展示内容。")
+            channels_by_code[code] = label
+        if not channels_by_code:
+            raise RemoteResponseError("远端支付渠道字典为空。")
+        return [
+            {"code": code, "label": label}
+            for code, label in sorted(channels_by_code.items())
+        ]
+
     def _charge_params(
         self,
         *,
@@ -310,9 +403,11 @@ class RajAdminChargeClient:
         channels: list[dict[str, str]],
         create_start: str,
         create_end: str,
-    ) -> tuple[list[dict[str, Any]], int]:
+        on_page_fetched: Callable[[], Awaitable[None]] | None = None,
+    ) -> ChargeFetchResult:
         all_orders: list[dict[str, Any]] = []
         fetched_pages = 0
+        remote_total = 0
         for channel in channels:
             page = 1
             channel_orders: list[dict[str, Any]] = []
@@ -326,18 +421,38 @@ class RajAdminChargeClient:
                     create_end=create_end,
                 )
                 fetched_pages += 1
-                channel_orders.extend(items)
+                channel_orders.extend(normalize_charge_order(item) for item in items)
                 expected_total = page_info["total"]
                 total_page = page_info["total_page"]
-                if total_page > 100_000:
-                    raise RemoteResponseError("远端充值订单分页数量异常。")
+                if on_page_fetched is not None:
+                    await on_page_fetched()
+                if total_page > MAX_CHARGE_PAGES_PER_CHANNEL:
+                    raise RemoteResponseError("充值订单数量过多，请缩小查询时间范围。")
                 if page >= total_page:
                     break
                 page += 1
             if len(channel_orders) != expected_total:
                 raise RemoteResponseError("远端充值订单累计数量与 pageInfo.total 不一致。")
             all_orders.extend(channel_orders)
-        return all_orders, fetched_pages
+            remote_total += expected_total
+
+        unique_orders: dict[str, dict[str, Any]] = {}
+        anonymous_orders: list[dict[str, Any]] = []
+        for order in all_orders:
+            order_id = str(order.get("id") or "")
+            if order_id:
+                unique_orders[order_id] = order
+            else:
+                anonymous_orders.append(order)
+        normalized_orders = [*unique_orders.values(), *anonymous_orders]
+        return ChargeFetchResult(
+            orders=normalized_orders,
+            fetched_pages=fetched_pages,
+            remote_total=remote_total,
+            # Some channel filters can overlap.  De-duplication by remote ID is
+            # expected and a complete traversal remains authoritative.
+            complete=True,
+        )
 
     async def exact_search(
         self,
@@ -378,10 +493,7 @@ class RajAdminChargeClient:
                     continue
                 for item in channel_orders:
                     identity = str(
-                        item.get("id")
-                        or item.get("order_num")
-                        or item.get("out_trade_no")
-                        or ""
+                        item.get("id") or item.get("order_num") or item.get("out_trade_no") or ""
                     )
                     if identity:
                         found[identity] = item

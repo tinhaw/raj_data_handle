@@ -18,13 +18,79 @@ from packages.domain.services.data_dictionary_service import (
     DataDictionarySyncError,
     DataDictionaryValidationError,
     create_withdraw_status,
+    ensure_charge_statuses,
+    list_charge_statuses,
     list_payment_channel_names,
+    list_payment_channels,
     list_withdraw_statuses,
     sync_payment_channel_names,
+    sync_payment_channels,
     sync_remote_withdraw_statuses,
     update_withdraw_status,
     withdraw_status_dictionary,
 )
+
+
+@pytest.mark.asyncio
+async def test_charge_statuses_are_seeded_idempotently_and_repair_confirmed_values() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    seeded_at = datetime(2026, 7, 30, tzinfo=UTC)
+
+    async with factory() as session:
+        session.add(
+            SourceConfig(
+                source_id="rajwin",
+                display_name="RajWin",
+                business_timezone="Asia/Kolkata",
+                currency="INR",
+            )
+        )
+        await session.commit()
+
+        assert await ensure_charge_statuses(
+            session,
+            source_id="rajwin",
+            now=seeded_at,
+        ) == 4
+        await session.commit()
+        rows = await list_charge_statuses(session, source_id="rajwin", active=True)
+        assert [(row.entry_code, row.entry_label) for row in rows] == [
+            ("-1", "已失效"),
+            ("0", "待支付"),
+            ("1", "已支付"),
+            ("2", "已退款"),
+        ]
+
+        stored = await session.scalar(
+            select(DataDictionaryEntry).where(
+                DataDictionaryEntry.source_id == "rajwin",
+                DataDictionaryEntry.dictionary_type == "charge_status",
+                DataDictionaryEntry.entry_code == "1",
+            )
+        )
+        assert stored is not None
+        stored.entry_label = "错误名称"
+        stored.active = False
+        await session.commit()
+
+        assert await ensure_charge_statuses(
+            session,
+            source_id="rajwin",
+            now=seeded_at,
+        ) == 0
+        await session.commit()
+        repaired = await list_charge_statuses(session, source_id="rajwin", active=True)
+        assert [(row.entry_code, row.entry_label) for row in repaired] == [
+            ("-1", "已失效"),
+            ("0", "待支付"),
+            ("1", "已支付"),
+            ("2", "已退款"),
+        ]
+
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -100,6 +166,74 @@ async def test_payment_channel_name_sync_rejects_conflicting_duplicate_ids() -> 
                 channels=[
                     {"code": "948", "label": "aelopay(HX)"},
                     {"code": "948", "label": "aelopay(唤醒)"},
+                ],
+            )
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_payment_channels_map_pay_method_independently_from_channel_names() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with factory() as session:
+        session.add(
+            SourceConfig(
+                source_id="rajwin",
+                display_name="RajWin",
+                business_timezone="Asia/Kolkata",
+                currency="INR",
+            )
+        )
+        await session.commit()
+
+        first = await sync_payment_channels(
+            session,
+            source_id="rajwin",
+            channels=[
+                {"code": "448", "label": "MasterPay(唤醒)"},
+                {"code": "400", "label": "Ninestar(唤醒)"},
+            ],
+        )
+        await sync_payment_channel_names(
+            session,
+            source_id="rajwin",
+            channels=[{"code": "448", "label": "旧接口渠道名称"}],
+        )
+        second = await sync_payment_channels(
+            session,
+            source_id="rajwin",
+            channels=[
+                {"code": "448", "label": "MasterPay(唤醒)-新名称"},
+                {"code": "395", "label": "TataPay(唤醒)"},
+            ],
+        )
+        await session.commit()
+
+        rows = await list_payment_channels(session)
+        rows_by_code = {row.entry_code: row for row in rows}
+        channel_name_rows = await list_payment_channel_names(session)
+        assert first.active_entries == 2
+        assert second.created_entries == 1
+        assert second.updated_entries == 1
+        assert second.deactivated_entries == 1
+        assert rows_by_code["448"].entry_label == "MasterPay(唤醒)-新名称"
+        assert rows_by_code["400"].active is False
+        assert rows_by_code["395"].active is True
+        assert rows_by_code["448"].dictionary_type == "payment_channel"
+        assert channel_name_rows[0].dictionary_type == "payment_channel_name"
+        assert channel_name_rows[0].entry_label == "旧接口渠道名称"
+
+        with pytest.raises(DataDictionarySyncError, match="同一 pay_method"):
+            await sync_payment_channels(
+                session,
+                source_id="rajwin",
+                channels=[
+                    {"code": "448", "label": "名称 A"},
+                    {"code": "448", "label": "名称 B"},
                 ],
             )
 

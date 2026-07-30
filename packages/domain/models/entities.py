@@ -111,6 +111,21 @@ class SystemRetentionSetting(Base):
         nullable=False,
         default="today",
     )
+    charge_order_refresh_interval_hours: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+    )
+    charge_order_refresh_page_size: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=100,
+    )
+    charge_order_query_range: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="today",
+    )
     config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
     updated_at: Mapped[datetime] = mapped_column(
@@ -193,6 +208,93 @@ class WithdrawOrderRefreshState(Base):
     """Source-scoped background refresh state and durable manual request marker."""
 
     __tablename__ = "withdraw_order_refresh_states"
+
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="idle", index=True)
+    manual_request_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    manual_query_range: Mapped[str | None] = mapped_column(String(32))
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_window_start_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_window_end_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_remote_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_cached_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_fetched_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_error: Mapped[str | None] = mapped_column(String(500))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class ChargeOrderSnapshot(Base):
+    """Approved fields from the read-only remote recharge-order response.
+
+    The snapshot deliberately omits account, IP, nickname, attachment and raw
+    callback fields.  They are unnecessary for local monitoring and should not
+    be copied into the analysis database.
+    """
+
+    __tablename__ = "charge_order_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id",
+            "remote_order_id",
+            name="uq_charge_order_snapshot_source_remote_id",
+        ),
+        Index("ix_charge_order_snapshot_source_create_time", "source_id", "create_time_utc"),
+        Index("ix_charge_order_snapshot_source_status", "source_id", "status"),
+        Index("ix_charge_order_snapshot_source_uid", "source_id", "uid"),
+        Index("ix_charge_order_snapshot_source_channel", "source_id", "pay_method"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    remote_order_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    uid: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    order_num: Mapped[str | None] = mapped_column(String(160))
+    out_trade_no: Mapped[str | None] = mapped_column(String(160))
+    pay_method: Mapped[str | None] = mapped_column(String(120))
+    pay_channel_name: Mapped[str | None] = mapped_column(String(160))
+    amount: Mapped[str | None] = mapped_column(String(64))
+    balance: Mapped[str | None] = mapped_column(String(64))
+    extra: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    create_time: Mapped[str | None] = mapped_column(String(32))
+    create_time_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pay_time: Mapped[str | None] = mapped_column(String(32))
+    update_time: Mapped[str | None] = mapped_column(String(32))
+    first_pay: Mapped[str | None] = mapped_column(String(40))
+    notified: Mapped[str | None] = mapped_column(String(40))
+    charge_type: Mapped[str | None] = mapped_column(String(80))
+    channel: Mapped[str | None] = mapped_column(String(120))
+    fill_order_id: Mapped[str | None] = mapped_column(String(120))
+    fill_order_num: Mapped[str | None] = mapped_column(String(160))
+    fill_order_admin: Mapped[str | None] = mapped_column(String(160))
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
+    )
+
+
+class ChargeOrderRefreshState(Base):
+    """Durable source-scoped scheduling state for recharge-order refreshes."""
+
+    __tablename__ = "charge_order_refresh_states"
 
     source_id: Mapped[str] = mapped_column(
         ForeignKey("source_configs.source_id", ondelete="CASCADE"),

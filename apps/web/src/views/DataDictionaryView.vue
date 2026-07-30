@@ -5,6 +5,8 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import {
   createWithdrawStatus,
+  fetchChargeStatuses,
+  fetchPaymentChannels,
   fetchPaymentChannelNames,
   fetchWithdrawStatuses,
   syncWithdrawStatuses,
@@ -28,10 +30,14 @@ const loading = ref(false)
 const saving = ref(false)
 const syncingWithdrawStatuses = ref(false)
 const withdrawStatuses = ref<DataDictionaryEntry[]>([])
+const chargeStatuses = ref<DataDictionaryEntry[]>([])
+const paymentChannels = ref<DataDictionaryEntry[]>([])
 const paymentChannelNames = ref<DataDictionaryEntry[]>([])
 const sources = ref<SourceConfig[]>([])
 const statusPage = ref(1)
-const channelPage = ref(1)
+const chargeStatusPage = ref(1)
+const paymentChannelPage = ref(1)
+const channelNamePage = ref(1)
 const pageSize = ref(20)
 const dialogVisible = ref(false)
 const editingEntryId = ref<number | null>(null)
@@ -41,7 +47,17 @@ const statusFilters = reactive({
   sourceId: '',
   state: 'active' as EntryState,
 })
+const chargeStatusFilters = reactive({
+  keyword: '',
+  sourceId: '',
+  state: 'active' as EntryState,
+})
 const channelFilters = reactive({
+  keyword: '',
+  sourceId: '',
+  state: 'active' as EntryState,
+})
+const paymentChannelFilters = reactive({
   keyword: '',
   sourceId: '',
   state: 'active' as EntryState,
@@ -89,12 +105,26 @@ function latestSeenAt(entries: DataDictionaryEntry[]): string | null {
 }
 
 const filteredWithdrawStatuses = computed(() => filterEntries(withdrawStatuses.value, statusFilters))
+const filteredChargeStatuses = computed(() =>
+  filterEntries(chargeStatuses.value, chargeStatusFilters),
+)
+const filteredPaymentChannels = computed(() =>
+  filterEntries(paymentChannels.value, paymentChannelFilters),
+)
 const filteredPaymentChannelNames = computed(() =>
   filterEntries(paymentChannelNames.value, channelFilters),
 )
-const pagedWithdrawStatuses = computed(() => pageEntries(filteredWithdrawStatuses.value, statusPage.value))
+const pagedWithdrawStatuses = computed(() =>
+  pageEntries(filteredWithdrawStatuses.value, statusPage.value),
+)
+const pagedChargeStatuses = computed(() =>
+  pageEntries(filteredChargeStatuses.value, chargeStatusPage.value),
+)
+const pagedPaymentChannels = computed(() =>
+  pageEntries(filteredPaymentChannels.value, paymentChannelPage.value),
+)
 const pagedPaymentChannelNames = computed(() =>
-  pageEntries(filteredPaymentChannelNames.value, channelPage.value),
+  pageEntries(filteredPaymentChannelNames.value, channelNamePage.value),
 )
 const activeWithdrawStatusCount = computed(
   () => withdrawStatuses.value.filter((entry) => entry.active).length,
@@ -102,10 +132,22 @@ const activeWithdrawStatusCount = computed(
 const withdrawStatusSourceCount = computed(
   () => new Set(withdrawStatuses.value.map((entry) => entry.sourceId)).size,
 )
-const activeChannelCount = computed(
+const activeChargeStatusCount = computed(
+  () => chargeStatuses.value.filter((entry) => entry.active).length,
+)
+const chargeStatusSourceCount = computed(
+  () => new Set(chargeStatuses.value.map((entry) => entry.sourceId)).size,
+)
+const activePaymentChannelCount = computed(
+  () => paymentChannels.value.filter((entry) => entry.active).length,
+)
+const paymentChannelSourceCount = computed(
+  () => new Set(paymentChannels.value.map((entry) => entry.sourceId)).size,
+)
+const activeChannelNameCount = computed(
   () => paymentChannelNames.value.filter((entry) => entry.active).length,
 )
-const channelSourceCount = computed(
+const channelNameSourceCount = computed(
   () => new Set(paymentChannelNames.value.map((entry) => entry.sourceId)).size,
 )
 const isEditing = computed(() => editingEntryId.value !== null)
@@ -118,13 +160,18 @@ const latestWithdrawStatusSeenAt = computed(() => latestSeenAt(selectedWithdrawS
 async function load(): Promise<void> {
   loading.value = true
   try {
-    const [statuses, channels, availableSources] = await Promise.all([
-      fetchWithdrawStatuses(),
-      fetchPaymentChannelNames(),
-      fetchAllSources(),
-    ])
+    const [statuses, rechargeStatuses, channels, channelNames, availableSources] =
+      await Promise.all([
+        fetchWithdrawStatuses(),
+        fetchChargeStatuses(),
+        fetchPaymentChannels(),
+        fetchPaymentChannelNames(),
+        fetchAllSources(),
+      ])
     withdrawStatuses.value = statuses
-    paymentChannelNames.value = channels
+    chargeStatuses.value = rechargeStatuses
+    paymentChannels.value = channels
+    paymentChannelNames.value = channelNames
     sources.value = availableSources
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '数据字典加载失败。'))
@@ -259,14 +306,36 @@ watch(
   },
 )
 watch(
+  () => [
+    chargeStatusFilters.keyword,
+    chargeStatusFilters.sourceId,
+    chargeStatusFilters.state,
+  ],
+  () => {
+    chargeStatusPage.value = 1
+  },
+)
+watch(
+  () => [
+    paymentChannelFilters.keyword,
+    paymentChannelFilters.sourceId,
+    paymentChannelFilters.state,
+  ],
+  () => {
+    paymentChannelPage.value = 1
+  },
+)
+watch(
   () => [channelFilters.keyword, channelFilters.sourceId, channelFilters.state],
   () => {
-    channelPage.value = 1
+    channelNamePage.value = 1
   },
 )
 watch(pageSize, () => {
   statusPage.value = 1
-  channelPage.value = 1
+  chargeStatusPage.value = 1
+  paymentChannelPage.value = 1
+  channelNamePage.value = 1
 })
 
 onMounted(load)
@@ -278,7 +347,7 @@ onMounted(load)
       <div>
         <span class="page-eyebrow">Data dictionaries</span>
         <h1>数据字典</h1>
-        <p>按盘口维护稳定的值与展示内容映射；同一状态值在不同盘口可使用不同文案。</p>
+        <p>按盘口维护稳定的响应值与展示内容映射，并明确每套字典对应的远端字段。</p>
       </div>
       <el-button :icon="Refresh" :loading="loading" @click="load">刷新本地数据</el-button>
     </header>
@@ -429,10 +498,238 @@ onMounted(load)
           </div>
         </el-tab-pane>
 
+        <el-tab-pane label="充值订单状态" name="charge-statuses">
+          <el-alert
+            title="充值订单状态由人工核对并存入本地数据库"
+            description="当前尚未找到远端字典接口；系统按已确认结果保存 -1=已失效、0=待支付、1=已支付、2=已退款。本页只读，不提供远端刷新或手工修改。"
+            type="info"
+            show-icon
+            :closable="false"
+          />
+
+          <div class="dictionary-tab-heading">
+            <div>
+              <h2>充值订单状态映射</h2>
+              <p>充值订单筛选和状态列均从该数据库字典读取，未知状态显示为“状态 {值}”。</p>
+            </div>
+            <div class="field-binding">
+              <span>对应响应字段</span>
+              <code>status</code>
+            </div>
+          </div>
+
+          <div class="summary-grid">
+            <article>
+              <span>有效记录</span>
+              <strong>{{ activeChargeStatusCount }}</strong>
+            </article>
+            <article>
+              <span>已初始化盘口</span>
+              <strong>{{ chargeStatusSourceCount }}</strong>
+            </article>
+            <article>
+              <span>数据来源</span>
+              <strong>人工核对</strong>
+            </article>
+          </div>
+
+          <div class="dictionary-toolbar">
+            <el-input
+              v-model="chargeStatusFilters.keyword"
+              :prefix-icon="Search"
+              clearable
+              placeholder="搜索展示内容或 status 值"
+            />
+            <el-select v-model="chargeStatusFilters.sourceId" placeholder="全部盘口">
+              <el-option label="全部盘口" value="" />
+              <el-option
+                v-for="source in sources"
+                :key="source.sourceId"
+                :label="source.displayName"
+                :value="source.sourceId"
+              />
+            </el-select>
+            <el-segmented
+              v-model="chargeStatusFilters.state"
+              :options="[
+                { label: '有效', value: 'active' },
+                { label: '停用', value: 'inactive' },
+                { label: '全部', value: 'all' },
+              ]"
+            />
+          </div>
+
+          <el-table :data="pagedChargeStatuses" stripe>
+            <el-table-column label="展示内容" min-width="260">
+              <template #default="{ row }">
+                <strong class="entry-label">{{ row.entryLabel }}</strong>
+              </template>
+            </el-table-column>
+            <el-table-column label="status 值" width="160">
+              <template #default="{ row }">
+                <el-tag effect="plain">{{ row.entryCode }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="来源盘口" min-width="190">
+              <template #default="{ row }">
+                <div class="source-cell">
+                  <strong>{{ row.sourceDisplayName }}</strong>
+                  <span>{{ row.sourceId }}</span>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="110">
+              <template #default="{ row }">
+                <el-tag :type="row.active ? 'success' : 'info'">
+                  {{ row.active ? '有效' : '停用' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="数据库更新时间" min-width="190">
+              <template #default="{ row }">{{ formatDateTime(row.updatedAt) }}</template>
+            </el-table-column>
+            <template #empty>
+              <el-empty description="暂无充值订单状态字典">
+                <span class="empty-help">请先完成充值订单状态字典的数据库初始化。</span>
+              </el-empty>
+            </template>
+          </el-table>
+
+          <div v-if="filteredChargeStatuses.length" class="pagination-row">
+            <span>共 {{ filteredChargeStatuses.length }} 条</span>
+            <el-pagination
+              v-model:current-page="chargeStatusPage"
+              v-model:page-size="pageSize"
+              :page-sizes="[20, 50, 100]"
+              :total="filteredChargeStatuses.length"
+              layout="sizes, prev, pager, next"
+            />
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="支付渠道" name="payment-channels">
+          <el-alert
+            title="支付渠道字典对应充值订单响应字段 pay_method"
+            description="系统从远端数据字典 pay_channel 读取 key/title：key 保存为 pay_method 值，title 作为页面展示内容；远端不再返回的条目会保留并标记为停用。"
+            type="info"
+            show-icon
+            :closable="false"
+          />
+
+          <div class="dictionary-tab-heading">
+            <div>
+              <h2>支付渠道映射</h2>
+              <p>
+                充值订单明细、筛选和渠道汇总均使用这套映射；该字典为远端只读同步数据。
+              </p>
+            </div>
+            <div class="field-binding">
+              <span>对应响应字段</span>
+              <code>pay_method</code>
+            </div>
+          </div>
+
+          <div class="summary-grid">
+            <article>
+              <span>有效条目</span>
+              <strong>{{ activePaymentChannelCount }}</strong>
+            </article>
+            <article>
+              <span>已同步盘口</span>
+              <strong>{{ paymentChannelSourceCount }}</strong>
+            </article>
+            <article>
+              <span>最近同步</span>
+              <strong>
+                {{
+                  latestAt(paymentChannels)
+                    ? formatDateTime(latestAt(paymentChannels))
+                    : '尚未同步'
+                }}
+              </strong>
+            </article>
+          </div>
+
+          <div class="dictionary-toolbar">
+            <el-input
+              v-model="paymentChannelFilters.keyword"
+              :prefix-icon="Search"
+              clearable
+              placeholder="搜索展示内容或 pay_method 值"
+            />
+            <el-select v-model="paymentChannelFilters.sourceId" placeholder="全部盘口">
+              <el-option label="全部盘口" value="" />
+              <el-option
+                v-for="source in sources"
+                :key="source.sourceId"
+                :label="source.displayName"
+                :value="source.sourceId"
+              />
+            </el-select>
+            <el-segmented
+              v-model="paymentChannelFilters.state"
+              :options="[
+                { label: '有效', value: 'active' },
+                { label: '停用', value: 'inactive' },
+                { label: '全部', value: 'all' },
+              ]"
+            />
+          </div>
+
+          <el-table :data="pagedPaymentChannels" stripe>
+            <el-table-column label="展示内容（title）" min-width="260">
+              <template #default="{ row }">
+                <strong class="entry-label">{{ row.entryLabel }}</strong>
+              </template>
+            </el-table-column>
+            <el-table-column label="pay_method 值（key）" min-width="190">
+              <template #default="{ row }">
+                <el-tag effect="plain">{{ row.entryCode }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="来源盘口" min-width="190">
+              <template #default="{ row }">
+                <div class="source-cell">
+                  <strong>{{ row.sourceDisplayName }}</strong>
+                  <span>{{ row.sourceId }}</span>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="110">
+              <template #default="{ row }">
+                <el-tag :type="row.active ? 'success' : 'info'">
+                  {{ row.active ? '有效' : '停用' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="最近同步" min-width="190">
+              <template #default="{ row }">{{ formatDateTime(row.updatedAt) }}</template>
+            </el-table-column>
+            <template #empty>
+              <el-empty description="暂无支付渠道字典">
+                <span class="empty-help">
+                  请先到“盘口配置”完成连接测试，或等待下一次充值订单后台刷新。
+                </span>
+              </el-empty>
+            </template>
+          </el-table>
+
+          <div v-if="filteredPaymentChannels.length" class="pagination-row">
+            <span>共 {{ filteredPaymentChannels.length }} 条</span>
+            <el-pagination
+              v-model:current-page="paymentChannelPage"
+              v-model:page-size="pageSize"
+              :page-sizes="[20, 50, 100]"
+              :total="filteredPaymentChannels.length"
+              layout="sizes, prev, pager, next"
+            />
+          </div>
+        </el-tab-pane>
+
         <el-tab-pane label="支付渠道名称" name="payment-channel-names">
           <el-alert
-            title="支付渠道名称由盘口连接测试同步"
-            description="连接测试成功后，系统从充值订单模块读取远端 label/value；远端不再返回的条目会保留并标记为停用。"
+            title="支付渠道名称字典对应充值订单响应字段 pay_channel_name"
+            description="系统从充值订单模块的 payChannel 接口读取 value/label：value 保存为 pay_channel_name 值，label 作为页面展示内容；该字典与 pay_method 对应的 key/title 字典分开保存。"
             type="info"
             show-icon
             :closable="false"
@@ -441,18 +738,22 @@ onMounted(load)
           <div class="dictionary-tab-heading">
             <div>
               <h2>支付渠道名称</h2>
-              <p>该字典为只读同步数据，不能在本页面手工修改。</p>
+              <p>充值订单明细会按该字典转换支付渠道名称；该字典为只读同步数据。</p>
+            </div>
+            <div class="field-binding">
+              <span>对应响应字段</span>
+              <code>pay_channel_name</code>
             </div>
           </div>
 
           <div class="summary-grid">
             <article>
               <span>有效条目</span>
-              <strong>{{ activeChannelCount }}</strong>
+              <strong>{{ activeChannelNameCount }}</strong>
             </article>
             <article>
               <span>已同步盘口</span>
-              <strong>{{ channelSourceCount }}</strong>
+              <strong>{{ channelNameSourceCount }}</strong>
             </article>
             <article>
               <span>最近同步</span>
@@ -465,7 +766,7 @@ onMounted(load)
               v-model="channelFilters.keyword"
               :prefix-icon="Search"
               clearable
-              placeholder="搜索渠道名称或 ID"
+              placeholder="搜索展示内容或 pay_channel_name 值"
             />
             <el-select v-model="channelFilters.sourceId" placeholder="全部盘口">
               <el-option label="全部盘口" value="" />
@@ -487,12 +788,12 @@ onMounted(load)
           </div>
 
           <el-table :data="pagedPaymentChannelNames" stripe>
-            <el-table-column label="支付渠道名称" min-width="260">
+            <el-table-column label="展示内容（label）" min-width="260">
               <template #default="{ row }">
                 <strong class="entry-label">{{ row.entryLabel }}</strong>
               </template>
             </el-table-column>
-            <el-table-column label="渠道 ID" width="150">
+            <el-table-column label="pay_channel_name 值（value）" min-width="230">
               <template #default="{ row }">
                 <el-tag effect="plain">{{ row.entryCode }}</el-tag>
               </template>
@@ -525,7 +826,7 @@ onMounted(load)
           <div v-if="filteredPaymentChannelNames.length" class="pagination-row">
             <span>共 {{ filteredPaymentChannelNames.length }} 条</span>
             <el-pagination
-              v-model:current-page="channelPage"
+              v-model:current-page="channelNamePage"
               v-model:page-size="pageSize"
               :page-sizes="[20, 50, 100]"
               :total="filteredPaymentChannelNames.length"
@@ -607,6 +908,26 @@ onMounted(load)
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.field-binding {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 11px;
+  border: 1px solid #b9ded8;
+  border-radius: 9px;
+  background: #effaf8;
+  color: var(--ink-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.field-binding code {
+  color: #087f72;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .sync-feedback {

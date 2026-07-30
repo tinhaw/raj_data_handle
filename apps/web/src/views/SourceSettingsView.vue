@@ -226,7 +226,7 @@ onMounted(load)
 
     <el-alert
       title="凭据字段只写不读"
-      description="页面只显示是否已配置；账号、密码和 TOTP Secret 加密保存，接口永不回显。连接测试只执行登录和充值渠道字典读取。"
+      description="页面只显示是否已配置；账号、密码和 TOTP Secret 加密保存，接口永不回显。连接测试只执行登录，并读取 pay_method 的 key/title 与 pay_channel_name 的 value/label 两套只读字典。"
       type="info"
       show-icon
       :closable="false"

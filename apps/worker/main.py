@@ -11,6 +11,9 @@ from packages.common.settings import get_settings
 from packages.domain.models import ReconciliationBatch
 from packages.domain.services.batch_service import transition_batch
 from packages.domain.services.batch_state import TERMINAL_BATCH_STATUSES
+from packages.domain.services.charge_order_refresh_service import (
+    run_due_charge_order_refreshes,
+)
 from packages.domain.services.reconciliation_execution_service import (
     execute_reconciliation_batch,
 )
@@ -76,6 +79,12 @@ async def process_due_withdraw_order_refreshes() -> int:
     return len(outcomes)
 
 
+async def process_due_charge_order_refreshes() -> int:
+    async with AsyncSessionLocal() as session:
+        outcomes = await run_due_charge_order_refreshes(session)
+    return len(outcomes)
+
+
 async def run_due_withdraw_order_refresh_cycle() -> None:
     """Run one protected refresh cycle without exposing remote failure details."""
 
@@ -95,11 +104,28 @@ async def run_due_withdraw_order_refresh_cycle() -> None:
         logger.warning("withdraw order refresh cycle failed; retrying later")
 
 
+async def run_due_charge_order_refresh_cycle() -> None:
+    try:
+        refreshed_sources = await process_due_charge_order_refreshes()
+        if refreshed_sources:
+            logger.info("charge order refresh cycle processed source_count=%s", refreshed_sources)
+    except SQLAlchemyError:
+        logger.warning("charge order refresh schema or database is not ready; retrying later")
+    except Exception:
+        logger.warning("charge order refresh cycle failed; retrying later")
+
+
 async def run_withdraw_order_refresh_loop() -> None:
     """Keep cached withdrawal orders current without blocking reconciliation work."""
 
     while True:
         await run_due_withdraw_order_refresh_cycle()
+        await asyncio.sleep(WITHDRAW_ORDER_REFRESH_POLL_SECONDS)
+
+
+async def run_charge_order_refresh_loop() -> None:
+    while True:
+        await run_due_charge_order_refresh_cycle()
         await asyncio.sleep(WITHDRAW_ORDER_REFRESH_POLL_SECONDS)
 
 
@@ -112,6 +138,10 @@ async def run() -> None:
         run_withdraw_order_refresh_loop(),
         name="withdraw-order-refresh-loop",
     )
+    charge_refresh_task = asyncio.create_task(
+        run_charge_order_refresh_loop(),
+        name="charge-order-refresh-loop",
+    )
     try:
         while True:
             try:
@@ -121,11 +151,12 @@ async def run() -> None:
                     if any(counts.values()):
                         logger.info(
                             "retention cleanup finished references=%s files=%s batches=%s "
-                            "withdraw_order_snapshots=%s",
+                            "withdraw_order_snapshots=%s charge_order_snapshots=%s",
                             counts["expiredFileReferences"],
                             counts["deletedFileObjects"],
                             counts["deletedBatches"],
                             counts.get("deletedWithdrawOrderSnapshots", 0),
+                            counts.get("deletedChargeOrderSnapshots", 0),
                         )
                     next_cleanup_at = asyncio.get_running_loop().time() + 1800
                 processed = await process_next_batch(storage)
@@ -136,8 +167,13 @@ async def run() -> None:
                 await asyncio.sleep(30)
     finally:
         refresh_task.cancel()
+        charge_refresh_task.cancel()
         try:
             await refresh_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await charge_refresh_task
         except asyncio.CancelledError:
             pass
 

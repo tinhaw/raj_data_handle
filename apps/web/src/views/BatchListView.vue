@@ -7,6 +7,8 @@ import { useRouter } from 'vue-router'
 import { fetchBatches, fetchOperationalSummary } from '../api/batches'
 import { apiErrorMessage } from '../api/client'
 import { fetchEnabledSources } from '../api/sources'
+import ChargeChannelSummary from '../components/ChargeChannelSummary.vue'
+import ChargeOrderDetails from '../components/ChargeOrderDetails.vue'
 import type { BatchRecord, OperationalSummary, SourceConfig } from '../types'
 import { formatDateTime, statusLabel, statusTagType } from '../ui'
 
@@ -219,6 +221,12 @@ onMounted(async () => {
             </el-table>
           </section>
         </div>
+      </el-tab-pane>
+      <el-tab-pane label="充值订单明细" name="orders" lazy>
+        <ChargeOrderDetails />
+      </el-tab-pane>
+      <el-tab-pane label="支付渠道汇总" name="channels" lazy>
+        <ChargeChannelSummary />
       </el-tab-pane>
     </el-tabs>
   </div>

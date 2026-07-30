@@ -19,13 +19,49 @@ from packages.domain.services.data_dictionary_service import (
     DataDictionaryRemoteSyncError,
     DataDictionaryValidationError,
     create_withdraw_status,
+    list_charge_statuses,
     list_payment_channel_names,
+    list_payment_channels,
     list_withdraw_statuses,
     sync_remote_withdraw_statuses,
     update_withdraw_status,
 )
 
 router = APIRouter(tags=["data-dictionaries"])
+
+
+@router.get(
+    "/settings/data-dictionaries/charge-statuses",
+    response_model=list[DataDictionaryEntryResponse],
+)
+async def charge_statuses(
+    source_id: str | None = None,
+    active: bool | None = None,
+    _: AuthContext = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[DataDictionaryEntryResponse]:
+    return await list_charge_statuses(
+        session,
+        source_id=source_id,
+        active=active,
+    )
+
+
+@router.get(
+    "/settings/data-dictionaries/payment-channels",
+    response_model=list[DataDictionaryEntryResponse],
+)
+async def payment_channels(
+    source_id: str | None = None,
+    active: bool | None = None,
+    _: AuthContext = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[DataDictionaryEntryResponse]:
+    return await list_payment_channels(
+        session,
+        source_id=source_id,
+        active=active,
+    )
 
 
 @router.get(

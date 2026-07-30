@@ -15,6 +15,14 @@ from packages.domain.services.auth_service import write_audit
 from packages.domain.services.remote_charge_service import RemoteChargeError
 from packages.domain.services.remote_withdraw_service import RajAdminWithdrawClient
 
+CHARGE_STATUS_DICTIONARY = "charge_status"
+CHARGE_STATUS_ENTRIES = (
+    ("-1", "已失效"),
+    ("0", "待支付"),
+    ("1", "已支付"),
+    ("2", "已退款"),
+)
+PAYMENT_CHANNEL_DICTIONARY = "payment_channel"
 PAYMENT_CHANNEL_NAME_DICTIONARY = "payment_channel_name"
 WITHDRAW_STATUS_DICTIONARY = "withdraw_status"
 
@@ -63,6 +71,79 @@ class WithdrawStatusRemoteSyncResult:
     created_entries: int
     refreshed_entries: int
     entries: list[DataDictionaryEntryResponse]
+
+
+async def ensure_charge_statuses(
+    session: AsyncSession,
+    *,
+    source_id: str,
+    now: datetime | None = None,
+) -> int:
+    """Insert the manually verified recharge statuses missing for a source."""
+
+    source = await session.get(SourceConfig, source_id)
+    if source is None:
+        raise DataDictionaryNotFoundError("盘口配置不存在。")
+    existing = list(
+        await session.scalars(
+            select(DataDictionaryEntry).where(
+                DataDictionaryEntry.source_id == source_id,
+                DataDictionaryEntry.dictionary_type == CHARGE_STATUS_DICTIONARY,
+            )
+        )
+    )
+    existing_by_code = {entry.entry_code: entry for entry in existing}
+    inserted_at = now or datetime.now(UTC)
+    created = 0
+    for code, label in CHARGE_STATUS_ENTRIES:
+        entry = existing_by_code.get(code)
+        if entry is not None:
+            if entry.entry_label != label or not entry.active:
+                entry.entry_label = label
+                entry.active = True
+                entry.last_seen_at = inserted_at
+                entry.updated_at = inserted_at
+            continue
+        session.add(
+            DataDictionaryEntry(
+                source_id=source_id,
+                dictionary_type=CHARGE_STATUS_DICTIONARY,
+                entry_code=code,
+                entry_label=label,
+                active=True,
+                first_seen_at=inserted_at,
+                last_seen_at=inserted_at,
+                updated_at=inserted_at,
+            )
+        )
+        created += 1
+    await session.flush()
+    return created
+
+
+async def list_charge_statuses(
+    session: AsyncSession,
+    *,
+    source_id: str | None = None,
+    active: bool | None = None,
+) -> list[DataDictionaryEntryResponse]:
+    statement = (
+        select(DataDictionaryEntry, SourceConfig)
+        .join(SourceConfig, SourceConfig.source_id == DataDictionaryEntry.source_id)
+        .where(DataDictionaryEntry.dictionary_type == CHARGE_STATUS_DICTIONARY)
+        .order_by(
+            SourceConfig.display_name,
+            DataDictionaryEntry.entry_code,
+        )
+    )
+    if source_id:
+        statement = statement.where(DataDictionaryEntry.source_id == source_id)
+    if active is not None:
+        statement = statement.where(DataDictionaryEntry.active.is_(active))
+    rows = (await session.execute(statement)).all()
+    return [
+        _entry_response(entry, source_display_name=source.display_name) for entry, source in rows
+    ]
 
 
 async def sync_payment_channel_names(
@@ -136,6 +217,109 @@ async def sync_payment_channel_names(
         updated_entries=updated,
         deactivated_entries=deactivated,
     )
+
+
+async def sync_payment_channels(
+    session: AsyncSession,
+    *,
+    source_id: str,
+    channels: list[dict[str, str]],
+) -> DictionarySyncResult:
+    """Persist the remote pay_channel key/title mapping used by pay_method."""
+
+    normalized: dict[str, str] = {}
+    for channel in channels:
+        code = str(channel.get("code") or "").strip()
+        label = str(channel.get("label") or "").strip()
+        if not code or not label:
+            raise DataDictionarySyncError("支付渠道字典包含空 pay_method 值或展示内容。")
+        previous = normalized.get(code)
+        if previous is not None and previous != label:
+            raise DataDictionarySyncError("支付渠道字典中同一 pay_method 对应多个展示内容。")
+        normalized[code] = label
+    if not normalized:
+        raise DataDictionarySyncError("支付渠道字典为空。")
+
+    existing = list(
+        await session.scalars(
+            select(DataDictionaryEntry).where(
+                DataDictionaryEntry.source_id == source_id,
+                DataDictionaryEntry.dictionary_type == PAYMENT_CHANNEL_DICTIONARY,
+            )
+        )
+    )
+    existing_by_code = {entry.entry_code: entry for entry in existing}
+    now = datetime.now(UTC)
+    created = 0
+    updated = 0
+    deactivated = 0
+
+    for code, label in normalized.items():
+        entry = existing_by_code.pop(code, None)
+        if entry is None:
+            session.add(
+                DataDictionaryEntry(
+                    source_id=source_id,
+                    dictionary_type=PAYMENT_CHANNEL_DICTIONARY,
+                    entry_code=code,
+                    entry_label=label,
+                    active=True,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                    updated_at=now,
+                )
+            )
+            created += 1
+            continue
+        changed = entry.entry_label != label or not entry.active
+        entry.entry_label = label
+        entry.active = True
+        entry.last_seen_at = now
+        entry.updated_at = now
+        if changed:
+            updated += 1
+
+    for entry in existing_by_code.values():
+        if entry.active:
+            entry.active = False
+            entry.updated_at = now
+            deactivated += 1
+
+    await session.flush()
+    return DictionarySyncResult(
+        active_entries=len(normalized),
+        created_entries=created,
+        updated_entries=updated,
+        deactivated_entries=deactivated,
+    )
+
+
+async def list_payment_channels(
+    session: AsyncSession,
+    *,
+    source_id: str | None = None,
+    active: bool | None = None,
+) -> list[DataDictionaryEntryResponse]:
+    statement = (
+        select(DataDictionaryEntry, SourceConfig)
+        .join(SourceConfig, SourceConfig.source_id == DataDictionaryEntry.source_id)
+        .where(
+            DataDictionaryEntry.dictionary_type == PAYMENT_CHANNEL_DICTIONARY,
+        )
+        .order_by(
+            SourceConfig.display_name,
+            DataDictionaryEntry.entry_label,
+            DataDictionaryEntry.entry_code,
+        )
+    )
+    if source_id:
+        statement = statement.where(DataDictionaryEntry.source_id == source_id)
+    if active is not None:
+        statement = statement.where(DataDictionaryEntry.active.is_(active))
+    rows = (await session.execute(statement)).all()
+    return [
+        _entry_response(entry, source_display_name=source.display_name) for entry, source in rows
+    ]
 
 
 async def list_payment_channel_names(

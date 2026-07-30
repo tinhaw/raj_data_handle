@@ -1,6 +1,38 @@
 import { api } from './client'
 import type { DataDictionaryEntry, WithdrawStatusSyncResult } from '../types'
 
+export async function fetchChargeStatuses(params: {
+  sourceId?: string
+  active?: boolean
+} = {}): Promise<DataDictionaryEntry[]> {
+  const response = await api.get<DataDictionaryEntry[]>(
+    '/settings/data-dictionaries/charge-statuses',
+    {
+      params: {
+        source_id: params.sourceId,
+        active: params.active,
+      },
+    },
+  )
+  return response.data
+}
+
+export async function fetchPaymentChannels(params: {
+  sourceId?: string
+  active?: boolean
+} = {}): Promise<DataDictionaryEntry[]> {
+  const response = await api.get<DataDictionaryEntry[]>(
+    '/settings/data-dictionaries/payment-channels',
+    {
+      params: {
+        source_id: params.sourceId,
+        active: params.active,
+      },
+    },
+  )
+  return response.data
+}
+
 export async function fetchPaymentChannelNames(params: {
   sourceId?: string
   active?: boolean

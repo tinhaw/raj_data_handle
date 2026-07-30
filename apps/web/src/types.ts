@@ -50,6 +50,8 @@ export type WithdrawOrderQueryRange =
   | 'last_48_hours'
 
 export type WithdrawOrderRefreshPageSize = 10 | 20 | 30 | 50 | 100
+export type ChargeOrderQueryRange = WithdrawOrderQueryRange
+export type ChargeOrderRefreshPageSize = WithdrawOrderRefreshPageSize
 
 export interface RetentionSettings {
   uploadedFileRetentionDays: number
@@ -58,6 +60,9 @@ export interface RetentionSettings {
   withdrawOrderRefreshIntervalHours: number
   withdrawOrderRefreshPageSize: WithdrawOrderRefreshPageSize
   withdrawOrderQueryRange: WithdrawOrderQueryRange
+  chargeOrderRefreshIntervalHours: number
+  chargeOrderRefreshPageSize: ChargeOrderRefreshPageSize
+  chargeOrderQueryRange: ChargeOrderQueryRange
   sessionTtlDays: number
   configVersion: number
   updatedBy: number | null
@@ -106,7 +111,7 @@ export interface DataDictionaryEntry {
   id: number
   sourceId: string
   sourceDisplayName: string
-  dictionaryType: 'payment_channel_name' | 'withdraw_status'
+  dictionaryType: 'charge_status' | 'payment_channel' | 'payment_channel_name' | 'withdraw_status'
   entryCode: string
   entryLabel: string
   active: boolean
@@ -333,4 +338,100 @@ export interface WithdrawOrderQueryResponse {
   refreshStatus: WithdrawOrderRefreshStatus
   statusDictionary: WithdrawStatusDictionaryEntry[]
   summary: WithdrawOrderSummary
+}
+
+export interface ChargeOrder {
+  id: string
+  uid: string
+  orderNum: string | null
+  outTradeNo: string | null
+  payMethod: string | null
+  payChannelName: string | null
+  amount: string | null
+  balance: string | null
+  extra: string | null
+  status: string
+  createTime: string | null
+  payTime: string | null
+  updateTime: string | null
+  firstPay: string | null
+  notified: string | null
+  chargeType: string | null
+  fillOrderNum: string | null
+  fillOrderAdmin: string | null
+}
+
+export interface ChargeOrderStatusDictionaryEntry {
+  code: string
+  label: string
+}
+
+export interface ChargeOrderChannelDictionaryEntry {
+  code: string
+  label: string
+}
+
+export interface ChargeOrderSummary {
+  orderCount: number
+  successfulOrderCount: number
+  successfulAmount: string
+  unpaidOrderCount: number
+  noThirdPartyOrderCount: number
+}
+
+export interface ChargeOrderRefreshResult {
+  status: 'queued'
+  sourceIds: string[]
+  requestedAt: string
+  queryRange: ChargeOrderQueryRange | null
+  message: string
+}
+
+export interface ChargeOrderQueryResponse {
+  items: ChargeOrder[]
+  total: number
+  remoteTotal: number
+  page: number
+  pageSize: number
+  fetchedPages: number
+  complete: boolean
+  sourceId: string
+  sourceDisplayName: string
+  businessTimezone: string
+  currency: string
+  effectiveCreateTimeEnd: string
+  fetchedAt: string
+  localUpdatedAt: string | null
+  lastRefreshedAt: string | null
+  refreshStatus: WithdrawOrderRefreshStatus
+  statusDictionary: ChargeOrderStatusDictionaryEntry[]
+  channelDictionary: ChargeOrderChannelDictionaryEntry[]
+  channelNameDictionary: ChargeOrderChannelDictionaryEntry[]
+  summary: ChargeOrderSummary
+}
+
+export interface ChargeChannelSummaryItem {
+  payMethod: string
+  payChannelName: string
+  orderCount: number
+  successfulOrderCount: number
+  successfulAmount: string
+  unpaidOrderCount: number
+  noThirdPartyOrderCount: number
+  successfulOrderShare: string
+  successfulAmountShare: string
+  successRate: string
+}
+
+export interface ChargeChannelSummaryResponse {
+  items: ChargeChannelSummaryItem[]
+  total: number
+  page: number
+  pageSize: number
+  sourceId: string
+  sourceDisplayName: string
+  businessTimezone: string
+  effectiveCreateTimeEnd: string
+  fetchedAt: string
+  localUpdatedAt: string | null
 }

@@ -31,7 +31,9 @@ from packages.domain.schemas.source import (
 from packages.domain.services.auth_service import write_audit
 from packages.domain.services.data_dictionary_service import (
     DataDictionarySyncError,
+    ensure_charge_statuses,
     sync_payment_channel_names,
+    sync_payment_channels,
 )
 from packages.domain.services.remote_charge_service import RajAdminChargeClient, RemoteChargeError
 
@@ -235,6 +237,9 @@ async def upsert_source(
     if changed_fields and not creating:
         source.config_version += 1
     source.updated_by = actor_user_id
+    if creating:
+        await session.flush()
+        await ensure_charge_statuses(session, source_id=source.source_id)
     await write_audit(
         session,
         action="source.create" if creating else "source.update",
@@ -393,6 +398,7 @@ async def test_source_connection(
     test_status = "failed"
     synced_channels = 0
     dictionary_entries = 0
+    payment_dictionary_entries = 0
     try:
         async with RajAdminChargeClient(
             base_url=source.base_url,
@@ -401,17 +407,24 @@ async def test_source_connection(
             totp_secret=credentials["totp_secret"],
         ) as client:
             await client.login()
-            channels = await client.fetch_channels()
-        dictionary_sync = await sync_payment_channel_names(
+            channel_names = await client.fetch_channels()
+            payment_channels = await client.fetch_payment_channels()
+        channel_dictionary_sync = await sync_payment_channels(
             session,
             source_id=source.source_id,
-            channels=channels,
+            channels=payment_channels,
         )
-        dictionary_entries = dictionary_sync.active_entries
+        payment_dictionary_entries = channel_dictionary_sync.active_entries
+        channel_name_dictionary_sync = await sync_payment_channel_names(
+            session,
+            source_id=source.source_id,
+            channels=channel_names,
+        )
+        dictionary_entries = channel_name_dictionary_sync.active_entries
         synced_channels = await _sync_known_channels(
             session,
             source=source,
-            channels=channels,
+            channels=channel_names,
             actor_user_id=actor_user_id,
         )
         test_status = "passed"
@@ -429,6 +442,7 @@ async def test_source_connection(
         result=test_status,
         metadata={
             "request_id": request_id,
+            "synced_payment_channels": payment_dictionary_entries,
             "synced_payment_channel_names": dictionary_entries,
             "synced_known_payin_channels": synced_channels,
         },

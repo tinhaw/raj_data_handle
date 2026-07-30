@@ -36,6 +36,12 @@ async def test_remote_client_uses_login_channel_dictionary_and_complete_paginati
                 200,
                 json={"data": [{"label": "aelopay(HX)", "value": 948}]},
             )
+        if request.url.path.endswith("/api/system/dataDict/list"):
+            assert request.url.params["code"] == "pay_channel"
+            return httpx.Response(
+                200,
+                json={"data": [{"id": 999, "title": "MasterPay(唤醒)", "key": 448}]},
+            )
         page = int(request.url.params["page"])
         items = [{"order_num": f"merchant-{page}", "status": 1}]
         return httpx.Response(
@@ -61,6 +67,9 @@ async def test_remote_client_uses_login_channel_dictionary_and_complete_paginati
         transport=httpx.MockTransport(handler),
     ) as client:
         assert await client.fetch_channels() == [{"code": "948", "label": "aelopay(HX)"}]
+        assert await client.fetch_payment_channels() == [
+            {"code": "448", "label": "MasterPay(唤醒)"}
+        ]
         rows, pages = await client.fetch_all_charge_orders(
             channels=[{"code": "948", "label": "aelopay(HX)"}],
             create_start="2026-07-01 00:00:00",

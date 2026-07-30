@@ -18,20 +18,23 @@ class SystemSettingsSchemaPendingError(RuntimeError):
     pass
 
 
-def _is_missing_withdraw_refresh_policy_column(
+def _is_missing_refresh_policy_column(
     error: OperationalError | ProgrammingError,
 ) -> bool:
     message = str(error).lower()
     return (
         "withdraw_order_query_range" in message
         or "withdraw_order_refresh_page_size" in message
+        or "charge_order_query_range" in message
+        or "charge_order_refresh_page_size" in message
+        or "charge_order_refresh_interval_hours" in message
     ) and ("does not exist" in message or "no such column" in message)
 
 
 async def _load_legacy_retention_row(
     session: AsyncSession,
-) -> tuple[object | None, bool, bool]:
-    """Read a settings row while one or both refresh-policy migrations are pending.
+) -> tuple[object | None, bool, bool, bool]:
+    """Read a settings row while refresh-policy migrations are pending.
 
     The ORM cannot select a model with a column that has not been migrated yet.
     Try the newest compatible projection first, then progressively fall back so
@@ -44,11 +47,19 @@ async def _load_legacy_retention_row(
         "remote_cache_retention_days, withdraw_order_refresh_interval_hours, "
     )
     projections = (
-        ("withdraw_order_query_range, withdraw_order_refresh_page_size, ", True, True),
-        ("withdraw_order_query_range, ", True, False),
-        ("", False, False),
+        (
+            "withdraw_order_query_range, withdraw_order_refresh_page_size, "
+            "charge_order_refresh_interval_hours, charge_order_refresh_page_size, "
+            "charge_order_query_range, ",
+            True,
+            True,
+            True,
+        ),
+        ("withdraw_order_query_range, withdraw_order_refresh_page_size, ", True, True, False),
+        ("withdraw_order_query_range, ", True, False, False),
+        ("", False, False, False),
     )
-    for extra_columns, has_query_range, has_page_size in projections:
+    for extra_columns, has_query_range, has_page_size, has_charge_policy in projections:
         try:
             result = await session.execute(
                 text(
@@ -60,12 +71,17 @@ async def _load_legacy_retention_row(
                 {"id": RETENTION_SETTINGS_ID},
             )
         except (OperationalError, ProgrammingError) as exc:
-            if not _is_missing_withdraw_refresh_policy_column(exc):
+            if not _is_missing_refresh_policy_column(exc):
                 raise
             await session.rollback()
             continue
-        return result.mappings().one_or_none(), has_query_range, has_page_size
-    return None, False, False
+        return (
+            result.mappings().one_or_none(),
+            has_query_range,
+            has_page_size,
+            has_charge_policy,
+        )
+    return None, False, False, False
 
 
 async def _load_retention_settings(
@@ -73,7 +89,7 @@ async def _load_retention_settings(
     *,
     defaults: Settings | None = None,
 ) -> tuple[SystemRetentionSetting, bool]:
-    """Load settings and identify a rollout awaiting migrations 0006 or 0007.
+    """Load settings and identify a rollout awaiting refresh-policy migrations.
 
     Application code is released separately from database migrations.  The ORM
     model therefore cannot be selected directly against a database missing a
@@ -86,10 +102,15 @@ async def _load_retention_settings(
     try:
         row = await session.get(SystemRetentionSetting, RETENTION_SETTINGS_ID)
     except (OperationalError, ProgrammingError) as exc:
-        if not _is_missing_withdraw_refresh_policy_column(exc):
+        if not _is_missing_refresh_policy_column(exc):
             raise
         await session.rollback()
-        legacy, has_query_range, has_page_size = await _load_legacy_retention_row(session)
+        (
+            legacy,
+            has_query_range,
+            has_page_size,
+            has_charge_policy,
+        ) = await _load_legacy_retention_row(session)
         if legacy is None:
             raise SystemSettingsSchemaPendingError(
                 "提现订单刷新配置正在初始化，请在数据库迁移完成后重试。"
@@ -113,6 +134,21 @@ async def _load_retention_settings(
                     if has_query_range
                     else current_defaults.withdraw_order_query_range
                 ),
+                charge_order_refresh_interval_hours=(
+                    int(legacy["charge_order_refresh_interval_hours"])
+                    if has_charge_policy
+                    else current_defaults.charge_order_refresh_interval_hours
+                ),
+                charge_order_refresh_page_size=(
+                    int(legacy["charge_order_refresh_page_size"])
+                    if has_charge_policy
+                    else current_defaults.charge_order_refresh_page_size
+                ),
+                charge_order_query_range=(
+                    str(legacy["charge_order_query_range"])
+                    if has_charge_policy
+                    else current_defaults.charge_order_query_range
+                ),
                 config_version=int(legacy["config_version"]),
                 updated_by=legacy["updated_by"],
                 updated_at=legacy["updated_at"],
@@ -133,6 +169,9 @@ async def _load_retention_settings(
         ),
         withdraw_order_refresh_page_size=current_defaults.withdraw_order_refresh_page_size,
         withdraw_order_query_range=current_defaults.withdraw_order_query_range,
+        charge_order_refresh_interval_hours=(current_defaults.charge_order_refresh_interval_hours),
+        charge_order_refresh_page_size=current_defaults.charge_order_refresh_page_size,
+        charge_order_query_range=current_defaults.charge_order_query_range,
     )
     session.add(row)
     await session.commit()
@@ -162,7 +201,7 @@ async def update_retention_settings(
     row, schema_pending = await _load_retention_settings(session)
     if schema_pending:
         raise SystemSettingsSchemaPendingError(
-            "提现订单刷新配置正在初始化，请在数据库迁移完成后重新保存。"
+            "订单后台同步配置正在初始化，请在数据库迁移完成后重新保存。"
         )
     previous = {
         "uploadedFileRetentionDays": row.uploaded_file_retention_days,
@@ -171,6 +210,9 @@ async def update_retention_settings(
         "withdrawOrderRefreshIntervalHours": row.withdraw_order_refresh_interval_hours,
         "withdrawOrderRefreshPageSize": row.withdraw_order_refresh_page_size,
         "withdrawOrderQueryRange": row.withdraw_order_query_range,
+        "chargeOrderRefreshIntervalHours": row.charge_order_refresh_interval_hours,
+        "chargeOrderRefreshPageSize": row.charge_order_refresh_page_size,
+        "chargeOrderQueryRange": row.charge_order_query_range,
         "sessionTtlDays": session_settings.session_ttl_days,
     }
     row.uploaded_file_retention_days = payload.uploaded_file_retention_days
@@ -182,6 +224,12 @@ async def update_retention_settings(
         row.withdraw_order_refresh_page_size = payload.withdraw_order_refresh_page_size
     if payload.withdraw_order_query_range is not None:
         row.withdraw_order_query_range = payload.withdraw_order_query_range
+    if payload.charge_order_refresh_interval_hours is not None:
+        row.charge_order_refresh_interval_hours = payload.charge_order_refresh_interval_hours
+    if payload.charge_order_refresh_page_size is not None:
+        row.charge_order_refresh_page_size = payload.charge_order_refresh_page_size
+    if payload.charge_order_query_range is not None:
+        row.charge_order_query_range = payload.charge_order_query_range
     row.config_version += 1
     row.updated_by = actor_user_id
     row.updated_at = datetime.now(UTC)
@@ -206,6 +254,9 @@ async def update_retention_settings(
                     ),
                     "withdrawOrderRefreshPageSize": row.withdraw_order_refresh_page_size,
                     "withdrawOrderQueryRange": row.withdraw_order_query_range,
+                    "chargeOrderRefreshIntervalHours": row.charge_order_refresh_interval_hours,
+                    "chargeOrderRefreshPageSize": row.charge_order_refresh_page_size,
+                    "chargeOrderQueryRange": row.charge_order_query_range,
                     "sessionTtlDays": session_settings.session_ttl_days,
                 },
                 "configVersion": row.config_version,

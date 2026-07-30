@@ -7,6 +7,7 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.domain.models import (
+    ChargeOrderSnapshot,
     ReconciliationBatch,
     SecurityAuditLog,
     StoredFileObject,
@@ -17,9 +18,9 @@ from packages.domain.services.system_setting_service import get_retention_settin
 from packages.storage.local import LocalFileStorage
 
 
-def _is_missing_withdraw_snapshot_table(error: OperationalError | ProgrammingError) -> bool:
+def _is_missing_order_snapshot_table(error: OperationalError | ProgrammingError) -> bool:
     message = str(error).lower()
-    return "withdraw_order_snapshots" in message and (
+    return ("withdraw_order_snapshots" in message or "charge_order_snapshots" in message) and (
         "does not exist" in message or "no such table" in message
     )
 
@@ -44,7 +45,26 @@ async def _cleanup_expired_withdraw_snapshots(
         )
         return int(result.rowcount or 0)
     except (OperationalError, ProgrammingError) as exc:
-        if not _is_missing_withdraw_snapshot_table(exc):
+        if not _is_missing_order_snapshot_table(exc):
+            raise
+        await session.rollback()
+        return 0
+
+
+async def _cleanup_expired_charge_snapshots(
+    session: AsyncSession,
+    *,
+    now: datetime,
+) -> int:
+    retention = await get_retention_settings(session)
+    cutoff = now - timedelta(days=retention.remote_cache_retention_days)
+    try:
+        result = await session.execute(
+            delete(ChargeOrderSnapshot).where(ChargeOrderSnapshot.synced_at < cutoff)
+        )
+        return int(result.rowcount or 0)
+    except (OperationalError, ProgrammingError) as exc:
+        if not _is_missing_order_snapshot_table(exc):
             raise
         await session.rollback()
         return 0
@@ -58,6 +78,10 @@ async def cleanup_expired_data(
 ) -> dict[str, int]:
     cleanup_time = now or datetime.now(UTC)
     deleted_withdraw_order_snapshots = await _cleanup_expired_withdraw_snapshots(
+        session,
+        now=cleanup_time,
+    )
+    deleted_charge_order_snapshots = await _cleanup_expired_charge_snapshots(
         session,
         now=cleanup_time,
     )
@@ -105,6 +129,7 @@ async def cleanup_expired_data(
         "deletedFileObjects": deleted_files,
         "deletedBatches": len(expired_batch_ids),
         "deletedWithdrawOrderSnapshots": deleted_withdraw_order_snapshots,
+        "deletedChargeOrderSnapshots": deleted_charge_order_snapshots,
     }
     if any(counts.values()):
         session.add(

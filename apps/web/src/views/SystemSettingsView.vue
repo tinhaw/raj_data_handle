@@ -10,6 +10,8 @@ import {
 } from '../api/systemSettings'
 import { isAdmin } from '../stores/auth'
 import type {
+  ChargeOrderQueryRange,
+  ChargeOrderRefreshPageSize,
   RetentionSettings,
   WithdrawOrderQueryRange,
   WithdrawOrderRefreshPageSize,
@@ -26,10 +28,13 @@ const form = reactive({
   withdrawOrderRefreshIntervalHours: 1,
   withdrawOrderRefreshPageSize: 100 as WithdrawOrderRefreshPageSize,
   withdrawOrderQueryRange: 'today' as WithdrawOrderQueryRange,
+  chargeOrderRefreshIntervalHours: 1,
+  chargeOrderRefreshPageSize: 100 as ChargeOrderRefreshPageSize,
+  chargeOrderQueryRange: 'today' as ChargeOrderQueryRange,
   sessionTtlDays: 30,
 })
 
-const withdrawOrderQueryRangeOptions: Array<{
+const orderQueryRangeOptions: Array<{
   value: WithdrawOrderQueryRange
   label: string
   description: string
@@ -76,7 +81,7 @@ const withdrawOrderQueryRangeOptions: Array<{
   },
 ]
 
-const withdrawOrderRefreshPageSizeOptions: Array<{
+const orderRefreshPageSizeOptions: Array<{
   value: WithdrawOrderRefreshPageSize
   label: string
 }> = ([10, 20, 30, 50, 100] as WithdrawOrderRefreshPageSize[]).map((value) => ({
@@ -92,6 +97,9 @@ function applySettings(settings: RetentionSettings): void {
   form.withdrawOrderRefreshIntervalHours = settings.withdrawOrderRefreshIntervalHours
   form.withdrawOrderRefreshPageSize = settings.withdrawOrderRefreshPageSize
   form.withdrawOrderQueryRange = settings.withdrawOrderQueryRange
+  form.chargeOrderRefreshIntervalHours = settings.chargeOrderRefreshIntervalHours
+  form.chargeOrderRefreshPageSize = settings.chargeOrderRefreshPageSize
+  form.chargeOrderQueryRange = settings.chargeOrderQueryRange
   form.sessionTtlDays = settings.sessionTtlDays
 }
 
@@ -110,7 +118,7 @@ async function save(): Promise<void> {
   saving.value = true
   try {
     applySettings(await updateRetentionSettings({ ...form }))
-    ElMessage.success('系统配置已更新；提现订单后台同步会在下一个周期使用新的规则。')
+    ElMessage.success('系统配置已更新；订单后台同步会在下一个周期使用新的规则。')
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '保留策略保存失败。'))
   } finally {
@@ -152,7 +160,7 @@ onMounted(load)
       <div class="settings-heading">
         <div>
           <h2>全局配置</h2>
-          <p>登录、提现订单与数据保留策略集中维护。</p>
+          <p>登录、充值订单、提现订单与数据保留策略集中维护。</p>
         </div>
         <el-tag v-if="current" type="info">配置版本 V{{ current.configVersion }}</el-tag>
       </div>
@@ -180,6 +188,57 @@ onMounted(load)
 
       <section class="settings-section">
         <div class="settings-section-heading">
+          <h2>充值订单后台同步</h2>
+          <p>后台按统一规则从远端同步；充值订单页仅查询本地缓存。</p>
+        </div>
+        <el-form label-position="top">
+          <div class="form-grid">
+            <el-form-item label="后台刷新间隔（小时）">
+              <el-input-number
+                v-model="form.chargeOrderRefreshIntervalHours"
+                :min="1"
+                :max="24"
+                :precision="0"
+                :disabled="!isAdmin"
+              />
+              <span class="field-help">允许范围为 1–24 小时；后台按此周期执行同步。</span>
+            </el-form-item>
+            <el-form-item label="后台单次请求条数">
+              <el-select v-model="form.chargeOrderRefreshPageSize" :disabled="!isAdmin">
+                <el-option
+                  v-for="option in orderRefreshPageSizeOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+              <span class="field-help">
+                每个支付渠道请求远端充值订单的分页大小；默认 100 条/页。仅影响后台同步。
+              </span>
+            </el-form-item>
+            <el-form-item label="后台查询时间范围">
+              <el-select v-model="form.chargeOrderQueryRange" :disabled="!isAdmin">
+                <el-option
+                  v-for="option in orderQueryRangeOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+              <span class="field-help">
+                {{
+                  orderQueryRangeOptions.find(
+                    (option) => option.value === form.chargeOrderQueryRange,
+                  )?.description
+                }}
+              </span>
+            </el-form-item>
+          </div>
+        </el-form>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-heading">
           <h2>提现订单后台同步</h2>
           <p>后台按统一规则从远端同步；提现订单页仅查询本地数据。</p>
         </div>
@@ -198,7 +257,7 @@ onMounted(load)
             <el-form-item label="后台单次请求条数">
               <el-select v-model="form.withdrawOrderRefreshPageSize" :disabled="!isAdmin">
                 <el-option
-                  v-for="option in withdrawOrderRefreshPageSizeOptions"
+                  v-for="option in orderRefreshPageSizeOptions"
                   :key="option.value"
                   :label="option.label"
                   :value="option.value"
@@ -211,7 +270,7 @@ onMounted(load)
             <el-form-item label="后台查询时间范围">
               <el-select v-model="form.withdrawOrderQueryRange" :disabled="!isAdmin">
                 <el-option
-                  v-for="option in withdrawOrderQueryRangeOptions"
+                  v-for="option in orderQueryRangeOptions"
                   :key="option.value"
                   :label="option.label"
                   :value="option.value"
@@ -219,7 +278,7 @@ onMounted(load)
               </el-select>
               <span class="field-help">
                 {{
-                  withdrawOrderQueryRangeOptions.find(
+                  orderQueryRangeOptions.find(
                     (option) => option.value === form.withdrawOrderQueryRange,
                   )?.description
                 }}

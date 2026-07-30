@@ -8,6 +8,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 WITHDRAW_ORDER_REFRESH_PAGE_SIZES = frozenset({10, 20, 30, 50, 100})
+CHARGE_ORDER_REFRESH_PAGE_SIZES = WITHDRAW_ORDER_REFRESH_PAGE_SIZES
 
 
 class Settings(BaseSettings):
@@ -69,6 +70,18 @@ class Settings(BaseSettings):
         "last_24_hours",
         "last_48_hours",
     ] = "today"
+    charge_order_refresh_interval_hours: int = Field(default=1, ge=1, le=24)
+    charge_order_refresh_page_size: int = Field(default=100)
+    charge_order_query_range: Literal[
+        "today",
+        "last_1_hour",
+        "last_2_hours",
+        "last_3_hours",
+        "last_6_hours",
+        "last_12_hours",
+        "last_24_hours",
+        "last_48_hours",
+    ] = "today"
 
     @field_validator("environment")
     @classmethod
@@ -95,6 +108,13 @@ class Settings(BaseSettings):
     def validate_withdraw_order_refresh_page_size(cls, value: int) -> int:
         if value not in WITHDRAW_ORDER_REFRESH_PAGE_SIZES:
             raise ValueError("withdraw_order_refresh_page_size must be 10, 20, 30, 50, or 100")
+        return value
+
+    @field_validator("charge_order_refresh_page_size")
+    @classmethod
+    def validate_charge_order_refresh_page_size(cls, value: int) -> int:
+        if value not in CHARGE_ORDER_REFRESH_PAGE_SIZES:
+            raise ValueError("charge_order_refresh_page_size must be 10, 20, 30, 50, or 100")
         return value
 
     @property
