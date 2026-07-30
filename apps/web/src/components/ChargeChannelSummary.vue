@@ -85,14 +85,14 @@ const chartOption = computed<EChartsOption>(() => {
   if (chartDisplayType.value === 'pie') {
     return {
       color: [metric.color, '#4f8bc9', '#6fc6bd', '#e9a23b', '#8a67d6', '#d76d80', '#6f849c'],
-      tooltip: { trigger: 'item', valueFormatter: formatter },
+      tooltip: { trigger: 'item', triggerOn: 'mousemove|click|mousewheel', valueFormatter: formatter },
       legend: { type: 'scroll' as const, bottom: 0, data: chartValues.value.map((item) => item.name) },
       series: [{
         type: 'pie',
         radius: ['42%', '70%'],
         center: ['50%', '45%'],
         avoidLabelOverlap: true,
-        label: { formatter: (params: { name: string; value: unknown }) => `${params.name}\n${formatter(params.value)}` },
+        label: { formatter: '{b}' },
         labelLine: { length: 12, length2: 8 },
         data: chartValues.value,
       }],
