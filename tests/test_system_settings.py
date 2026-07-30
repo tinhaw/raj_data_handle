@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -105,6 +105,8 @@ async def test_retention_defaults_and_versioned_update(
         assert current.withdraw_order_refresh_interval_hours == 1
         assert current.withdraw_order_refresh_page_size == 100
         assert current.withdraw_order_query_range == "today"
+        assert current.charge_order_export_date_mode == "previous_day"
+        assert current.charge_order_export_specific_date is None
         assert session_settings is not None
         assert session_settings.session_ttl_days == 30
 
@@ -117,6 +119,8 @@ async def test_retention_defaults_and_versioned_update(
                 withdrawOrderRefreshIntervalHours=refresh_interval_hours,
                 withdrawOrderRefreshPageSize=refresh_page_size,
                 withdrawOrderQueryRange=query_range,
+                chargeOrderExportDateMode="specific_date",
+                chargeOrderExportSpecificDate="2026-07-29",
                 sessionTtlDays=45,
             ),
             actor_user_id=1,
@@ -132,6 +136,8 @@ async def test_retention_defaults_and_versioned_update(
     assert updated.withdraw_order_refresh_interval_hours == refresh_interval_hours
     assert updated.withdraw_order_refresh_page_size == refresh_page_size
     assert updated.withdraw_order_query_range == query_range
+    assert updated.charge_order_export_date_mode == "specific_date"
+    assert updated.charge_order_export_specific_date == date(2026, 7, 29)
     assert updated_session_settings.session_ttl_days == 45
     assert audit is not None
     assert audit.metadata_json["previous"]["withdrawOrderRefreshIntervalHours"] == 1
@@ -142,6 +148,7 @@ async def test_retention_defaults_and_versioned_update(
     assert audit.metadata_json["previous"]["withdrawOrderRefreshPageSize"] == 100
     assert audit.metadata_json["current"]["withdrawOrderRefreshPageSize"] == refresh_page_size
     assert audit.metadata_json["current"]["withdrawOrderQueryRange"] == query_range
+    assert audit.metadata_json["current"]["chargeOrderExportDateMode"] == "specific_date"
     await engine.dispose()
 
 
@@ -164,6 +171,19 @@ def test_system_settings_api_response_exposes_withdraw_refresh_settings_in_camel
     assert response.model_dump(by_alias=True)["withdrawOrderRefreshIntervalHours"] == 24
     assert response.model_dump(by_alias=True)["withdrawOrderRefreshPageSize"] == 50
     assert response.model_dump(by_alias=True)["withdrawOrderQueryRange"] == "last_24_hours"
+    assert response.model_dump(by_alias=True)["chargeOrderExportDateMode"] == "previous_day"
+    assert response.model_dump(by_alias=True)["chargeOrderExportSpecificDate"] is None
+
+
+def test_specific_charge_export_date_requires_a_date() -> None:
+    with pytest.raises(ValidationError):
+        RetentionSettingsUpdateRequest(
+            uploadedFileRetentionDays=3,
+            resultRetentionDays=30,
+            remoteCacheRetentionDays=30,
+            chargeOrderExportDateMode="specific_date",
+            sessionTtlDays=30,
+        )
 
 
 @pytest.mark.parametrize("value", [1, 24])

@@ -3,7 +3,7 @@ import type {
   ChargeChannelSummaryResponse,
   ChargeOrderQueryResponse,
   ChargeOrderRefreshResult,
-  ChargeOrderQueryRange,
+  ChargeOrderRefreshRange,
 } from '../types'
 
 export interface ChargeOrderQuery {
@@ -32,7 +32,7 @@ export async function queryChargeChannelSummary(
 
 export async function startChargeOrderRefresh(payload: {
   sourceId?: string
-  queryRange?: ChargeOrderQueryRange
+  queryRange?: ChargeOrderRefreshRange
 } = {}): Promise<ChargeOrderRefreshResult> {
   return (await api.post<ChargeOrderRefreshResult>('/charge-orders/refresh', payload)).data
 }

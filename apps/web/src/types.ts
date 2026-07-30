@@ -52,6 +52,8 @@ export type WithdrawOrderQueryRange =
 export type WithdrawOrderRefreshPageSize = 10 | 20 | 30 | 50 | 100
 export type ChargeOrderQueryRange = WithdrawOrderQueryRange
 export type ChargeOrderRefreshPageSize = WithdrawOrderRefreshPageSize
+export type ChargeOrderRefreshRange = 'day_before_yesterday' | 'yesterday' | 'today'
+export type ChargeOrderExportDateMode = 'previous_day' | 'specific_date'
 
 export interface RetentionSettings {
   uploadedFileRetentionDays: number
@@ -63,6 +65,8 @@ export interface RetentionSettings {
   chargeOrderRefreshIntervalHours: number
   chargeOrderRefreshPageSize: ChargeOrderRefreshPageSize
   chargeOrderQueryRange: ChargeOrderQueryRange
+  chargeOrderExportDateMode: ChargeOrderExportDateMode
+  chargeOrderExportSpecificDate: string | null
   sessionTtlDays: number
   configVersion: number
   updatedBy: number | null
@@ -344,9 +348,12 @@ export interface ChargeOrder {
   id: string
   uid: string
   orderNum: string | null
+  chargeProductId: string | null
+  productName: string | null
   outTradeNo: string | null
   payMethod: string | null
   payChannelName: string | null
+  payType: string | null
   amount: string | null
   balance: string | null
   extra: string | null
@@ -359,6 +366,7 @@ export interface ChargeOrder {
   chargeType: string | null
   fillOrderNum: string | null
   fillOrderAdmin: string | null
+  channel: string | null
 }
 
 export interface ChargeOrderStatusDictionaryEntry {
@@ -383,7 +391,7 @@ export interface ChargeOrderRefreshResult {
   status: 'queued'
   sourceIds: string[]
   requestedAt: string
-  queryRange: ChargeOrderQueryRange | null
+  queryRange: ChargeOrderRefreshRange | null
   message: string
 }
 

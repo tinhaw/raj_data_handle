@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 WithdrawOrderQueryRange = Literal[
     "today",
@@ -18,6 +18,7 @@ WithdrawOrderQueryRange = Literal[
 WithdrawOrderRefreshPageSize = Literal[10, 20, 30, 50, 100]
 ChargeOrderQueryRange = WithdrawOrderQueryRange
 ChargeOrderRefreshPageSize = WithdrawOrderRefreshPageSize
+ChargeOrderExportDateMode = Literal["previous_day", "specific_date"]
 
 
 class RetentionSettingsResponse(BaseModel):
@@ -47,6 +48,12 @@ class RetentionSettingsResponse(BaseModel):
     )
     charge_order_query_range: ChargeOrderQueryRange = Field(
         alias="chargeOrderQueryRange",
+    )
+    charge_order_export_date_mode: ChargeOrderExportDateMode = Field(
+        alias="chargeOrderExportDateMode",
+    )
+    charge_order_export_specific_date: date | None = Field(
+        alias="chargeOrderExportSpecificDate",
     )
     session_ttl_days: int = Field(alias="sessionTtlDays")
     config_version: int = Field(alias="configVersion")
@@ -94,4 +101,21 @@ class RetentionSettingsUpdateRequest(BaseModel):
         default=None,
         alias="chargeOrderQueryRange",
     )
+    charge_order_export_date_mode: ChargeOrderExportDateMode | None = Field(
+        default=None,
+        alias="chargeOrderExportDateMode",
+    )
+    charge_order_export_specific_date: date | None = Field(
+        default=None,
+        alias="chargeOrderExportSpecificDate",
+    )
     session_ttl_days: int = Field(ge=1, le=365, alias="sessionTtlDays")
+
+    @model_validator(mode="after")
+    def validate_charge_export_date(self) -> RetentionSettingsUpdateRequest:
+        if (
+            self.charge_order_export_date_mode == "specific_date"
+            and self.charge_order_export_specific_date is None
+        ):
+            raise ValueError("充值订单选择指定日期时必须填写导出日期。")
+        return self

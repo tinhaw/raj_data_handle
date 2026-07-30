@@ -37,6 +37,8 @@ def _response(
         chargeOrderRefreshIntervalHours=retention.charge_order_refresh_interval_hours or 1,
         chargeOrderRefreshPageSize=retention.charge_order_refresh_page_size or 100,
         chargeOrderQueryRange=retention.charge_order_query_range or "today",
+        chargeOrderExportDateMode=retention.charge_order_export_date_mode or "previous_day",
+        chargeOrderExportSpecificDate=retention.charge_order_export_specific_date,
         sessionTtlDays=session_ttl_days,
         configVersion=retention.config_version,
         updatedBy=retention.updated_by,

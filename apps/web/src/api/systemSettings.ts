@@ -9,9 +9,8 @@ export type RetentionSettingsUpdate = Pick<
   | 'withdrawOrderRefreshIntervalHours'
   | 'withdrawOrderRefreshPageSize'
   | 'withdrawOrderQueryRange'
-  | 'chargeOrderRefreshIntervalHours'
-  | 'chargeOrderRefreshPageSize'
-  | 'chargeOrderQueryRange'
+  | 'chargeOrderExportDateMode'
+  | 'chargeOrderExportSpecificDate'
   | 'sessionTtlDays'
 >
 

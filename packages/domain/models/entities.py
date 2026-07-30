@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import (
     JSON,
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -126,6 +127,12 @@ class SystemRetentionSetting(Base):
         nullable=False,
         default="today",
     )
+    charge_order_export_date_mode: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="previous_day",
+    )
+    charge_order_export_specific_date: Mapped[date | None] = mapped_column(Date)
     config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
     updated_at: Mapped[datetime] = mapped_column(
@@ -262,9 +269,12 @@ class ChargeOrderSnapshot(Base):
     remote_order_id: Mapped[str] = mapped_column(String(120), nullable=False)
     uid: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     order_num: Mapped[str | None] = mapped_column(String(160))
+    charge_product_id: Mapped[str | None] = mapped_column(String(120))
+    product_name: Mapped[str | None] = mapped_column(String(160))
     out_trade_no: Mapped[str | None] = mapped_column(String(160))
     pay_method: Mapped[str | None] = mapped_column(String(120))
     pay_channel_name: Mapped[str | None] = mapped_column(String(160))
+    pay_type: Mapped[str | None] = mapped_column(String(120))
     amount: Mapped[str | None] = mapped_column(String(64))
     balance: Mapped[str | None] = mapped_column(String(64))
     extra: Mapped[str | None] = mapped_column(String(64))

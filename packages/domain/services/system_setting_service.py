@@ -28,12 +28,14 @@ def _is_missing_refresh_policy_column(
         or "charge_order_query_range" in message
         or "charge_order_refresh_page_size" in message
         or "charge_order_refresh_interval_hours" in message
+        or "charge_order_export_date_mode" in message
+        or "charge_order_export_specific_date" in message
     ) and ("does not exist" in message or "no such column" in message)
 
 
 async def _load_legacy_retention_row(
     session: AsyncSession,
-) -> tuple[object | None, bool, bool, bool]:
+) -> tuple[object | None, bool, bool, bool, bool]:
     """Read a settings row while refresh-policy migrations are pending.
 
     The ORM cannot select a model with a column that has not been migrated yet.
@@ -50,16 +52,39 @@ async def _load_legacy_retention_row(
         (
             "withdraw_order_query_range, withdraw_order_refresh_page_size, "
             "charge_order_refresh_interval_hours, charge_order_refresh_page_size, "
-            "charge_order_query_range, ",
+            "charge_order_query_range, charge_order_export_date_mode, "
+            "charge_order_export_specific_date, ",
+            True,
             True,
             True,
             True,
         ),
-        ("withdraw_order_query_range, withdraw_order_refresh_page_size, ", True, True, False),
-        ("withdraw_order_query_range, ", True, False, False),
-        ("", False, False, False),
+        (
+            "withdraw_order_query_range, withdraw_order_refresh_page_size, "
+            "charge_order_refresh_interval_hours, charge_order_refresh_page_size, "
+            "charge_order_query_range, ",
+            True,
+            True,
+            True,
+            False,
+        ),
+        (
+            "withdraw_order_query_range, withdraw_order_refresh_page_size, ",
+            True,
+            True,
+            False,
+            False,
+        ),
+        ("withdraw_order_query_range, ", True, False, False, False),
+        ("", False, False, False, False),
     )
-    for extra_columns, has_query_range, has_page_size, has_charge_policy in projections:
+    for (
+        extra_columns,
+        has_query_range,
+        has_page_size,
+        has_charge_policy,
+        has_charge_export_policy,
+    ) in projections:
         try:
             result = await session.execute(
                 text(
@@ -80,8 +105,9 @@ async def _load_legacy_retention_row(
             has_query_range,
             has_page_size,
             has_charge_policy,
+            has_charge_export_policy,
         )
-    return None, False, False, False
+    return None, False, False, False, False
 
 
 async def _load_retention_settings(
@@ -110,6 +136,7 @@ async def _load_retention_settings(
             has_query_range,
             has_page_size,
             has_charge_policy,
+            has_charge_export_policy,
         ) = await _load_legacy_retention_row(session)
         if legacy is None:
             raise SystemSettingsSchemaPendingError(
@@ -149,6 +176,16 @@ async def _load_retention_settings(
                     if has_charge_policy
                     else current_defaults.charge_order_query_range
                 ),
+                charge_order_export_date_mode=(
+                    str(legacy["charge_order_export_date_mode"])
+                    if has_charge_export_policy
+                    else "previous_day"
+                ),
+                charge_order_export_specific_date=(
+                    legacy["charge_order_export_specific_date"]
+                    if has_charge_export_policy
+                    else None
+                ),
                 config_version=int(legacy["config_version"]),
                 updated_by=legacy["updated_by"],
                 updated_at=legacy["updated_at"],
@@ -172,6 +209,8 @@ async def _load_retention_settings(
         charge_order_refresh_interval_hours=(current_defaults.charge_order_refresh_interval_hours),
         charge_order_refresh_page_size=current_defaults.charge_order_refresh_page_size,
         charge_order_query_range=current_defaults.charge_order_query_range,
+        charge_order_export_date_mode="previous_day",
+        charge_order_export_specific_date=None,
     )
     session.add(row)
     await session.commit()
@@ -213,6 +252,12 @@ async def update_retention_settings(
         "chargeOrderRefreshIntervalHours": row.charge_order_refresh_interval_hours,
         "chargeOrderRefreshPageSize": row.charge_order_refresh_page_size,
         "chargeOrderQueryRange": row.charge_order_query_range,
+        "chargeOrderExportDateMode": row.charge_order_export_date_mode,
+        "chargeOrderExportSpecificDate": (
+            row.charge_order_export_specific_date.isoformat()
+            if row.charge_order_export_specific_date is not None
+            else None
+        ),
         "sessionTtlDays": session_settings.session_ttl_days,
     }
     row.uploaded_file_retention_days = payload.uploaded_file_retention_days
@@ -230,6 +275,13 @@ async def update_retention_settings(
         row.charge_order_refresh_page_size = payload.charge_order_refresh_page_size
     if payload.charge_order_query_range is not None:
         row.charge_order_query_range = payload.charge_order_query_range
+    if payload.charge_order_export_date_mode is not None:
+        row.charge_order_export_date_mode = payload.charge_order_export_date_mode
+        row.charge_order_export_specific_date = (
+            payload.charge_order_export_specific_date
+            if payload.charge_order_export_date_mode == "specific_date"
+            else None
+        )
     row.config_version += 1
     row.updated_by = actor_user_id
     row.updated_at = datetime.now(UTC)
@@ -257,6 +309,12 @@ async def update_retention_settings(
                     "chargeOrderRefreshIntervalHours": row.charge_order_refresh_interval_hours,
                     "chargeOrderRefreshPageSize": row.charge_order_refresh_page_size,
                     "chargeOrderQueryRange": row.charge_order_query_range,
+                    "chargeOrderExportDateMode": row.charge_order_export_date_mode,
+                    "chargeOrderExportSpecificDate": (
+                        row.charge_order_export_specific_date.isoformat()
+                        if row.charge_order_export_specific_date is not None
+                        else None
+                    ),
                     "sessionTtlDays": session_settings.session_ttl_days,
                 },
                 "configVersion": row.config_version,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -14,20 +14,17 @@ from packages.common.security import decrypt_credentials
 from packages.common.settings import Settings, get_settings
 from packages.domain.models import ChargeOrderRefreshState, ChargeOrderSnapshot, SourceConfig
 from packages.domain.services.auth_service import write_audit
-from packages.domain.services.data_dictionary_service import (
-    sync_payment_channel_names,
-    sync_payment_channels,
-)
 from packages.domain.services.remote_charge_service import ChargeFetchResult, RajAdminChargeClient
 from packages.domain.services.source_service import get_source
 from packages.domain.services.system_setting_service import get_retention_settings
-from packages.domain.services.withdraw_order_service import (
-    WITHDRAW_ORDER_QUERY_RANGES,
-    withdraw_order_query_window,
-)
 
 WALL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 REFRESH_LEASE_DURATION = timedelta(minutes=30)
+FAILED_EXPORT_RETRY_DELAY = timedelta(minutes=5)
+CHARGE_ORDER_MANUAL_REFRESH_RANGES = frozenset(
+    {"day_before_yesterday", "yesterday", "today"}
+)
+CHARGE_ORDER_EXPORT_TIME = time(0, 0, 1)
 
 
 class ChargeOrderRefreshValidationError(ValueError):
@@ -60,8 +57,6 @@ class _RefreshClaim:
     encrypted_credentials: str
     credential_version: int
     business_timezone: str
-    page_size: int
-    query_range: str
     started_at: datetime
     window_start: datetime
     window_end: datetime
@@ -137,18 +132,73 @@ async def _state(
     return created
 
 
-def _due(state: ChargeOrderRefreshState, *, interval_hours: int, now: datetime) -> bool:
-    lease = _as_utc(state.lease_expires_at)
-    started = _as_utc(state.last_started_at)
+def _manual_request_is_pending(state: ChargeOrderRefreshState) -> bool:
     manual = _as_utc(state.manual_request_at)
+    started = _as_utc(state.last_started_at)
+    return manual is not None and (started is None or manual > started)
+
+
+def _calendar_day_window(*, day: date, timezone_name: str) -> tuple[datetime, datetime]:
+    timezone = ZoneInfo(timezone_name)
+    return (
+        datetime.combine(day, time.min, tzinfo=timezone).astimezone(UTC),
+        datetime.combine(day, time(23, 59, 59), tzinfo=timezone).astimezone(UTC),
+    )
+
+
+def _manual_export_day(*, query_range: str, timezone_name: str, now: datetime) -> date:
+    offsets = {
+        "day_before_yesterday": 2,
+        "yesterday": 1,
+        "today": 0,
+    }
+    return now.astimezone(ZoneInfo(timezone_name)).date() - timedelta(
+        days=offsets[query_range]
+    )
+
+
+def _automatic_export_day(
+    *,
+    date_mode: str,
+    specific_date: date | None,
+    timezone_name: str,
+    now: datetime,
+) -> date:
+    if date_mode == "specific_date" and specific_date is not None:
+        return specific_date
+    return now.astimezone(ZoneInfo(timezone_name)).date() - timedelta(days=1)
+
+
+def _due(
+    state: ChargeOrderRefreshState,
+    *,
+    now: datetime,
+    automatic_window_start: datetime,
+    timezone_name: str,
+) -> bool:
+    lease = _as_utc(state.lease_expires_at)
     if lease is not None and lease > now:
         return False
     if state.status == "running" and lease is not None:
         return True
-    if manual is not None and (started is None or manual > started):
+    if _manual_request_is_pending(state):
         return True
-    anchor = _as_utc(state.last_succeeded_at) or _as_utc(state.last_failed_at)
-    return anchor is None or now >= anchor + timedelta(hours=interval_hours)
+    local_now = now.astimezone(ZoneInfo(timezone_name))
+    if local_now.time() < CHARGE_ORDER_EXPORT_TIME:
+        return False
+    if (
+        state.status == "succeeded"
+        and _as_utc(state.last_window_start_utc) == automatic_window_start
+    ):
+        return False
+    if (
+        state.status == "failed"
+        and _as_utc(state.last_window_start_utc) == automatic_window_start
+        and (failed_at := _as_utc(state.last_failed_at)) is not None
+        and now < failed_at + FAILED_EXPORT_RETRY_DELAY
+    ):
+        return False
+    return True
 
 
 async def queue_charge_order_refreshes(
@@ -159,7 +209,8 @@ async def queue_charge_order_refreshes(
     actor_user_id: int | None,
     now: datetime | None = None,
 ) -> ChargeOrderRefreshQueueResult:
-    if query_range is not None and query_range not in WITHDRAW_ORDER_QUERY_RANGES:
+    requested_query_range = query_range or "yesterday"
+    if requested_query_range not in CHARGE_ORDER_MANUAL_REFRESH_RANGES:
         raise ChargeOrderRefreshValidationError("不支持的充值订单刷新时间范围。")
     requested_at = _now(now)
     if source_id:
@@ -185,7 +236,7 @@ async def queue_charge_order_refreshes(
         for source in sources:
             state = await _state(session, source_id=source.source_id, now=requested_at)
             state.manual_request_at = requested_at
-            state.manual_query_range = query_range
+            state.manual_query_range = requested_query_range
             if not (
                 state.status == "running"
                 and (_as_utc(state.lease_expires_at) or requested_at) > requested_at
@@ -199,7 +250,7 @@ async def queue_charge_order_refreshes(
             actor_user_id=actor_user_id,
             target_type="charge_order_refresh",
             target_id=source_id or "all",
-            metadata={"sourceIds": ids, "queryRange": query_range},
+            metadata={"sourceIds": ids, "queryRange": requested_query_range},
         )
         await session.commit()
     except (OperationalError, ProgrammingError) as exc:
@@ -211,7 +262,7 @@ async def queue_charge_order_refreshes(
         raise ChargeOrderCacheSchemaPendingError(
             "充值订单本地缓存正在初始化，请在数据库迁移完成后重试。"
         ) from exc
-    return ChargeOrderRefreshQueueResult(ids, requested_at, query_range)
+    return ChargeOrderRefreshQueueResult(ids, requested_at, requested_query_range)
 
 
 async def _claim_due(
@@ -231,24 +282,36 @@ async def _claim_due(
     )
     for source in sources:
         state = await _state(session, source_id=source.source_id, now=now)
-        if not _due(
-            state,
-            interval_hours=retention.charge_order_refresh_interval_hours,
-            now=now,
-        ):
-            continue
-        manual = _as_utc(state.manual_request_at)
-        started = _as_utc(state.last_started_at)
-        manual_requested = manual is not None and (started is None or manual > started)
-        query_range = (
-            state.manual_query_range
-            if manual_requested and state.manual_query_range
-            else retention.charge_order_query_range
-        )
-        window_start, window_end = withdraw_order_query_window(
-            query_range=query_range,
+        automatic_day = _automatic_export_day(
+            date_mode=retention.charge_order_export_date_mode,
+            specific_date=retention.charge_order_export_specific_date,
             timezone_name=source.business_timezone,
             now=now,
+        )
+        automatic_window_start, _ = _calendar_day_window(
+            day=automatic_day,
+            timezone_name=source.business_timezone,
+        )
+        if not _due(
+            state,
+            now=now,
+            automatic_window_start=automatic_window_start,
+            timezone_name=source.business_timezone,
+        ):
+            continue
+        manual_requested = _manual_request_is_pending(state)
+        export_day = (
+            _manual_export_day(
+                query_range=state.manual_query_range or "yesterday",
+                timezone_name=source.business_timezone,
+                now=now,
+            )
+            if manual_requested
+            else automatic_day
+        )
+        window_start, window_end = _calendar_day_window(
+            day=export_day,
+            timezone_name=source.business_timezone,
         )
         state.status = "running"
         state.last_started_at = now
@@ -264,8 +327,6 @@ async def _claim_due(
             encrypted_credentials=source.encrypted_credentials or "",
             credential_version=source.credential_version,
             business_timezone=source.business_timezone,
-            page_size=retention.charge_order_refresh_page_size,
-            query_range=query_range,
             started_at=now,
             window_start=window_start,
             window_end=window_end,
@@ -319,9 +380,12 @@ def _apply(
 ) -> None:
     snapshot.uid = _safe_text(order.get("uid"), limit=64) or ""
     snapshot.order_num = _safe_text(order.get("order_num"), limit=160)
+    snapshot.charge_product_id = _safe_text(order.get("charge_product_id"), limit=120)
+    snapshot.product_name = _safe_text(order.get("product_name"), limit=160)
     snapshot.out_trade_no = _safe_text(order.get("out_trade_no"), limit=160)
     snapshot.pay_method = _safe_text(order.get("pay_method"), limit=120)
     snapshot.pay_channel_name = _safe_text(order.get("pay_channel_name"), limit=160)
+    snapshot.pay_type = _safe_text(order.get("pay_type"), limit=120)
     snapshot.amount = _safe_text(order.get("amount"), limit=64)
     snapshot.balance = _safe_text(order.get("balance"), limit=64)
     snapshot.extra = _safe_text(order.get("extra"), limit=64)
@@ -470,30 +534,17 @@ async def _execute(
             username=credentials["username"],
             password=credentials["password"],
             totp_secret=credentials["totp_secret"],
-            page_size=claim.page_size,
         ) as client:
-            channel_names = await client.fetch_channels()
-            payment_channels = await client.fetch_payment_channels()
-            fetched = await client.fetch_all_charge_orders(
-                channels=payment_channels,
+            await _renew(session, claim=claim)
+            fetched = await client.export_charge_orders(
                 create_start=claim.window_start.astimezone(
                     ZoneInfo(claim.business_timezone)
                 ).strftime(WALL_TIME_FORMAT),
                 create_end=claim.window_end.astimezone(ZoneInfo(claim.business_timezone)).strftime(
                     WALL_TIME_FORMAT
                 ),
-                on_page_fetched=lambda: _renew(session, claim=claim),
             )
-        await sync_payment_channels(
-            session,
-            source_id=claim.source_id,
-            channels=payment_channels,
-        )
-        await sync_payment_channel_names(
-            session,
-            source_id=claim.source_id,
-            channels=channel_names,
-        )
+            await _renew(session, claim=claim)
     except asyncio.CancelledError:
         await session.rollback()
         raise
@@ -528,4 +579,3 @@ async def run_due_charge_order_refreshes(
         if claim is None:
             return results
         results.append(await _execute(session, claim=claim, settings=current_settings))
-        run_at = datetime.now(UTC)

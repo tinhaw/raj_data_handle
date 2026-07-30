@@ -19,7 +19,10 @@ from packages.domain.schemas.charge_order import (
     ChargeChannelSummaryRequest,
     ChargeOrderQueryRequest,
 )
-from packages.domain.services.charge_order_refresh_service import run_due_charge_order_refreshes
+from packages.domain.services.charge_order_refresh_service import (
+    queue_charge_order_refreshes,
+    run_due_charge_order_refreshes,
+)
 from packages.domain.services.charge_order_service import (
     query_charge_channel_summary,
     query_charge_orders,
@@ -42,18 +45,10 @@ class FakeChargeClient:
     async def __aexit__(self, *_: object) -> None:
         return None
 
-    async def fetch_channels(self) -> list[dict[str, str]]:
-        return [{"code": "948", "label": "渠道名称选项 A"}]
-
-    async def fetch_payment_channels(self) -> list[dict[str, str]]:
-        return [{"code": "948", "label": "渠道 A"}]
-
-    async def fetch_all_charge_orders(self, **kwargs: object) -> ChargeFetchResult:
-        on_page_fetched = kwargs.pop("on_page_fetched")
+    async def export_charge_orders(self, **kwargs: object) -> ChargeFetchResult:
         FakeChargeClient.calls.append(
             {"base_url": self.base_url, "page_size": self.page_size, **kwargs}
         )
-        await on_page_fetched()  # type: ignore[misc]
         return ChargeFetchResult(
             orders=[
                 {
@@ -64,7 +59,7 @@ class FakeChargeClient:
                     "pay_channel_name": "948",
                     "amount": "500",
                     "status": "1",
-                    "create_time": "2026-07-30 15:30:00",
+                    "create_time": "2026-07-29 15:30:00",
                     "account": "not-present-after-normalization",
                 }
             ],
@@ -272,13 +267,25 @@ async def test_charge_order_query_and_channel_summary_only_read_local_cache() ->
 
         result = await query_charge_orders(
             session,
-            request=ChargeOrderQueryRequest(source_id="rajwin", page=1, page_size=50),
+            request=ChargeOrderQueryRequest(
+                source_id="rajwin",
+                create_time_start="2026-07-30 12:00:00",
+                create_time_end="2026-07-30 23:59:59",
+                page=1,
+                page_size=50,
+            ),
             settings=settings,
             now=now,
         )
         summary = await query_charge_channel_summary(
             session,
-            request=ChargeChannelSummaryRequest(source_id="rajwin", page=1, page_size=50),
+            request=ChargeChannelSummaryRequest(
+                source_id="rajwin",
+                create_time_start="2026-07-30 12:00:00",
+                create_time_end="2026-07-30 23:59:59",
+                page=1,
+                page_size=50,
+            ),
             settings=settings,
             now=now,
         )
@@ -363,9 +370,7 @@ async def test_worker_refreshes_recharge_cache_and_deduplicates_by_source_and_or
                     withdraw_order_refresh_interval_hours=1,
                     withdraw_order_refresh_page_size=100,
                     withdraw_order_query_range="today",
-                    charge_order_refresh_interval_hours=24,
-                    charge_order_refresh_page_size=50,
-                    charge_order_query_range="today",
+                    charge_order_export_date_mode="previous_day",
                 ),
             ]
         )
@@ -378,15 +383,72 @@ async def test_worker_refreshes_recharge_cache_and_deduplicates_by_source_and_or
     assert FakeChargeClient.calls == [
         {
             "base_url": "https://rajwin.example.test",
-            "page_size": 50,
-            "channels": [{"code": "948", "label": "渠道 A"}],
-            "create_start": "2026-07-30 00:00:00",
-            "create_end": "2026-07-30 15:30:00",
+            "page_size": 100,
+            "create_start": "2026-07-29 00:00:00",
+            "create_end": "2026-07-29 23:59:59",
         }
     ]
     assert snapshot is not None
     assert snapshot.remote_order_id == "safe-1"
     assert snapshot.pay_method == "948"
     assert snapshot.create_time_utc is not None
-    assert snapshot.create_time_utc.replace(tzinfo=UTC) == datetime(2026, 7, 30, 10, 0, tzinfo=UTC)
+    assert snapshot.create_time_utc.replace(tzinfo=UTC) == datetime(2026, 7, 29, 10, 0, tzinfo=UTC)
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_manual_charge_export_uses_yesterday_by_default_and_is_not_limited_by_midnight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        secret_key="test-secret-key-that-is-longer-than-32-characters",
+        database_url="sqlite+aiosqlite:///:memory:",
+    )
+    engine = create_async_engine(settings.database_url)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr(
+        "packages.domain.services.charge_order_refresh_service.RajAdminChargeClient",
+        FakeChargeClient,
+    )
+    FakeChargeClient.calls = []
+    now = datetime(2026, 7, 29, 18, 20, tzinfo=UTC)  # India: 2026-07-29 23:50
+    async with factory() as session:
+        source = SourceConfig(
+            source_id="rajwin",
+            display_name="RajWin",
+            base_url="https://rajwin.example.test",
+            enabled=True,
+            business_timezone="Asia/Kolkata",
+            currency="INR",
+            credential_version=1,
+        )
+        source.encrypted_credentials = encrypt_credentials(
+            {"username": "reader", "password": "test-password", "totp_secret": "JBSWY3DPEHPK3PXP"},
+            source_id=source.source_id,
+            credential_version=source.credential_version,
+            settings=settings,
+        )
+        session.add(source)
+        await session.commit()
+
+        queued = await queue_charge_order_refreshes(
+            session,
+            source_id="rajwin",
+            actor_user_id=None,
+            now=now,
+        )
+        outcomes = await run_due_charge_order_refreshes(session, now=now, settings=settings)
+
+    assert queued.query_range == "yesterday"
+    assert [item.status for item in outcomes] == ["succeeded"]
+    assert FakeChargeClient.calls == [
+        {
+            "base_url": "https://rajwin.example.test",
+            "page_size": 100,
+            "create_start": "2026-07-28 00:00:00",
+            "create_end": "2026-07-28 23:59:59",
+        }
+    ]
     await engine.dispose()

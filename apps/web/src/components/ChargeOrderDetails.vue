@@ -5,26 +5,20 @@ import { computed, onMounted, reactive, ref } from 'vue'
 
 import { apiErrorMessage } from '../api/client'
 import { fetchEnabledSources } from '../api/sources'
-import { fetchRetentionSettings } from '../api/systemSettings'
 import { queryChargeOrders, startChargeOrderRefresh } from '../api/chargeOrders'
 import type {
   ChargeOrder,
-  ChargeOrderQueryRange,
+  ChargeOrderRefreshRange,
   ChargeOrderQueryResponse,
   ChargeOrderSummary,
   SourceConfig,
 } from '../types'
 import { businessFullDayRange, formatDateTime, yesterdayFullDayRange } from '../ui'
 
-const RANGE_OPTIONS: Array<{ value: ChargeOrderQueryRange; label: string }> = [
-  { value: 'today', label: '今日 00:00:00 至 23:59:59' },
-  { value: 'last_1_hour', label: '最近 1 小时' },
-  { value: 'last_2_hours', label: '最近 2 小时' },
-  { value: 'last_3_hours', label: '最近 3 小时' },
-  { value: 'last_6_hours', label: '最近 6 小时' },
-  { value: 'last_12_hours', label: '最近 12 小时' },
-  { value: 'last_24_hours', label: '最近 24 小时' },
-  { value: 'last_48_hours', label: '最近 48 小时' },
+const RANGE_OPTIONS: Array<{ value: ChargeOrderRefreshRange; label: string }> = [
+  { value: 'day_before_yesterday', label: '前天 00:00:00 至 23:59:59' },
+  { value: 'yesterday', label: '昨天 00:00:00 至 23:59:59' },
+  { value: 'today', label: '今天 00:00:00 至 23:59:59' },
 ]
 
 const emptySummary: ChargeOrderSummary = {
@@ -45,7 +39,7 @@ const sources = ref<SourceConfig[]>([])
 const page = ref(1)
 const pageSize = ref(50)
 const queuedAt = ref<string | null>(null)
-const manualRange = ref<ChargeOrderQueryRange>('today')
+const manualRange = ref<ChargeOrderRefreshRange>('yesterday')
 const manualRefreshSourceId = ref('')
 const filters = reactive({
   sourceId: '',
@@ -75,15 +69,8 @@ const summary = computed(() => response.value?.summary || emptySummary)
 const total = computed(() => response.value?.total || 0)
 const statusOptions = computed(() => response.value?.statusDictionary || [])
 const channelOptions = computed(() => response.value?.channelDictionary || [])
-const channelNameOptions = computed(() => response.value?.channelNameDictionary || [])
 const statusNames = computed(
   () => new Map(statusOptions.value.map((item) => [item.code, item.label])),
-)
-const channelNames = computed(
-  () => new Map(channelNameOptions.value.map((item) => [item.code, item.label])),
-)
-const paymentChannelNames = computed(
-  () => new Map(channelOptions.value.map((item) => [item.code, item.label])),
 )
 const localUpdatedText = computed(() =>
   response.value ? formatDateTime(response.value.localUpdatedAt) : '尚未查询',
@@ -111,18 +98,6 @@ function amountText(value: string | null | undefined): string {
 
 function statusLabel(value: string): string {
   return statusNames.value.get(value) || `状态 ${value}`
-}
-
-function paymentChannelName(row: ChargeOrder): string {
-  const nameCode = String(row.payChannelName || '').trim()
-  const methodCode = String(row.payMethod || '').trim()
-  return (
-    channelNames.value.get(nameCode) ||
-    paymentChannelNames.value.get(methodCode) ||
-    nameCode ||
-    methodCode ||
-    '—'
-  )
 }
 
 async function load(resetPage = false): Promise<void> {
@@ -175,11 +150,7 @@ function handlePageSizeChange(value: number): void {
 
 async function openManualRefresh(): Promise<void> {
   manualRefreshSourceId.value = filters.sourceId
-  try {
-    manualRange.value = (await fetchRetentionSettings()).chargeOrderQueryRange
-  } catch {
-    manualRange.value = 'today'
-  }
+  manualRange.value = 'yesterday'
   manualRefreshVisible.value = true
 }
 
@@ -227,7 +198,7 @@ onMounted(async () => {
     <header class="charge-header">
       <div>
         <h2>充值订单明细</h2>
-        <p>仅查询本地已同步的充值订单；远端同步由后台工作进程执行。</p>
+        <p>仅查询本地已导出并缓存的充值订单；远端同步由后台工作进程按天执行。</p>
       </div>
       <div class="charge-header__actions">
         <div class="sync-state">
@@ -296,17 +267,24 @@ onMounted(async () => {
         <el-tag effect="plain" type="info">{{ refreshLabel }}</el-tag>
       </div>
       <el-table v-loading="loading" :data="rows" empty-text="当前本地数据中暂无充值订单">
-        <el-table-column label="订单 ID" prop="id" fixed="left" min-width="132" />
-        <el-table-column label="用户 UID" prop="uid" min-width="118" />
-        <el-table-column label="充值订单号" prop="orderNum" min-width="180" show-overflow-tooltip />
-        <el-table-column label="三方订单号" prop="outTradeNo" min-width="180" show-overflow-tooltip />
-        <el-table-column label="支付渠道名称" min-width="170"><template #default="{ row }">{{ paymentChannelName(row) }}</template></el-table-column>
-        <el-table-column label="充值金额" min-width="132" align="right"><template #default="{ row }">{{ amountText(row.amount) }}</template></el-table-column>
-        <el-table-column label="到账余额" min-width="132" align="right"><template #default="{ row }">{{ amountText(row.balance) }}</template></el-table-column>
+        <el-table-column label="订单id" prop="id" fixed="left" min-width="132" />
+        <el-table-column label="用户uid" prop="uid" min-width="118" />
+        <el-table-column label="我方订单号" prop="orderNum" min-width="180" show-overflow-tooltip />
+        <el-table-column label="充值商品id" prop="chargeProductId" min-width="132" show-overflow-tooltip />
+        <el-table-column label="商品名称" prop="productName" min-width="160" show-overflow-tooltip />
+        <el-table-column label="支付渠道名称" prop="payChannelName" min-width="170" show-overflow-tooltip />
+        <el-table-column label="支付渠道" prop="payMethod" min-width="140" show-overflow-tooltip />
+        <el-table-column label="支付方式" prop="payType" min-width="140" show-overflow-tooltip />
+        <el-table-column label="三方支付订单号" prop="outTradeNo" min-width="180" show-overflow-tooltip />
+        <el-table-column label="支付金额" min-width="132" align="right"><template #default="{ row }">{{ amountText(row.amount) }}</template></el-table-column>
+        <el-table-column label="发放金额" min-width="132" align="right"><template #default="{ row }">{{ amountText(row.balance) }}</template></el-table-column>
         <el-table-column label="赠送金额" min-width="132" align="right"><template #default="{ row }">{{ amountText(row.extra) }}</template></el-table-column>
+        <el-table-column label="订单状态" min-width="120"><template #default="{ row }"><el-tag type="info">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
         <el-table-column label="创建时间" min-width="172"><template #default="{ row }">{{ row.createTime || '—' }}</template></el-table-column>
         <el-table-column label="支付时间" min-width="172"><template #default="{ row }">{{ row.payTime || '—' }}</template></el-table-column>
-        <el-table-column label="状态" fixed="right" min-width="120"><template #default="{ row }"><el-tag type="info">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
+        <el-table-column label="完成时间" min-width="172"><template #default="{ row }">{{ row.updateTime || '—' }}</template></el-table-column>
+        <el-table-column label="是否首充" prop="firstPay" min-width="100" />
+        <el-table-column label="用户渠道" prop="channel" min-width="140" show-overflow-tooltip />
       </el-table>
       <div class="charge-pagination">
         <el-pagination background layout="total, sizes, prev, pager, next, jumper" :total="total" :current-page="page" :page-size="pageSize" :page-sizes="[20, 50, 100]" @update:current-page="handlePageChange" @update:page-size="handlePageSizeChange" />
@@ -314,7 +292,7 @@ onMounted(async () => {
     </section>
 
     <el-dialog v-model="manualRefreshVisible" title="选择本次充值订单刷新条件" width="min(480px, calc(100vw - 32px))">
-      <p>将为 {{ selectedManualRefreshSource?.displayName || '所选盘口' }} 提交一次后台同步任务，不会修改系统配置的定时同步范围。</p>
+      <p>将为 {{ selectedManualRefreshSource?.displayName || '所选盘口' }} 导出指定自然日的充值订单并更新本地缓存，不会修改系统配置的定时导出日期。</p>
       <label class="manual-refresh-dialog__field">
         <span>刷新盘口</span>
         <el-select v-model="manualRefreshSourceId" style="width: 100%">

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
 from packages.common.schemas import ApiSchema
-from packages.domain.schemas.system_setting import ChargeOrderQueryRange
+
+ChargeOrderRefreshRange = Literal["day_before_yesterday", "yesterday", "today"]
 
 
 class ChargeOrderQueryRequest(ApiSchema):
@@ -59,9 +61,12 @@ class ChargeOrderResponse(ApiSchema):
     id: str
     uid: str
     order_num: str | None
+    charge_product_id: str | None
+    product_name: str | None
     out_trade_no: str | None
     pay_method: str | None
     pay_channel_name: str | None
+    pay_type: str | None
     amount: str | None
     balance: str | None
     extra: str | None
@@ -74,6 +79,7 @@ class ChargeOrderResponse(ApiSchema):
     charge_type: str | None
     fill_order_num: str | None
     fill_order_admin: str | None
+    channel: str | None
 
 
 class ChargeStatusDictionaryEntry(ApiSchema):
@@ -147,7 +153,7 @@ class ChargeChannelSummaryResponse(ApiSchema):
 
 class ChargeOrderRefreshRequest(ApiSchema):
     source_id: str | None = Field(default=None, min_length=2, max_length=64)
-    query_range: ChargeOrderQueryRange | None = None
+    query_range: ChargeOrderRefreshRange | None = None
 
     @field_validator("source_id")
     @classmethod
@@ -160,5 +166,5 @@ class ChargeOrderRefreshResponse(ApiSchema):
     status: str
     source_ids: list[str]
     requested_at: datetime
-    query_range: ChargeOrderQueryRange | None
+    query_range: ChargeOrderRefreshRange | None
     message: str

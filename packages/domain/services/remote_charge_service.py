@@ -2,16 +2,21 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from io import BytesIO
 from typing import Any
 
 import httpx
+from openpyxl import load_workbook
 
 from packages.common.totp import generate_totp
 
 LOGIN_PATH = "/api/system/login"
 CHARGE_ORDER_INDEX_PATH = "/api/operate/chargeOrder/index"
 CHARGE_CHANNEL_PATH = "/api/operate/chargeOrder/payChannel"
+CHARGE_ORDER_EXPORT_PATH = "/api/operate/chargeOrder/export"
+EXPORT_TASK_SAVE_PATH = "/api/operate/exportTask/save"
 WITHDRAW_ORDER_INDEX_PATH = "/api/operate/withdrawOrder/index"
 DATA_DICTIONARY_PATH = "/api/system/dataDict/list"
 WITHDRAW_STATUS_DICTIONARY_PATH = DATA_DICTIONARY_PATH
@@ -21,9 +26,42 @@ REMOTE_GET_PATHS = {
     CHARGE_CHANNEL_PATH,
     DATA_DICTIONARY_PATH,
 }
-REMOTE_POST_PATHS = {WITHDRAW_ORDER_INDEX_PATH}
+REMOTE_POST_PATHS = {
+    WITHDRAW_ORDER_INDEX_PATH,
+    CHARGE_ORDER_EXPORT_PATH,
+    EXPORT_TASK_SAVE_PATH,
+}
 AUTH_FAILURE_STATUSES = {401, 403, 419, 440}
 MAX_CHARGE_PAGES_PER_CHANNEL = 200
+MAX_CHARGE_EXPORT_BYTES = 128 * 1024 * 1024
+
+CHARGE_EXPORT_COLUMNS = (
+    "订单id",
+    "用户uid",
+    "我方订单号",
+    "充值商品id",
+    "商品名称",
+    "支付渠道名称",
+    "支付渠道",
+    "支付方式",
+    "三方支付订单号",
+    "支付金额",
+    "发放金额",
+    "赠送金额",
+    "订单状态",
+    "创建时间",
+    "支付时间",
+    "完成时间",
+    "是否首充",
+    "用户渠道",
+)
+CHARGE_EXPORT_STATUS_CODES = {
+    "已失效": "-1",
+    "未支付": "0",
+    "待支付": "0",
+    "已支付": "1",
+    "已退款": "2",
+}
 
 
 class RemoteChargeError(RuntimeError):
@@ -100,6 +138,85 @@ def normalize_charge_order(item: dict[str, Any]) -> dict[str, Any]:
         "fill_order_num": _text(item.get("fill_order_num")),
         "fill_order_admin": _text(item.get("fill_order_admin")),
     }
+
+
+def _excel_text(value: object) -> str | None:
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return _text(value)
+
+
+def _export_status(value: object) -> str:
+    text = _excel_text(value) or ""
+    if text in {"-1", "0", "1", "2"}:
+        return text
+    code = CHARGE_EXPORT_STATUS_CODES.get(text)
+    if code is None:
+        raise RemoteResponseError("充值订单导出表格包含未识别的订单状态。")
+    return code
+
+
+def normalize_charge_order_export_row(item: dict[str, object]) -> dict[str, Any]:
+    """Map the approved recharge-export columns into the local cache schema."""
+
+    return {
+        "id": _excel_text(item.get("订单id")) or "",
+        "uid": _excel_text(item.get("用户uid")) or "",
+        "order_num": _excel_text(item.get("我方订单号")),
+        "charge_product_id": _excel_text(item.get("充值商品id")),
+        "product_name": _excel_text(item.get("商品名称")),
+        "pay_channel_name": _excel_text(item.get("支付渠道名称")),
+        "pay_method": _excel_text(item.get("支付渠道")),
+        "pay_type": _excel_text(item.get("支付方式")),
+        "out_trade_no": _excel_text(item.get("三方支付订单号")),
+        "amount": _amount(_excel_text(item.get("支付金额"))),
+        "balance": _amount(_excel_text(item.get("发放金额"))),
+        "extra": _amount(_excel_text(item.get("赠送金额"))),
+        "status": _export_status(item.get("订单状态")),
+        "create_time": _excel_text(item.get("创建时间")),
+        "pay_time": _excel_text(item.get("支付时间")),
+        "update_time": _excel_text(item.get("完成时间")),
+        "first_pay": _excel_text(item.get("是否首充")),
+        "channel": _excel_text(item.get("用户渠道")),
+    }
+
+
+def parse_charge_order_export(content: bytes) -> list[dict[str, Any]]:
+    """Read the daily recharge export without persisting the workbook itself."""
+
+    if not content or len(content) > MAX_CHARGE_EXPORT_BYTES:
+        raise RemoteResponseError("充值订单导出文件为空或超过大小限制。")
+    try:
+        workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+        worksheet = workbook.active
+        header_row = next(worksheet.iter_rows(min_row=1, max_row=1, values_only=True), None)
+    except Exception as exc:
+        raise RemoteResponseError("远端充值订单导出文件不是有效 Excel 表格。") from exc
+    if header_row is None:
+        raise RemoteResponseError("远端充值订单导出表格缺少表头。")
+    headers = [_excel_text(value) or "" for value in header_row]
+    missing = [column for column in CHARGE_EXPORT_COLUMNS if column not in headers]
+    if missing:
+        raise RemoteResponseError("远端充值订单导出表格缺少必要列。")
+    indexes = {header: index for index, header in enumerate(headers)}
+    orders: dict[str, dict[str, Any]] = {}
+    try:
+        for values in worksheet.iter_rows(min_row=2, values_only=True):
+            row = {
+                column: values[indexes[column]] if indexes[column] < len(values) else None
+                for column in CHARGE_EXPORT_COLUMNS
+            }
+            if not any(value not in (None, "") for value in row.values()):
+                continue
+            order = normalize_charge_order_export_row(row)
+            if not order["id"]:
+                raise RemoteResponseError("充值订单导出表格包含缺少订单id的行。")
+            orders[order["id"]] = order
+    finally:
+        workbook.close()
+    return list(orders.values())
 
 
 def _extract_token(payload: object) -> str | None:
@@ -267,6 +384,35 @@ class RajAdminChargeClient:
             return response.json()
         except ValueError as exc:
             raise RemoteResponseError("远端只读接口响应不是有效 JSON。") from exc
+
+    async def _post_bytes(
+        self,
+        path: str,
+        *,
+        body: dict[str, Any],
+        allow_relogin: bool = True,
+    ) -> bytes:
+        if path not in REMOTE_POST_PATHS:
+            raise RemoteChargeError("POST 请求路径不在远端只读 Allowlist 中。")
+        token = await self.login()
+        headers = {**self._base_headers(), "authorization": f"Bearer {token}"}
+        try:
+            response = await self._client.post(
+                f"{self.base_url}{path}",
+                headers=headers,
+                json=body,
+            )
+        except httpx.HTTPError as exc:
+            raise RemoteResponseError("远端充值订单导出请求失败。") from exc
+        if response.status_code in AUTH_FAILURE_STATUSES and allow_relogin:
+            await self.login(force=True)
+            return await self._post_bytes(path, body=body, allow_relogin=False)
+        if response.status_code >= 400:
+            raise RemoteResponseError("远端充值订单导出返回非成功 HTTP 状态。")
+        content = response.content
+        if not content.startswith(b"PK"):
+            raise RemoteResponseError("远端充值订单导出未返回 Excel 文件。")
+        return content
 
     async def fetch_channels(self) -> list[dict[str, str]]:
         data = _response_data(await self._get_json(CHARGE_CHANNEL_PATH))
@@ -451,6 +597,56 @@ class RajAdminChargeClient:
             remote_total=remote_total,
             # Some channel filters can overlap.  De-duplication by remote ID is
             # expected and a complete traversal remains authoritative.
+            complete=True,
+        )
+
+    @staticmethod
+    def _charge_export_body(*, create_start: str, create_end: str) -> dict[str, Any]:
+        return {
+            "page": 1,
+            "pageSize": 10,
+            "create_time": [create_start, create_end],
+            "uid": "",
+            "first_pay": "",
+            "channel": [],
+            "order_num": "",
+            "charge_id": "",
+            "charge_type": "",
+            "pay_channel_type": "",
+            "pay_channel_name": "",
+            "pay_method": "",
+            "pay_type": "",
+            "out_trade_no": "",
+            "status": "",
+            "update_time": [],
+            "recent": 0,
+        }
+
+    async def export_charge_orders(
+        self,
+        *,
+        create_start: str,
+        create_end: str,
+    ) -> ChargeFetchResult:
+        """Export one full calendar-day workbook and normalize its approved rows."""
+
+        body = self._charge_export_body(create_start=create_start, create_end=create_end)
+        workbook = await self._post_bytes(CHARGE_ORDER_EXPORT_PATH, body=body)
+        export_task = {
+            **body,
+            "status": 1,
+            "export_type": 2,
+            "operate_type": 3,
+            "download": "operate/chargeOrder/export",
+        }
+        task_data = _response_data(await self._post_json(EXPORT_TASK_SAVE_PATH, body=export_task))
+        if not isinstance(task_data, dict) or not _text(task_data.get("id")):
+            raise RemoteResponseError("远端充值订单导出任务记录无效。")
+        orders = parse_charge_order_export(workbook)
+        return ChargeFetchResult(
+            orders=orders,
+            fetched_pages=1,
+            remote_total=len(orders),
             complete=True,
         )
 

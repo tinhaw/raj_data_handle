@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 
 import httpx
@@ -14,7 +16,120 @@ from packages.domain.services.payment_import_service import (
     import_payment_orders,
 )
 from packages.domain.services.reconciliation_engine import compare_with_remote_orders
-from packages.domain.services.remote_charge_service import RajAdminChargeClient
+from packages.domain.services.remote_charge_service import (
+    CHARGE_EXPORT_COLUMNS,
+    RajAdminChargeClient,
+    parse_charge_order_export,
+)
+
+
+def _charge_export_workbook(rows: list[list[object]]) -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append([*CHARGE_EXPORT_COLUMNS, "手机号"])
+    for row in rows:
+        sheet.append(row)
+    content = BytesIO()
+    workbook.save(content)
+    return content.getvalue()
+
+
+def _sample_charge_export_row(*, order_num: str = "merchant-1") -> list[object]:
+    return [
+        "export-1",
+        "1001",
+        order_num,
+        "product-1",
+        "100 金额包",
+        "渠道名称",
+        "948",
+        "UPI",
+        "third-1",
+        "100",
+        "100",
+        "0",
+        "已支付",
+        "2026-07-29 10:00:00",
+        "2026-07-29 10:01:00",
+        "2026-07-29 10:02:00",
+        "是",
+        "用户渠道",
+        "9999999999",
+    ]
+
+
+def test_charge_export_parser_uses_excel_columns_and_deduplicates_by_order_id() -> None:
+    content = _charge_export_workbook(
+        [
+            _sample_charge_export_row(),
+            _sample_charge_export_row(order_num="merchant-1-updated"),
+        ]
+    )
+
+    assert parse_charge_order_export(content) == [
+        {
+            "id": "export-1",
+            "uid": "1001",
+            "order_num": "merchant-1-updated",
+            "charge_product_id": "product-1",
+            "product_name": "100 金额包",
+            "pay_channel_name": "渠道名称",
+            "pay_method": "948",
+            "pay_type": "UPI",
+            "out_trade_no": "third-1",
+            "amount": "100",
+            "balance": "100",
+            "extra": "0",
+            "status": "1",
+            "create_time": "2026-07-29 10:00:00",
+            "pay_time": "2026-07-29 10:01:00",
+            "update_time": "2026-07-29 10:02:00",
+            "first_pay": "是",
+            "channel": "用户渠道",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_charge_export_client_posts_export_and_task_save_for_one_day() -> None:
+    calls: list[tuple[str, str]] = []
+    workbook = _charge_export_workbook([_sample_charge_export_row()])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        if request.url.path.endswith("/api/system/login"):
+            return httpx.Response(200, json={"data": {"token": "test-token"}})
+        body = json.loads(request.content)
+        assert request.headers["authorization"] == "Bearer test-token"
+        assert body["create_time"] == ["2026-07-29 00:00:00", "2026-07-29 23:59:59"]
+        if request.url.path.endswith("/api/operate/chargeOrder/export"):
+            return httpx.Response(200, content=workbook)
+        if request.url.path.endswith("/api/operate/exportTask/save"):
+            assert body["status"] == 1
+            assert body["export_type"] == 2
+            assert body["download"] == "operate/chargeOrder/export"
+            return httpx.Response(200, json={"data": {"id": "task-1"}})
+        raise AssertionError(f"unexpected path: {request.url.path}")
+
+    async with RajAdminChargeClient(
+        base_url="https://admin.example.test",
+        username="reader",
+        password="password",
+        totp_secret="JBSWY3DPEHPK3PXP",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await client.export_charge_orders(
+            create_start="2026-07-29 00:00:00",
+            create_end="2026-07-29 23:59:59",
+        )
+
+    assert result.remote_total == 1
+    assert result.orders[0]["status"] == "1"
+    assert calls == [
+        ("POST", "/api/system/login"),
+        ("POST", "/api/operate/chargeOrder/export"),
+        ("POST", "/api/operate/exportTask/save"),
+    ]
 
 
 def test_totp_matches_rfc_6238_sha1_vector() -> None:

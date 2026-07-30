@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -27,7 +27,6 @@ from packages.domain.services.system_setting_service import get_retention_settin
 from packages.domain.services.withdraw_order_service import (
     WALL_TIME_FORMAT,
     local_withdraw_order_query_window,
-    withdraw_order_query_window,
 )
 
 
@@ -151,9 +150,12 @@ def snapshot_to_charge_order(snapshot: ChargeOrderSnapshot) -> dict[str, Any]:
         "id": snapshot.remote_order_id,
         "uid": snapshot.uid,
         "order_num": snapshot.order_num,
+        "charge_product_id": snapshot.charge_product_id,
+        "product_name": snapshot.product_name,
         "out_trade_no": snapshot.out_trade_no,
         "pay_method": snapshot.pay_method,
         "pay_channel_name": snapshot.pay_channel_name,
+        "pay_type": snapshot.pay_type,
         "amount": snapshot.amount,
         "balance": snapshot.balance,
         "extra": snapshot.extra,
@@ -166,6 +168,7 @@ def snapshot_to_charge_order(snapshot: ChargeOrderSnapshot) -> dict[str, Any]:
         "charge_type": snapshot.charge_type,
         "fill_order_num": snapshot.fill_order_num,
         "fill_order_admin": snapshot.fill_order_admin,
+        "channel": snapshot.channel,
     }
 
 
@@ -204,11 +207,20 @@ async def _query_context(
     if query_at.tzinfo is None:
         query_at = query_at.replace(tzinfo=UTC)
     retention = await get_retention_settings(session, defaults=settings or get_settings())
-    cache_window_start, cache_window_end = withdraw_order_query_window(
-        query_range=retention.charge_order_query_range,
-        timezone_name=timezone_name,
-        now=query_at,
-    )
+    business_now = query_at.astimezone(ZoneInfo(timezone_name))
+    earliest_cached_day = business_now - timedelta(days=retention.remote_cache_retention_days)
+    cache_window_start = earliest_cached_day.replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    ).astimezone(UTC)
+    cache_window_end = business_now.replace(
+        hour=23,
+        minute=59,
+        second=59,
+        microsecond=0,
+    ).astimezone(UTC)
     try:
         window_start, window_end = local_withdraw_order_query_window(
             create_time_start=create_time_start,
