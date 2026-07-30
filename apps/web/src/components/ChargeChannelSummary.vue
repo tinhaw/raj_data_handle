@@ -9,7 +9,7 @@ import { apiErrorMessage } from '../api/client'
 import { fetchEnabledSources } from '../api/sources'
 import ChartPanel from './ChartPanel.vue'
 import type { ChargeChannelSummaryItem, ChargeChannelSummaryResponse, SourceConfig } from '../types'
-import { formatDateTime } from '../ui'
+import { formatDateTime, yesterdayFullDayRange } from '../ui'
 
 const loading = ref(false)
 const sources = ref<SourceConfig[]>([])
@@ -45,13 +45,24 @@ async function load(resetPage = false): Promise<void> {
   } finally { if (currentRequest === requestId) loading.value = false }
 }
 
-async function sourceChanged(): Promise<void> { filters.createTimeRange = null; filters.payMethod = ''; await load(true) }
+async function sourceChanged(): Promise<void> {
+  filters.createTimeRange = yesterdayFullDayRange(selectedSource.value?.businessTimezone || 'Asia/Kolkata')
+  filters.payMethod = ''
+  await load(true)
+}
 
 function handlePageChange(value: number): void { page.value = value; void load() }
 function handlePageSizeChange(value: number): void { pageSize.value = value; void load(true) }
 
 onMounted(async () => {
-  try { sources.value = await fetchEnabledSources(); if (sources.value[0]) { filters.sourceId = sources.value[0].sourceId; await load(true) } }
+  try {
+    sources.value = await fetchEnabledSources()
+    if (sources.value[0]) {
+      filters.sourceId = sources.value[0].sourceId
+      filters.createTimeRange = yesterdayFullDayRange(sources.value[0].businessTimezone)
+      await load(true)
+    }
+  }
   catch (error) { ElMessage.error(apiErrorMessage(error, '可用盘口加载失败。')) }
 })
 </script>

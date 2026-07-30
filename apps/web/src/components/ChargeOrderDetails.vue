@@ -14,7 +14,7 @@ import type {
   ChargeOrderSummary,
   SourceConfig,
 } from '../types'
-import { formatDateTime } from '../ui'
+import { formatDateTime, yesterdayFullDayRange } from '../ui'
 
 const RANGE_OPTIONS: Array<{ value: ChargeOrderQueryRange; label: string }> = [
   { value: 'today', label: '今日 00:00:00 至 23:59:59' },
@@ -46,6 +46,7 @@ const page = ref(1)
 const pageSize = ref(50)
 const queuedAt = ref<string | null>(null)
 const manualRange = ref<ChargeOrderQueryRange>('today')
+const manualRefreshSourceId = ref('')
 const filters = reactive({
   sourceId: '',
   createTimeRange: null as [string, string] | null,
@@ -58,6 +59,9 @@ let requestId = 0
 
 const selectedSource = computed(() =>
   sources.value.find((source) => source.sourceId === filters.sourceId),
+)
+const selectedManualRefreshSource = computed(() =>
+  sources.value.find((source) => source.sourceId === manualRefreshSourceId.value),
 )
 const summary = computed(() => response.value?.summary || emptySummary)
 const total = computed(() => response.value?.total || 0)
@@ -143,7 +147,9 @@ async function load(resetPage = false): Promise<void> {
 }
 
 async function handleSourceChange(): Promise<void> {
-  filters.createTimeRange = null
+  filters.createTimeRange = yesterdayFullDayRange(
+    selectedSource.value?.businessTimezone || 'Asia/Kolkata',
+  )
   filters.status = ''
   filters.payMethod = ''
   await load(true)
@@ -160,6 +166,7 @@ function handlePageSizeChange(value: number): void {
 }
 
 async function openManualRefresh(): Promise<void> {
+  manualRefreshSourceId.value = filters.sourceId
   try {
     manualRange.value = (await fetchRetentionSettings()).chargeOrderQueryRange
   } catch {
@@ -169,11 +176,14 @@ async function openManualRefresh(): Promise<void> {
 }
 
 async function startRefresh(): Promise<void> {
-  if (!filters.sourceId) return
+  if (!manualRefreshSourceId.value) {
+    ElMessage.warning('请选择需要刷新的盘口。')
+    return
+  }
   refreshStarting.value = true
   try {
     const result = await startChargeOrderRefresh({
-      sourceId: filters.sourceId,
+      sourceId: manualRefreshSourceId.value,
       queryRange: manualRange.value,
     })
     queuedAt.value = result.requestedAt
@@ -193,6 +203,7 @@ onMounted(async () => {
     sources.value = await fetchEnabledSources()
     if (sources.value[0]) {
       filters.sourceId = sources.value[0].sourceId
+      filters.createTimeRange = yesterdayFullDayRange(sources.value[0].businessTimezone)
       await load(true)
     }
   } catch (error) {
@@ -293,9 +304,18 @@ onMounted(async () => {
       </div>
     </section>
 
-    <el-dialog v-model="manualRefreshVisible" title="选择本次充值订单刷新时间范围" width="min(480px, calc(100vw - 32px))">
-      <p>将为 {{ selectedSource?.displayName || '所选盘口' }} 提交一次后台同步任务，不会修改系统配置的定时同步范围。</p>
-      <el-select v-model="manualRange" style="width: 100%"><el-option v-for="option in RANGE_OPTIONS" :key="option.value" :label="option.label" :value="option.value" /></el-select>
+    <el-dialog v-model="manualRefreshVisible" title="选择本次充值订单刷新条件" width="min(480px, calc(100vw - 32px))">
+      <p>将为 {{ selectedManualRefreshSource?.displayName || '所选盘口' }} 提交一次后台同步任务，不会修改系统配置的定时同步范围。</p>
+      <label class="manual-refresh-dialog__field">
+        <span>刷新盘口</span>
+        <el-select v-model="manualRefreshSourceId" style="width: 100%">
+          <el-option v-for="source in sources" :key="source.sourceId" :label="source.displayName" :value="source.sourceId" />
+        </el-select>
+      </label>
+      <label class="manual-refresh-dialog__field">
+        <span>刷新时间范围</span>
+        <el-select v-model="manualRange" style="width: 100%"><el-option v-for="option in RANGE_OPTIONS" :key="option.value" :label="option.label" :value="option.value" /></el-select>
+      </label>
       <template #footer><el-button @click="manualRefreshVisible = false">取消</el-button><el-button type="primary" :loading="refreshStarting" @click="startRefresh">确认并刷新</el-button></template>
     </el-dialog>
   </div>
@@ -322,6 +342,7 @@ onMounted(async () => {
 .charge-table { overflow: hidden; }
 .charge-table__heading { padding: 18px 20px; }
 .charge-pagination { display: flex; justify-content: flex-end; padding: 16px 20px; }
+.manual-refresh-dialog__field { display: grid; gap: 7px; margin-top: 14px; color: var(--ink); font-size: 13px; font-weight: 800; }
 @media (max-width: 980px) { .charge-query__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .charge-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .charge-header, .charge-header__actions, .charge-query__footer { align-items: flex-start; flex-direction: column; } .sync-state { text-align: left; } }
 @media (max-width: 640px) { .charge-query__grid, .charge-metrics { grid-template-columns: 1fr; } .charge-query__time { grid-column: span 1; } .charge-pagination { overflow-x: auto; justify-content: flex-start; } }
 </style>
