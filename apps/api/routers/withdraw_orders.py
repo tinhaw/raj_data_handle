@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.dependencies import get_auth_context
 from packages.common.database import get_db_session
 from packages.domain.schemas.withdraw_order import (
+    WithdrawOperatorSummaryRequest,
+    WithdrawOperatorSummaryResponse,
     WithdrawOrderQueryRequest,
     WithdrawOrderQueryResponse,
     WithdrawOrderRefreshRequest,
@@ -21,6 +23,7 @@ from packages.domain.services.withdraw_order_refresh_service import (
 from packages.domain.services.withdraw_order_service import (
     WithdrawOrderCacheSchemaPendingError,
     WithdrawOrderValidationError,
+    query_withdraw_operator_summary,
     query_withdraw_orders,
 )
 
@@ -63,6 +66,42 @@ async def withdraw_order_query(
         refresh_status=result.refresh_status,
         status_dictionary=result.status_dictionary,
         summary=result.summary,
+    )
+
+
+@router.post("/operator-summary", response_model=WithdrawOperatorSummaryResponse)
+async def withdraw_operator_summary(
+    payload: WithdrawOperatorSummaryRequest,
+    _: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_db_session),
+) -> WithdrawOperatorSummaryResponse:
+    """Return a paginated, local-only withdrawal aggregation by operator."""
+
+    try:
+        result = await query_withdraw_operator_summary(session, request=payload)
+    except SourceNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except WithdrawOrderValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except (WithdrawOrderCacheSchemaPendingError, SystemSettingsSchemaPendingError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    return WithdrawOperatorSummaryResponse(
+        items=result.items,
+        total=result.total,
+        page=payload.page,
+        page_size=payload.page_size,
+        source_id=result.source_id,
+        source_display_name=result.source_display_name,
+        business_timezone=result.business_timezone,
+        effective_create_time_end=result.effective_create_time_end,
+        fetched_at=result.fetched_at,
+        local_updated_at=result.local_updated_at,
+        status_columns=result.status_columns,
+        status_dictionary=result.status_dictionary,
+        selected_order_total=result.selected_order_total,
     )
 
 

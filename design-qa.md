@@ -68,3 +68,51 @@ The focused comparison covers the dense operational area: tabs, difference title
 - [P3] The mock shows a page-size selector; the implementation fixes the page size at 10 to keep the current API and interaction model simple.
 
 final result: passed
+
+---
+
+# 提现订单操作人员汇总设计 QA
+
+**比较目标**
+
+- 源视觉稿：`/Users/dinghao/.codex/generated_images/019fafa8-ef4e-7d91-a9e3-38f1c72bac74/exec-d76c5fa2-453f-4949-8559-dfcd3418cc41.png`
+- 实现截图：`/tmp/withdraw_operator_summary_chart_qa_v2.png`
+- 路由与状态：`/withdraw-orders` 的“操作人员汇总”Tab；默认全部状态；Rohan 行的“图表”弹窗已打开。
+- 视口：实现使用 1600 × 1000 CSS px、1× 密度；截图为 1600 × 1000 px。源视觉稿为 1568 × 1003 px；两者均为近似 1×，按内容区对齐比较，无额外密度缩放。
+
+**全视图与区域证据**
+
+- 已在同一比较输入中打开源视觉稿和实现截图，比较双 Tab 层级、筛选区、宽表、行尾“图表”入口与弹窗饼图。
+- 重点区域为弹窗：源稿和实现都采用居中白色 dialog、遮罩、环形饼图、中心总订单数与右侧状态图例。实现使用本地样例数据，因此状态数量和订单数与源稿不同。
+- 还验证了首次查询页、本地操作人员聚合、空 `audit_admin` 合并为“未填写操作人员”、图表打开/关闭；浏览器控制台无 error/warning。
+
+**Findings**
+
+- 无待修复的 P0/P1/P2 视觉问题。实现沿用现有 Raj Data 的字体、色彩令牌、左侧导航、卡片边框与表格密度；源稿中未包含的“操作人员包含匹配”筛选作为产品能力保留。
+
+**Required Fidelity Surfaces**
+
+- 字体与层级：页面标题、Tab、表头、正文和辅助说明沿用现有应用字号/字重；状态列的中文标签与原始状态码分层可读。
+- 间距与布局：1600px 视口下查询区、统计表和分页均无截断；动态状态列横向扩展，首列和操作列固定。
+- 色彩与令牌：沿用深蓝侧栏、青绿色活动状态、白色 surface 与低对比边框；饼图使用与源稿接近的蓝/青/橙/绿/红/紫序列。
+- 图片与资产：该页面没有新增位图或自定义插图；沿用现有图标库和 ECharts Canvas 图表，没有以占位图替代目标资产。
+- 文案与内容：状态显示使用字典标签，未知状态保留原始代码；弹窗明确说明占比仅按当前选中状态计算。
+
+**Comparison History**
+
+- [P1，已修复] 汇总请求在切换盘口时可能展示过期结果。修复为请求序号保护，只接收当前筛选对应的响应；普通订单查询同样应用该保护。
+- [P2，已修复] 前端未限制状态多选数量，可能超过后端 20 项上限。已添加 `multiple-limit="20"` 和可见提示。
+- [P2，已修复] 首轮视觉比较中的 dialog 偏宽、图例位于底部且与确认稿的图表信息层级不一致。已收紧 dialog 宽度，改为左侧环形图/中心总订单数/右侧图例计数与百分比，并重新截取比较。
+
+**Implementation Checklist**
+
+- [x] 保留完整提现订单查询页并放入“提现订单查询”Tab。
+- [x] 增加本地缓存的操作人员状态聚合、动态状态列、分页、时间范围与状态筛选。
+- [x] 增加单人状态占比 dialog 饼图。
+- [x] 完成浏览器交互、控制台、测试、静态检查与生产构建验证。
+
+**Follow-up Polish**
+
+- [P3] 当真实盘口存在较多状态时，可根据使用频率调整图例排序或增加颜色主题配置；不影响当前交付。
+
+final result: passed

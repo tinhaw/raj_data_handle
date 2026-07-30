@@ -7,12 +7,12 @@ from pydantic import Field, field_validator, model_validator
 from packages.common.schemas import ApiSchema
 
 
-class WithdrawOrderQueryRequest(ApiSchema):
+class WithdrawOrderLocalQueryRequest(ApiSchema):
+    """Common local-cache filters shared by withdrawal read endpoints."""
+
     source_id: str = Field(min_length=2, max_length=64)
     create_time_start: str | None = Field(default=None, max_length=19)
     create_time_end: str | None = Field(default=None, max_length=19)
-    uid: str | None = Field(default=None, max_length=64)
-    status: str | None = Field(default=None, max_length=40)
     audit_admin: str | None = Field(default=None, max_length=120)
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=50, ge=10, le=100)
@@ -38,14 +38,14 @@ class WithdrawOrderQueryRequest(ApiSchema):
             raise ValueError("创建时间必须使用 YYYY-MM-DD HH:mm:ss 格式。") from exc
         return value
 
-    @field_validator("uid", "status", "audit_admin")
+    @field_validator("audit_admin")
     @classmethod
     def normalize_optional_filter(cls, value: str | None) -> str | None:
         normalized = (value or "").strip()
         return normalized or None
 
     @model_validator(mode="after")
-    def validate_create_time_range(self) -> WithdrawOrderQueryRequest:
+    def validate_create_time_range(self) -> WithdrawOrderLocalQueryRequest:
         if (self.create_time_start is None) != (self.create_time_end is None):
             raise ValueError("创建时间范围必须同时提供开始和结束时间。")
         if self.create_time_start is None or self.create_time_end is None:
@@ -55,6 +55,49 @@ class WithdrawOrderQueryRequest(ApiSchema):
         if start > end:
             raise ValueError("创建时间范围的开始时间不能晚于结束时间。")
         return self
+
+
+class WithdrawOrderQueryRequest(WithdrawOrderLocalQueryRequest):
+    uid: str | None = Field(default=None, max_length=64)
+    status: str | None = Field(default=None, max_length=40)
+
+    @field_validator("uid", "status")
+    @classmethod
+    def normalize_query_optional_filter(cls, value: str | None) -> str | None:
+        normalized = (value or "").strip()
+        return normalized or None
+
+
+class WithdrawOperatorSummaryRequest(WithdrawOrderLocalQueryRequest):
+    """Aggregate local withdrawal snapshots by their displayed operator name."""
+
+    statuses: list[str] | None = Field(default=None, max_length=20)
+    page_size: int = Field(default=20, ge=1, le=100)
+
+    @field_validator("statuses", mode="before")
+    @classmethod
+    def normalize_empty_statuses(cls, value: object) -> object:
+        if isinstance(value, (list, tuple)) and not value:
+            return None
+        return value
+
+    @field_validator("statuses")
+    @classmethod
+    def normalize_selected_statuses(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        normalized: list[str] = []
+        for raw_status in value:
+            status = raw_status.strip()
+            if not status:
+                raise ValueError("状态筛选不能包含空状态值。")
+            if len(status) > 40:
+                raise ValueError("状态值长度不能超过 40 个字符。")
+            if status not in normalized:
+                normalized.append(status)
+        if not normalized:
+            raise ValueError("状态筛选不能为空。")
+        return normalized
 
 
 class WithdrawOrderResponse(ApiSchema):
@@ -117,6 +160,34 @@ class WithdrawOrderQueryResponse(ApiSchema):
     refresh_status: str
     status_dictionary: list[WithdrawStatusDictionaryEntry]
     summary: WithdrawOrderSummary
+
+
+class WithdrawOperatorStatusCount(ApiSchema):
+    status: str
+    count: int
+
+
+class WithdrawOperatorSummaryItem(ApiSchema):
+    audit_admin: str
+    audit_admin_missing: bool
+    status_counts: list[WithdrawOperatorStatusCount]
+    selected_total: int
+
+
+class WithdrawOperatorSummaryResponse(ApiSchema):
+    items: list[WithdrawOperatorSummaryItem]
+    total: int
+    page: int
+    page_size: int
+    source_id: str
+    source_display_name: str
+    business_timezone: str
+    effective_create_time_end: str
+    fetched_at: datetime
+    local_updated_at: datetime | None
+    status_columns: list[str]
+    status_dictionary: list[WithdrawStatusDictionaryEntry]
+    selected_order_total: int
 
 
 class WithdrawOrderRefreshRequest(ApiSchema):

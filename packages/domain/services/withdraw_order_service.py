@@ -7,13 +7,16 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import case, desc, func, select
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.common.settings import Settings, get_settings
 from packages.domain.models import WithdrawOrderRefreshState, WithdrawOrderSnapshot
-from packages.domain.schemas.withdraw_order import WithdrawOrderQueryRequest
+from packages.domain.schemas.withdraw_order import (
+    WithdrawOperatorSummaryRequest,
+    WithdrawOrderQueryRequest,
+)
 from packages.domain.services.data_dictionary_service import withdraw_status_dictionary
 from packages.domain.services.source_service import get_source
 from packages.domain.services.system_setting_service import get_retention_settings
@@ -76,6 +79,21 @@ class WithdrawOrderQueryResult:
     refresh_status: str
     status_dictionary: list[dict[str, object]]
     summary: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class WithdrawOperatorSummaryResult:
+    items: list[dict[str, Any]]
+    total: int
+    source_id: str
+    source_display_name: str
+    business_timezone: str
+    effective_create_time_end: str
+    fetched_at: datetime
+    local_updated_at: datetime | None
+    status_columns: list[str]
+    status_dictionary: list[dict[str, object]]
+    selected_order_total: int
 
 
 def _decimal(value: object) -> Decimal:
@@ -366,4 +384,169 @@ async def query_withdraw_orders(
         refresh_status=refresh_state.status if refresh_state is not None else "not_started",
         status_dictionary=status_dictionary,
         summary=summary,
+    )
+
+
+async def query_withdraw_operator_summary(
+    session: AsyncSession,
+    *,
+    request: WithdrawOperatorSummaryRequest,
+    settings: Settings | None = None,
+    now: datetime | None = None,
+) -> WithdrawOperatorSummaryResult:
+    """Aggregate local withdrawal snapshots by operator without remote I/O.
+
+    The page-level time range is resolved in the selected source's business
+    timezone and can only narrow the system-configured cache window.  All
+    grouping, status counts, totals, and pagination are performed by SQL over
+    the approved local snapshot fields.
+    """
+
+    source = await get_source(session, request.source_id)
+    if not source.enabled:
+        raise WithdrawOrderValidationError("所选盘口尚未启用。")
+    # See the equivalent protection in ``query_withdraw_orders``: the staged
+    # retention-settings fallback can roll back the session and expire this ORM
+    # instance before we finish the local query.
+    source_id = source.source_id
+    source_display_name = source.display_name
+    business_timezone = source.business_timezone
+    current_settings = settings or get_settings()
+    query_at = now or datetime.now(UTC)
+    if query_at.tzinfo is None:
+        query_at = query_at.replace(tzinfo=UTC)
+    retention = await get_retention_settings(session, defaults=current_settings)
+    cache_window_start, cache_window_end = withdraw_order_query_window(
+        query_range=retention.withdraw_order_query_range,
+        timezone_name=business_timezone,
+        now=query_at,
+    )
+    window_start, window_end = local_withdraw_order_query_window(
+        create_time_start=request.create_time_start,
+        create_time_end=request.create_time_end,
+        timezone_name=business_timezone,
+        cache_window_start=cache_window_start,
+        cache_window_end=cache_window_end,
+    )
+
+    base_conditions = [
+        WithdrawOrderSnapshot.source_id == source_id,
+        WithdrawOrderSnapshot.create_time_utc.is_not(None),
+        WithdrawOrderSnapshot.create_time_utc >= window_start,
+        WithdrawOrderSnapshot.create_time_utc <= window_end,
+    ]
+    if request.audit_admin:
+        base_conditions.append(
+            func.lower(WithdrawOrderSnapshot.audit_admin).contains(request.audit_admin.casefold())
+        )
+    selected_conditions = [*base_conditions]
+    if request.statuses:
+        selected_conditions.append(WithdrawOrderSnapshot.status.in_(request.statuses))
+
+    normalized_audit_admin = func.trim(func.coalesce(WithdrawOrderSnapshot.audit_admin, ""))
+    audit_admin_missing = case(
+        (normalized_audit_admin == "", True),
+        else_=False,
+    ).label("audit_admin_missing")
+    displayed_audit_admin = case(
+        (normalized_audit_admin == "", "未填写操作人员"),
+        else_=normalized_audit_admin,
+    ).label("audit_admin")
+    selected_total_expression = func.count(WithdrawOrderSnapshot.id).label("selected_total")
+
+    try:
+        status_dictionary = await withdraw_status_dictionary(session, source_id=source_id)
+        if request.statuses:
+            status_columns = list(request.statuses)
+        else:
+            observed_statuses = [
+                str(status)
+                for status in await session.scalars(
+                    select(WithdrawOrderSnapshot.status)
+                    .where(*base_conditions)
+                    .distinct()
+                    .order_by(WithdrawOrderSnapshot.status)
+                )
+            ]
+            status_columns = [
+                str(entry["code"])
+                for entry in status_dictionary
+                if bool(entry["active"])
+            ]
+            status_columns.extend(
+                status
+                for status in observed_statuses
+                if status not in status_columns
+            )
+
+        metrics = (
+            await session.execute(
+                select(
+                    func.count(WithdrawOrderSnapshot.id).label("selected_order_total"),
+                    func.count(func.distinct(normalized_audit_admin)).label("operator_total"),
+                    func.max(WithdrawOrderSnapshot.synced_at).label("local_updated_at"),
+                ).where(*selected_conditions)
+            )
+        ).mappings().one()
+        status_count_expressions = [
+            func.count(
+                case((WithdrawOrderSnapshot.status == status, 1))
+            ).label(f"status_count_{index}")
+            for index, status in enumerate(status_columns)
+        ]
+        rows = (
+            await session.execute(
+                select(
+                    displayed_audit_admin,
+                    audit_admin_missing,
+                    selected_total_expression,
+                    *status_count_expressions,
+                )
+                .where(*selected_conditions)
+                .group_by(
+                    normalized_audit_admin,
+                    displayed_audit_admin,
+                    audit_admin_missing,
+                )
+                .order_by(desc(selected_total_expression), normalized_audit_admin)
+                .offset((request.page - 1) * request.page_size)
+                .limit(request.page_size)
+            )
+        ).mappings().all()
+    except (OperationalError, ProgrammingError) as exc:
+        if not _is_missing_withdraw_cache_schema(exc):
+            raise
+        await session.rollback()
+        raise WithdrawOrderCacheSchemaPendingError(
+            "提现订单本地缓存正在初始化，请在数据库迁移完成后重试。"
+        ) from exc
+
+    return WithdrawOperatorSummaryResult(
+        items=[
+            {
+                "audit_admin": str(row["audit_admin"]),
+                "audit_admin_missing": bool(row["audit_admin_missing"]),
+                "status_counts": [
+                    {
+                        "status": status,
+                        "count": int(row[f"status_count_{index}"] or 0),
+                    }
+                    for index, status in enumerate(status_columns)
+                ],
+                "selected_total": int(row["selected_total"] or 0),
+            }
+            for row in rows
+        ],
+        total=int(metrics["operator_total"] or 0),
+        source_id=source_id,
+        source_display_name=source_display_name,
+        business_timezone=business_timezone,
+        effective_create_time_end=window_end.astimezone(
+            ZoneInfo(business_timezone)
+        ).strftime(WALL_TIME_FORMAT),
+        fetched_at=query_at,
+        local_updated_at=_as_utc(metrics["local_updated_at"]),
+        status_columns=status_columns,
+        status_dictionary=status_dictionary,
+        selected_order_total=int(metrics["selected_order_total"] or 0),
     )

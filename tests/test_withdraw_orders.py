@@ -18,12 +18,16 @@ from packages.domain.models import (
     WithdrawOrderRefreshState,
     WithdrawOrderSnapshot,
 )
-from packages.domain.schemas.withdraw_order import WithdrawOrderQueryRequest
+from packages.domain.schemas.withdraw_order import (
+    WithdrawOperatorSummaryRequest,
+    WithdrawOrderQueryRequest,
+)
 from packages.domain.services.remote_withdraw_service import (
     RajAdminWithdrawClient,
     normalize_withdraw_order,
 )
 from packages.domain.services.withdraw_order_service import (
+    query_withdraw_operator_summary,
     query_withdraw_orders,
     summarize_withdraw_orders,
 )
@@ -259,6 +263,28 @@ def test_withdraw_query_time_range_requires_a_complete_ordered_wall_time_pair(
         WithdrawOrderQueryRequest(source_id="rajwin", **payload)
 
 
+def test_withdraw_operator_summary_request_normalizes_selected_statuses() -> None:
+    request = WithdrawOperatorSummaryRequest(
+        source_id="rajwin",
+        statuses=[" 3 ", "0", "3"],
+    )
+
+    assert request.statuses == ["3", "0"]
+    assert WithdrawOperatorSummaryRequest(source_id="rajwin", statuses=[]).statuses is None
+    with pytest.raises(ValidationError):
+        WithdrawOperatorSummaryRequest(
+            source_id="rajwin",
+            create_time_start="2026-07-30 10:00:00",
+        )
+    with pytest.raises(ValidationError):
+        WithdrawOperatorSummaryRequest(source_id="rajwin", statuses=[""])
+    with pytest.raises(ValidationError):
+        WithdrawOperatorSummaryRequest(
+            source_id="rajwin",
+            statuses=[str(index) for index in range(21)],
+        )
+
+
 @pytest.mark.asyncio
 async def test_withdraw_query_time_range_only_filters_local_cache_in_source_timezone() -> None:
     settings = Settings(
@@ -360,6 +386,228 @@ async def test_withdraw_query_time_range_only_filters_local_cache_in_source_time
 
 
 @pytest.mark.asyncio
+async def test_withdraw_operator_summary_aggregates_local_cache_by_trimmed_operator() -> None:
+    settings = Settings(
+        secret_key="test-secret-key-that-is-longer-than-32-characters",
+        database_url="sqlite+aiosqlite:///:memory:",
+    )
+    engine = create_async_engine(settings.database_url)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    query_time = datetime(2026, 7, 30, 6, 0, tzinfo=UTC)
+    async with factory() as session:
+        session.add_all(
+            [
+                SourceConfig(
+                    source_id="rajwin",
+                    display_name="RajWin",
+                    enabled=True,
+                    business_timezone="Asia/Kolkata",
+                    currency="INR",
+                ),
+                SystemRetentionSetting(
+                    id=1,
+                    uploaded_file_retention_days=3,
+                    result_retention_days=30,
+                    remote_cache_retention_days=30,
+                    withdraw_order_refresh_interval_hours=1,
+                    withdraw_order_query_range="last_2_hours",
+                ),
+                DataDictionaryEntry(
+                    source_id="rajwin",
+                    dictionary_type="withdraw_status",
+                    entry_code="0",
+                    entry_label="待审核",
+                    active=True,
+                ),
+                DataDictionaryEntry(
+                    source_id="rajwin",
+                    dictionary_type="withdraw_status",
+                    entry_code="2",
+                    entry_label="处理中",
+                    active=True,
+                ),
+                DataDictionaryEntry(
+                    source_id="rajwin",
+                    dictionary_type="withdraw_status",
+                    entry_code="3",
+                    entry_label="已完成",
+                    active=False,
+                ),
+                # This row is outside the configured cache window and must
+                # never reach the local aggregation.
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="outside-cache-window",
+                    uid="100",
+                    create_time="2026-07-30 09:00:00",
+                    create_time_utc=datetime(2026, 7, 30, 3, 30, tzinfo=UTC),
+                    audit_admin="Alice",
+                    status="0",
+                ),
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="alice-pending",
+                    uid="101",
+                    create_time="2026-07-30 10:00:00",
+                    create_time_utc=datetime(2026, 7, 30, 4, 30, tzinfo=UTC),
+                    audit_admin=" Alice ",
+                    status="0",
+                    synced_at=datetime(2026, 7, 30, 5, 0, tzinfo=UTC),
+                ),
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="alice-complete",
+                    uid="102",
+                    create_time="2026-07-30 10:30:00",
+                    create_time_utc=datetime(2026, 7, 30, 5, 0, tzinfo=UTC),
+                    audit_admin="Alice",
+                    status="3",
+                    synced_at=datetime(2026, 7, 30, 5, 10, tzinfo=UTC),
+                ),
+                # Case differences remain separate groups; only whitespace is
+                # normalized for the displayed operator name.
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="lowercase-alice",
+                    uid="103",
+                    create_time="2026-07-30 11:00:00",
+                    create_time_utc=datetime(2026, 7, 30, 5, 30, tzinfo=UTC),
+                    audit_admin="alice",
+                    status="0",
+                    synced_at=datetime(2026, 7, 30, 5, 20, tzinfo=UTC),
+                ),
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="missing-null",
+                    uid="104",
+                    create_time="2026-07-30 10:45:00",
+                    create_time_utc=datetime(2026, 7, 30, 5, 15, tzinfo=UTC),
+                    audit_admin=None,
+                    status="3",
+                    synced_at=datetime(2026, 7, 30, 5, 25, tzinfo=UTC),
+                ),
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="missing-blank",
+                    uid="105",
+                    create_time="2026-07-30 10:50:00",
+                    create_time_utc=datetime(2026, 7, 30, 5, 20, tzinfo=UTC),
+                    audit_admin="  ",
+                    status="0",
+                    synced_at=datetime(2026, 7, 30, 5, 30, tzinfo=UTC),
+                ),
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="bob-processing",
+                    uid="106",
+                    create_time="2026-07-30 10:55:00",
+                    create_time_utc=datetime(2026, 7, 30, 5, 25, tzinfo=UTC),
+                    audit_admin=" Bob ",
+                    status="2",
+                    synced_at=datetime(2026, 7, 30, 5, 40, tzinfo=UTC),
+                ),
+                # This is inside the configured cache window but outside the
+                # page-local time range below.
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="outside-page-range",
+                    uid="107",
+                    create_time="2026-07-30 11:30:00",
+                    create_time_utc=datetime(2026, 7, 30, 6, 0, tzinfo=UTC),
+                    audit_admin="Bob",
+                    status="0",
+                    synced_at=datetime(2026, 7, 30, 5, 55, tzinfo=UTC),
+                ),
+            ]
+        )
+        await session.commit()
+
+        result = await query_withdraw_operator_summary(
+            session,
+            request=WithdrawOperatorSummaryRequest(
+                source_id="rajwin",
+                create_time_start="2026-07-30 10:00:00",
+                create_time_end="2026-07-30 11:00:00",
+            ),
+            settings=settings,
+            now=query_time,
+        )
+        second_page = await query_withdraw_operator_summary(
+            session,
+            request=WithdrawOperatorSummaryRequest(
+                source_id="rajwin",
+                create_time_start="2026-07-30 10:00:00",
+                create_time_end="2026-07-30 11:00:00",
+                page=2,
+                page_size=2,
+            ),
+            settings=settings,
+            now=query_time,
+        )
+        filtered = await query_withdraw_operator_summary(
+            session,
+            request=WithdrawOperatorSummaryRequest(
+                source_id="rajwin",
+                create_time_start="2026-07-30 10:00:00",
+                create_time_end="2026-07-30 11:00:00",
+                statuses=["3", "0", "3"],
+                audit_admin="ali",
+            ),
+            settings=settings,
+            now=query_time,
+        )
+
+    items_by_operator = {item["audit_admin"]: item for item in result.items}
+    assert result.source_id == "rajwin"
+    assert result.source_display_name == "RajWin"
+    assert result.business_timezone == "Asia/Kolkata"
+    assert result.effective_create_time_end == "2026-07-30 11:00:00"
+    assert result.status_columns == ["0", "2", "3"]
+    assert result.total == 4
+    assert result.selected_order_total == 6
+    assert set(items_by_operator) == {"Alice", "alice", "Bob", "未填写操作人员"}
+    assert items_by_operator["Alice"] == {
+        "audit_admin": "Alice",
+        "audit_admin_missing": False,
+        "status_counts": [
+            {"status": "0", "count": 1},
+            {"status": "2", "count": 0},
+            {"status": "3", "count": 1},
+        ],
+        "selected_total": 2,
+    }
+    assert items_by_operator["alice"]["selected_total"] == 1
+    assert items_by_operator["未填写操作人员"] == {
+        "audit_admin": "未填写操作人员",
+        "audit_admin_missing": True,
+        "status_counts": [
+            {"status": "0", "count": 1},
+            {"status": "2", "count": 0},
+            {"status": "3", "count": 1},
+        ],
+        "selected_total": 2,
+    }
+    assert items_by_operator["Bob"]["status_counts"] == [
+        {"status": "0", "count": 0},
+        {"status": "2", "count": 1},
+        {"status": "3", "count": 0},
+    ]
+    assert second_page.total == 4
+    assert {item["audit_admin"] for item in second_page.items} == {"Bob", "alice"}
+    assert filtered.status_columns == ["3", "0"]
+    assert filtered.selected_order_total == 3
+    assert filtered.total == 2
+    assert {item["audit_admin"] for item in filtered.items} == {"Alice", "alice"}
+    assert filtered.items[0]["status_counts"] == [
+        {"status": "3", "count": 1},
+        {"status": "0", "count": 1},
+    ]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_withdraw_query_survives_page_size_schema_fallback_session_rollback() -> None:
     """A pre-0007 database must still serve the local withdrawal cache.
 
@@ -435,6 +683,26 @@ async def test_withdraw_query_survives_page_size_schema_fallback_session_rollbac
     assert result.business_timezone == "Asia/Kolkata"
     assert [item["id"] for item in result.items] == [
         "cached-before-page-size-migration"
+    ]
+
+    async with factory() as session:
+        summary = await query_withdraw_operator_summary(
+            session,
+            request=WithdrawOperatorSummaryRequest(source_id="rajwin"),
+            settings=settings,
+            now=datetime(2026, 7, 30, 6, 0, tzinfo=UTC),
+        )
+
+    assert summary.source_display_name == "RajWin"
+    assert summary.business_timezone == "Asia/Kolkata"
+    assert summary.selected_order_total == 1
+    assert summary.items == [
+        {
+            "audit_admin": "未填写操作人员",
+            "audit_admin_missing": True,
+            "status_counts": [{"status": "3", "count": 1}],
+            "selected_total": 1,
+        }
     ]
     await engine.dispose()
 

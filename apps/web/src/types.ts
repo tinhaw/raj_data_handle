@@ -270,6 +270,34 @@ export interface WithdrawStatusDictionaryEntry {
   active: boolean
 }
 
+export interface WithdrawOperatorStatusCount {
+  status: string
+  count: number
+}
+
+export interface WithdrawOperatorSummaryItem {
+  auditAdmin: string
+  auditAdminMissing: boolean
+  statusCounts: WithdrawOperatorStatusCount[]
+  selectedTotal: number
+}
+
+export interface WithdrawOperatorSummaryResponse {
+  items: WithdrawOperatorSummaryItem[]
+  total: number
+  page: number
+  pageSize: number
+  sourceId: string
+  sourceDisplayName: string
+  businessTimezone: string
+  effectiveCreateTimeEnd: string
+  fetchedAt: string
+  localUpdatedAt: string | null
+  statusColumns: string[]
+  statusDictionary: WithdrawStatusDictionaryEntry[]
+  selectedOrderTotal: number
+}
+
 export interface WithdrawOrderRefreshResult {
   status: 'queued'
   sourceIds: string[]
