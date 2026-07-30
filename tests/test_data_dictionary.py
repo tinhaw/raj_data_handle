@@ -17,6 +17,7 @@ from packages.domain.services.data_dictionary_service import (
     DataDictionaryConflictError,
     DataDictionarySyncError,
     DataDictionaryValidationError,
+    create_charge_status,
     create_withdraw_status,
     ensure_charge_statuses,
     list_charge_statuses,
@@ -26,6 +27,7 @@ from packages.domain.services.data_dictionary_service import (
     sync_payment_channel_names,
     sync_payment_channels,
     sync_remote_withdraw_statuses,
+    update_charge_status,
     update_withdraw_status,
     withdraw_status_dictionary,
 )
@@ -89,6 +91,88 @@ async def test_charge_statuses_are_seeded_idempotently_and_repair_confirmed_valu
             ("1", "已支付"),
             ("2", "已退款"),
         ]
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_charge_statuses_are_source_scoped_editable_and_audited() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with factory() as session:
+        session.add_all(
+            [
+                SourceConfig(
+                    source_id="rajwin",
+                    display_name="RajWin",
+                    business_timezone="Asia/Kolkata",
+                    currency="INR",
+                ),
+                AppUser(
+                    username="admin",
+                    username_normalized="admin",
+                    password_hash="test-hash",
+                    display_name="Admin",
+                    role="admin",
+                ),
+            ]
+        )
+        await session.commit()
+        admin = await session.scalar(select(AppUser).where(AppUser.username == "admin"))
+        assert admin is not None
+
+        created = await create_charge_status(
+            session,
+            source_id="rajwin",
+            entry_code="9",
+            entry_label="人工核对状态",
+            active=True,
+            actor_user_id=admin.id,
+        )
+        updated = await update_charge_status(
+            session,
+            entry_id=created.id,
+            entry_label="人工确认状态",
+            active=False,
+            actor_user_id=admin.id,
+        )
+
+        assert updated.entry_label == "人工确认状态"
+        assert updated.active is False
+        rows = await list_charge_statuses(session, source_id="rajwin")
+        assert [(row.entry_code, row.entry_label, row.active) for row in rows] == [
+            ("9", "人工确认状态", False)
+        ]
+        actions = list(
+            await session.scalars(
+                select(SecurityAuditLog.action).order_by(SecurityAuditLog.created_at)
+            )
+        )
+        assert actions == [
+            "data_dictionary.charge_status.create",
+            "data_dictionary.charge_status.update",
+        ]
+
+        with pytest.raises(DataDictionaryConflictError, match="充值订单状态值已存在"):
+            await create_charge_status(
+                session,
+                source_id="rajwin",
+                entry_code="9",
+                entry_label="重复",
+                active=True,
+                actor_user_id=admin.id,
+            )
+        with pytest.raises(DataDictionaryValidationError, match="至少修改"):
+            await update_charge_status(
+                session,
+                entry_id=created.id,
+                entry_label=None,
+                active=None,
+                actor_user_id=admin.id,
+            )
 
     await engine.dispose()
 

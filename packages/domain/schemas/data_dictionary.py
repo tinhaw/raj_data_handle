@@ -50,6 +50,14 @@ class WithdrawStatusPatchRequest(ApiSchema):
         return normalized
 
 
+class ChargeStatusCreateRequest(WithdrawStatusCreateRequest):
+    """Manually maintained recharge-order status mapping."""
+
+
+class ChargeStatusPatchRequest(WithdrawStatusPatchRequest):
+    """Editable fields for a recharge-order status mapping."""
+
+
 class WithdrawStatusSyncRequest(ApiSchema):
     source_id: str = Field(min_length=2, max_length=64)
 

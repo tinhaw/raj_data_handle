@@ -17,6 +17,29 @@ export async function fetchChargeStatuses(params: {
   return response.data
 }
 
+export async function createChargeStatus(payload: {
+  sourceId: string
+  entryCode: string
+  entryLabel: string
+  active: boolean
+}): Promise<DataDictionaryEntry> {
+  return (
+    await api.post<DataDictionaryEntry>('/settings/data-dictionaries/charge-statuses', payload)
+  ).data
+}
+
+export async function updateChargeStatus(
+  entryId: number,
+  payload: { entryLabel?: string; active?: boolean },
+): Promise<DataDictionaryEntry> {
+  return (
+    await api.patch<DataDictionaryEntry>(
+      `/settings/data-dictionaries/charge-statuses/${entryId}`,
+      payload,
+    )
+  ).data
+}
+
 export async function fetchPaymentChannels(params: {
   sourceId?: string
   active?: boolean

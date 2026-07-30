@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.dependencies import require_admin
 from packages.common.database import get_db_session
 from packages.domain.schemas.data_dictionary import (
+    ChargeStatusCreateRequest,
+    ChargeStatusPatchRequest,
     DataDictionaryEntryResponse,
     WithdrawStatusCreateRequest,
     WithdrawStatusPatchRequest,
@@ -18,12 +20,14 @@ from packages.domain.services.data_dictionary_service import (
     DataDictionaryNotFoundError,
     DataDictionaryRemoteSyncError,
     DataDictionaryValidationError,
+    create_charge_status,
     create_withdraw_status,
     list_charge_statuses,
     list_payment_channel_names,
     list_payment_channels,
     list_withdraw_statuses,
     sync_remote_withdraw_statuses,
+    update_charge_status,
     update_withdraw_status,
 )
 
@@ -45,6 +49,57 @@ async def charge_statuses(
         source_id=source_id,
         active=active,
     )
+
+
+@router.post(
+    "/settings/data-dictionaries/charge-statuses",
+    response_model=DataDictionaryEntryResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_charge_status_entry(
+    payload: ChargeStatusCreateRequest,
+    auth: AuthContext = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> DataDictionaryEntryResponse:
+    try:
+        return await create_charge_status(
+            session,
+            source_id=payload.source_id,
+            entry_code=payload.entry_code,
+            entry_label=payload.entry_label,
+            active=payload.active,
+            actor_user_id=auth.user.id,
+        )
+    except DataDictionaryNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except DataDictionaryConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except DataDictionaryValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.patch(
+    "/settings/data-dictionaries/charge-statuses/{entry_id}",
+    response_model=DataDictionaryEntryResponse,
+)
+async def update_charge_status_entry(
+    entry_id: int,
+    payload: ChargeStatusPatchRequest,
+    auth: AuthContext = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> DataDictionaryEntryResponse:
+    try:
+        return await update_charge_status(
+            session,
+            entry_id=entry_id,
+            entry_label=payload.entry_label,
+            active=payload.active,
+            actor_user_id=auth.user.id,
+        )
+    except DataDictionaryNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except DataDictionaryValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.get(

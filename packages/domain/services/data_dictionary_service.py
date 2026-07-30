@@ -584,22 +584,69 @@ async def create_withdraw_status(
     active: bool,
     actor_user_id: int,
 ) -> DataDictionaryEntryResponse:
+    return await _create_status_entry(
+        session,
+        source_id=source_id,
+        entry_code=entry_code,
+        entry_label=entry_label,
+        active=active,
+        actor_user_id=actor_user_id,
+        dictionary_type=WITHDRAW_STATUS_DICTIONARY,
+        status_name="提现状态",
+        audit_action="data_dictionary.withdraw_status.create",
+    )
+
+
+async def create_charge_status(
+    session: AsyncSession,
+    *,
+    source_id: str,
+    entry_code: str,
+    entry_label: str,
+    active: bool,
+    actor_user_id: int,
+) -> DataDictionaryEntryResponse:
+    return await _create_status_entry(
+        session,
+        source_id=source_id,
+        entry_code=entry_code,
+        entry_label=entry_label,
+        active=active,
+        actor_user_id=actor_user_id,
+        dictionary_type=CHARGE_STATUS_DICTIONARY,
+        status_name="充值订单状态",
+        audit_action="data_dictionary.charge_status.create",
+    )
+
+
+async def _create_status_entry(
+    session: AsyncSession,
+    *,
+    source_id: str,
+    entry_code: str,
+    entry_label: str,
+    active: bool,
+    actor_user_id: int,
+    dictionary_type: str,
+    status_name: str,
+    audit_action: str,
+) -> DataDictionaryEntryResponse:
     source = await session.get(SourceConfig, source_id)
     if source is None:
         raise DataDictionaryNotFoundError("盘口配置不存在。")
     existing = await session.scalar(
         select(DataDictionaryEntry).where(
             DataDictionaryEntry.source_id == source_id,
-            DataDictionaryEntry.dictionary_type == WITHDRAW_STATUS_DICTIONARY,
+            DataDictionaryEntry.dictionary_type == dictionary_type,
             DataDictionaryEntry.entry_code == entry_code,
         )
     )
     if existing is not None:
-        raise DataDictionaryConflictError("该盘口的状态值已存在，请直接编辑展示文案。")
+        raise DataDictionaryConflictError(f"该盘口的{status_name}值已存在，请直接编辑展示文案。")
     now = datetime.now(UTC)
     entry = DataDictionaryEntry(
         source_id=source_id,
-        dictionary_type=WITHDRAW_STATUS_DICTIONARY,
+        dictionary_type=dictionary_type,
         entry_code=entry_code,
         entry_label=entry_label,
         active=active,
@@ -610,17 +657,17 @@ async def create_withdraw_status(
     session.add(entry)
     await write_audit(
         session,
-        action="data_dictionary.withdraw_status.create",
+        action=audit_action,
         actor_user_id=actor_user_id,
         target_type="data_dictionary_entry",
-        target_id=f"{source_id}:{WITHDRAW_STATUS_DICTIONARY}:{entry_code}",
+        target_id=f"{source_id}:{dictionary_type}:{entry_code}",
         metadata={"active": active},
     )
     try:
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
-        raise DataDictionaryConflictError("该盘口的状态值已存在，请刷新后重试。") from exc
+        raise DataDictionaryConflictError(f"该盘口的{status_name}值已存在，请刷新后重试。") from exc
     await session.refresh(entry)
     return _entry_response(entry, source_display_name=source.display_name)
 
@@ -633,16 +680,59 @@ async def update_withdraw_status(
     active: bool | None,
     actor_user_id: int,
 ) -> DataDictionaryEntryResponse:
+    return await _update_status_entry(
+        session,
+        entry_id=entry_id,
+        entry_label=entry_label,
+        active=active,
+        actor_user_id=actor_user_id,
+        dictionary_type=WITHDRAW_STATUS_DICTIONARY,
+        status_name="提现状态",
+        audit_action="data_dictionary.withdraw_status.update",
+    )
+
+
+async def update_charge_status(
+    session: AsyncSession,
+    *,
+    entry_id: int,
+    entry_label: str | None,
+    active: bool | None,
+    actor_user_id: int,
+) -> DataDictionaryEntryResponse:
+    return await _update_status_entry(
+        session,
+        entry_id=entry_id,
+        entry_label=entry_label,
+        active=active,
+        actor_user_id=actor_user_id,
+        dictionary_type=CHARGE_STATUS_DICTIONARY,
+        status_name="充值订单状态",
+        audit_action="data_dictionary.charge_status.update",
+    )
+
+
+async def _update_status_entry(
+    session: AsyncSession,
+    *,
+    entry_id: int,
+    entry_label: str | None,
+    active: bool | None,
+    actor_user_id: int,
+    dictionary_type: str,
+    status_name: str,
+    audit_action: str,
+) -> DataDictionaryEntryResponse:
     if entry_label is None and active is None:
         raise DataDictionaryValidationError("请至少修改展示文案或启用状态。")
     entry = await session.scalar(
         select(DataDictionaryEntry).where(
             DataDictionaryEntry.id == entry_id,
-            DataDictionaryEntry.dictionary_type == WITHDRAW_STATUS_DICTIONARY,
+            DataDictionaryEntry.dictionary_type == dictionary_type,
         )
     )
     if entry is None:
-        raise DataDictionaryNotFoundError("提现状态字典条目不存在。")
+        raise DataDictionaryNotFoundError(f"{status_name}字典条目不存在。")
     source = await session.get(SourceConfig, entry.source_id)
     if source is None:
         raise DataDictionaryNotFoundError("关联的盘口配置不存在。")
@@ -657,10 +747,10 @@ async def update_withdraw_status(
         entry.updated_at = datetime.now(UTC)
         await write_audit(
             session,
-            action="data_dictionary.withdraw_status.update",
+            action=audit_action,
             actor_user_id=actor_user_id,
             target_type="data_dictionary_entry",
-            target_id=f"{entry.source_id}:{WITHDRAW_STATUS_DICTIONARY}:{entry.entry_code}",
+            target_id=f"{entry.source_id}:{dictionary_type}:{entry.entry_code}",
             metadata={"changed_fields": changed_fields},
         )
         await session.commit()

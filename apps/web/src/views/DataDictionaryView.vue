@@ -4,12 +4,14 @@ import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import {
+  createChargeStatus,
   createWithdrawStatus,
   fetchChargeStatuses,
   fetchPaymentChannels,
   fetchPaymentChannelNames,
   fetchWithdrawStatuses,
   syncWithdrawStatuses,
+  updateChargeStatus,
   updateWithdrawStatus,
 } from '../api/dataDictionaries'
 import { apiErrorMessage } from '../api/client'
@@ -18,6 +20,7 @@ import type { DataDictionaryEntry, SourceConfig, WithdrawStatusSyncResult } from
 import { formatDateTime } from '../ui'
 
 type EntryState = 'active' | 'inactive' | 'all'
+type EditableStatusType = 'withdraw_status' | 'charge_status'
 type SyncFeedback = {
   sourceId: string
   type: 'success' | 'error'
@@ -41,6 +44,7 @@ const channelNamePage = ref(1)
 const pageSize = ref(20)
 const dialogVisible = ref(false)
 const editingEntryId = ref<number | null>(null)
+const editingStatusType = ref<EditableStatusType>('withdraw_status')
 const withdrawStatusSyncFeedback = ref<SyncFeedback | null>(null)
 const statusFilters = reactive({
   keyword: '',
@@ -151,6 +155,15 @@ const channelNameSourceCount = computed(
   () => new Set(paymentChannelNames.value.map((entry) => entry.sourceId)).size,
 )
 const isEditing = computed(() => editingEntryId.value !== null)
+const editableStatusName = computed(() =>
+  editingStatusType.value === 'charge_status' ? '充值订单状态' : '提现状态',
+)
+const statusExample = computed(() =>
+  editingStatusType.value === 'charge_status' ? '例如：2' : '例如：3',
+)
+const statusLabelExample = computed(() =>
+  editingStatusType.value === 'charge_status' ? '例如：已退款' : '例如：代付成功',
+)
 const selectedWithdrawStatusEntries = computed(() => {
   if (!statusFilters.sourceId) return withdrawStatuses.value
   return withdrawStatuses.value.filter((entry) => entry.sourceId === statusFilters.sourceId)
@@ -185,6 +198,14 @@ async function loadWithdrawStatuses(): Promise<void> {
     withdrawStatuses.value = await fetchWithdrawStatuses()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '提现状态字典刷新失败。'))
+  }
+}
+
+async function loadChargeStatuses(): Promise<void> {
+  try {
+    chargeStatuses.value = await fetchChargeStatuses()
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '充值订单状态字典刷新失败。'))
   }
 }
 
@@ -235,21 +256,26 @@ async function syncWithdrawStatusDictionary(): Promise<void> {
   }
 }
 
-function resetStatusForm(): void {
+function resetStatusForm(dictionaryType: EditableStatusType): void {
   editingEntryId.value = null
-  statusForm.sourceId = statusFilters.sourceId || sources.value[0]?.sourceId || ''
+  editingStatusType.value = dictionaryType
+  statusForm.sourceId =
+    (dictionaryType === 'charge_status' ? chargeStatusFilters.sourceId : statusFilters.sourceId) ||
+    sources.value[0]?.sourceId ||
+    ''
   statusForm.entryCode = ''
   statusForm.entryLabel = ''
   statusForm.active = true
 }
 
-function openCreateDialog(): void {
-  resetStatusForm()
+function openCreateStatusDialog(dictionaryType: EditableStatusType): void {
+  resetStatusForm(dictionaryType)
   dialogVisible.value = true
 }
 
-function openEditDialog(entry: DataDictionaryEntry): void {
+function openEditStatusDialog(entry: DataDictionaryEntry, dictionaryType: EditableStatusType): void {
   editingEntryId.value = entry.id
+  editingStatusType.value = dictionaryType
   statusForm.sourceId = entry.sourceId
   statusForm.entryCode = entry.entryCode
   statusForm.entryLabel = entry.entryLabel
@@ -257,7 +283,7 @@ function openEditDialog(entry: DataDictionaryEntry): void {
   dialogVisible.value = true
 }
 
-async function saveWithdrawStatus(): Promise<void> {
+async function saveStatus(): Promise<void> {
   const sourceId = statusForm.sourceId.trim()
   const entryCode = statusForm.entryCode.trim()
   const entryLabel = statusForm.entryLabel.trim()
@@ -267,25 +293,47 @@ async function saveWithdrawStatus(): Promise<void> {
   }
   saving.value = true
   try {
-    if (editingEntryId.value === null) {
-      await createWithdrawStatus({
-        sourceId,
-        entryCode,
-        entryLabel,
-        active: statusForm.active,
-      })
-      ElMessage.success('提现状态已新增。')
+    if (editingStatusType.value === 'charge_status') {
+      if (editingEntryId.value === null) {
+        await createChargeStatus({
+          sourceId,
+          entryCode,
+          entryLabel,
+          active: statusForm.active,
+        })
+        ElMessage.success('充值订单状态已新增。')
+      } else {
+        await updateChargeStatus(editingEntryId.value, {
+          entryLabel,
+          active: statusForm.active,
+        })
+        ElMessage.success('充值订单状态已更新。')
+      }
     } else {
-      await updateWithdrawStatus(editingEntryId.value, {
-        entryLabel,
-        active: statusForm.active,
-      })
-      ElMessage.success('提现状态已更新。')
+      if (editingEntryId.value === null) {
+        await createWithdrawStatus({
+          sourceId,
+          entryCode,
+          entryLabel,
+          active: statusForm.active,
+        })
+        ElMessage.success('提现状态已新增。')
+      } else {
+        await updateWithdrawStatus(editingEntryId.value, {
+          entryLabel,
+          active: statusForm.active,
+        })
+        ElMessage.success('提现状态已更新。')
+      }
     }
     dialogVisible.value = false
-    await loadWithdrawStatuses()
+    if (editingStatusType.value === 'charge_status') {
+      await loadChargeStatuses()
+    } else {
+      await loadWithdrawStatuses()
+    }
   } catch (error) {
-    ElMessage.error(apiErrorMessage(error, '提现状态保存失败。'))
+    ElMessage.error(apiErrorMessage(error, `${editableStatusName.value}保存失败。`))
   } finally {
     saving.value = false
   }
@@ -385,7 +433,13 @@ onMounted(load)
                   </el-button>
                 </span>
               </el-tooltip>
-              <el-button type="primary" :icon="Plus" @click="openCreateDialog">新增状态</el-button>
+              <el-button
+                type="primary"
+                :icon="Plus"
+                @click="openCreateStatusDialog('withdraw_status')"
+              >
+                新增状态
+              </el-button>
             </div>
           </div>
 
@@ -474,7 +528,12 @@ onMounted(load)
             </el-table-column>
             <el-table-column label="操作" width="110" fixed="right">
               <template #default="{ row }">
-                <el-button text type="primary" :icon="EditPen" @click="openEditDialog(row)">
+                <el-button
+                  text
+                  type="primary"
+                  :icon="EditPen"
+                  @click="openEditStatusDialog(row, 'withdraw_status')"
+                >
                   编辑
                 </el-button>
               </template>
@@ -501,7 +560,7 @@ onMounted(load)
         <el-tab-pane label="充值订单状态" name="charge-statuses">
           <el-alert
             title="充值订单状态由人工核对并存入本地数据库"
-            description="当前尚未找到远端字典接口；系统按已确认结果保存 -1=已失效、0=待支付、1=已支付、2=已退款。本页只读，不提供远端刷新或手工修改。"
+            description="当前尚未找到远端字典接口；系统已保存 -1=已失效、0=待支付、1=已支付、2=已退款。管理员可手动新增、修改展示内容或停用状态；本页没有远端刷新操作。"
             type="info"
             show-icon
             :closable="false"
@@ -512,9 +571,18 @@ onMounted(load)
               <h2>充值订单状态映射</h2>
               <p>充值订单筛选和状态列均从该数据库字典读取，未知状态显示为“状态 {值}”。</p>
             </div>
-            <div class="field-binding">
-              <span>对应响应字段</span>
-              <code>status</code>
+            <div class="dictionary-actions">
+              <div class="field-binding">
+                <span>对应响应字段</span>
+                <code>status</code>
+              </div>
+              <el-button
+                type="primary"
+                :icon="Plus"
+                @click="openCreateStatusDialog('charge_status')"
+              >
+                新增状态
+              </el-button>
             </div>
           </div>
 
@@ -588,9 +656,21 @@ onMounted(load)
             <el-table-column label="数据库更新时间" min-width="190">
               <template #default="{ row }">{{ formatDateTime(row.updatedAt) }}</template>
             </el-table-column>
+            <el-table-column label="操作" width="110" fixed="right">
+              <template #default="{ row }">
+                <el-button
+                  text
+                  type="primary"
+                  :icon="EditPen"
+                  @click="openEditStatusDialog(row, 'charge_status')"
+                >
+                  编辑
+                </el-button>
+              </template>
+            </el-table-column>
             <template #empty>
               <el-empty description="暂无充值订单状态字典">
-                <span class="empty-help">请先完成充值订单状态字典的数据库初始化。</span>
+                <span class="empty-help">请点击右上角“新增状态”建立首条映射。</span>
               </el-empty>
             </template>
           </el-table>
@@ -839,7 +919,7 @@ onMounted(load)
 
     <el-dialog
       v-model="dialogVisible"
-      :title="isEditing ? '编辑提现状态' : '新增提现状态'"
+      :title="isEditing ? `编辑${editableStatusName}` : `新增${editableStatusName}`"
       width="min(560px, calc(100vw - 32px))"
       :close-on-click-modal="!saving"
     >
@@ -866,11 +946,11 @@ onMounted(load)
             v-model="statusForm.entryCode"
             :disabled="isEditing"
             maxlength="80"
-            placeholder="例如：3"
+            :placeholder="statusExample"
           />
         </el-form-item>
         <el-form-item label="展示内容" required>
-          <el-input v-model="statusForm.entryLabel" maxlength="255" placeholder="例如：代付成功" />
+          <el-input v-model="statusForm.entryLabel" maxlength="255" :placeholder="statusLabelExample" />
         </el-form-item>
         <el-form-item label="是否启用">
           <el-switch v-model="statusForm.active" active-text="启用" inactive-text="停用" />
@@ -878,7 +958,7 @@ onMounted(load)
       </el-form>
       <template #footer>
         <el-button :disabled="saving" @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="saveWithdrawStatus">
+        <el-button type="primary" :loading="saving" @click="saveStatus">
           {{ isEditing ? '保存修改' : '新增状态' }}
         </el-button>
       </template>
