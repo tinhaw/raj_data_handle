@@ -272,6 +272,14 @@ async def query_withdraw_orders(
     source = await get_source(session, request.source_id)
     if not source.enabled:
         raise WithdrawOrderValidationError("所选盘口尚未启用。")
+    # Loading retention settings can fall back after a database rollback while
+    # a newly released refresh-policy column is still awaiting migration.  A
+    # rollback expires ORM instances, so retain the source values needed by
+    # this local-only query before that compatibility path runs.
+    source_id = source.source_id
+    source_display_name = source.display_name
+    business_timezone = source.business_timezone
+    currency = source.currency
     current_settings = settings or get_settings()
     query_at = now or datetime.now(UTC)
     if query_at.tzinfo is None:
@@ -279,19 +287,19 @@ async def query_withdraw_orders(
     retention = await get_retention_settings(session, defaults=current_settings)
     cache_window_start, cache_window_end = withdraw_order_query_window(
         query_range=retention.withdraw_order_query_range,
-        timezone_name=source.business_timezone,
+        timezone_name=business_timezone,
         now=query_at,
     )
     window_start, window_end = local_withdraw_order_query_window(
         create_time_start=request.create_time_start,
         create_time_end=request.create_time_end,
-        timezone_name=source.business_timezone,
+        timezone_name=business_timezone,
         cache_window_start=cache_window_start,
         cache_window_end=cache_window_end,
     )
 
     statement = select(WithdrawOrderSnapshot).where(
-        WithdrawOrderSnapshot.source_id == source.source_id,
+        WithdrawOrderSnapshot.source_id == source_id,
         WithdrawOrderSnapshot.create_time_utc.is_not(None),
         WithdrawOrderSnapshot.create_time_utc >= window_start,
         WithdrawOrderSnapshot.create_time_utc <= window_end,
@@ -312,7 +320,7 @@ async def query_withdraw_orders(
 
     try:
         snapshots = list(await session.scalars(statement))
-        refresh_state = await session.get(WithdrawOrderRefreshState, source.source_id)
+        refresh_state = await session.get(WithdrawOrderRefreshState, source_id)
     except (OperationalError, ProgrammingError) as exc:
         if not _is_missing_withdraw_cache_schema(exc):
             raise
@@ -328,7 +336,7 @@ async def query_withdraw_orders(
         window_end=window_end,
     )
     offset = (request.page - 1) * request.page_size
-    status_dictionary = await withdraw_status_dictionary(session, source_id=source.source_id)
+    status_dictionary = await withdraw_status_dictionary(session, source_id=source_id)
     local_updated_at = max(
         (_as_utc(item.synced_at) for item in snapshots),
         default=None,
@@ -341,12 +349,12 @@ async def query_withdraw_orders(
         ),
         fetched_pages=refresh_state.last_fetched_pages if refresh_state is not None else 0,
         complete=refresh_state.last_complete if refresh_state is not None else False,
-        source_id=source.source_id,
-        source_display_name=source.display_name,
-        business_timezone=source.business_timezone,
-        currency=source.currency,
+        source_id=source_id,
+        source_display_name=source_display_name,
+        business_timezone=business_timezone,
+        currency=currency,
         effective_create_time_end=window_end.astimezone(
-            ZoneInfo(source.business_timezone)
+            ZoneInfo(business_timezone)
         ).strftime(WALL_TIME_FORMAT),
         fetched_at=query_at,
         local_updated_at=local_updated_at,

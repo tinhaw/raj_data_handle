@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from packages.common.settings import Settings
@@ -354,6 +355,86 @@ async def test_withdraw_query_time_range_only_filters_local_cache_in_source_time
     assert result.summary["status_distribution"] == [
         {"status": "0", "count": 1, "amount": "20.00", "real_amount": "19.00"},
         {"status": "3", "count": 1, "amount": "30.00", "real_amount": "29.00"},
+    ]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_withdraw_query_survives_page_size_schema_fallback_session_rollback() -> None:
+    """A pre-0007 database must still serve the local withdrawal cache.
+
+    Loading the current retention ORM model against that schema fails because
+    the page-size column is absent.  The settings compatibility path rolls the
+    session back before loading a legacy projection, which expires the source
+    already read by ``query_withdraw_orders``.  Keep this end-to-end shape so
+    the query cannot regress into lazily reloading that source after rollback.
+    """
+
+    settings = Settings(
+        secret_key="test-secret-key-that-is-longer-than-32-characters",
+        database_url="sqlite+aiosqlite:///:memory:",
+    )
+    engine = create_async_engine(settings.database_url)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with factory() as session:
+        session.add_all(
+            [
+                SourceConfig(
+                    source_id="rajwin",
+                    display_name="RajWin",
+                    enabled=True,
+                    business_timezone="Asia/Kolkata",
+                    currency="INR",
+                ),
+                SystemRetentionSetting(
+                    id=1,
+                    uploaded_file_retention_days=3,
+                    result_retention_days=30,
+                    remote_cache_retention_days=30,
+                    withdraw_order_refresh_interval_hours=1,
+                    withdraw_order_refresh_page_size=100,
+                    withdraw_order_query_range="today",
+                ),
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="cached-before-page-size-migration",
+                    uid="100",
+                    amount="50.00",
+                    real_amount="49.00",
+                    create_time="2026-07-30 10:30:00",
+                    create_time_utc=datetime(2026, 7, 30, 5, 0, tzinfo=UTC),
+                    status="3",
+                ),
+            ]
+        )
+        await session.commit()
+
+    # Reproduce production after migration 0006 but before 0007.  The ORM
+    # still selects the newer column, forcing the compatibility fallback and
+    # its session rollback.
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "ALTER TABLE system_retention_settings "
+                "DROP COLUMN withdraw_order_refresh_page_size"
+            )
+        )
+
+    async with factory() as session:
+        result = await query_withdraw_orders(
+            session,
+            request=WithdrawOrderQueryRequest(source_id="rajwin"),
+            settings=settings,
+            now=datetime(2026, 7, 30, 6, 0, tzinfo=UTC),
+        )
+
+    assert result.source_display_name == "RajWin"
+    assert result.business_timezone == "Asia/Kolkata"
+    assert [item["id"] for item in result.items] == [
+        "cached-before-page-size-migration"
     ]
     await engine.dispose()
 
