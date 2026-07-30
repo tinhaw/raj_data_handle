@@ -5,6 +5,7 @@ from datetime import datetime
 from pydantic import Field, field_validator, model_validator
 
 from packages.common.schemas import ApiSchema
+from packages.domain.schemas.system_setting import WithdrawOrderQueryRange
 
 
 class WithdrawOrderLocalQueryRequest(ApiSchema):
@@ -194,6 +195,7 @@ class WithdrawOrderRefreshRequest(ApiSchema):
     """Queue one source, or all eligible sources when source_id is omitted."""
 
     source_id: str | None = Field(default=None, min_length=2, max_length=64)
+    query_range: WithdrawOrderQueryRange | None = None
 
     @field_validator("source_id")
     @classmethod
@@ -206,4 +208,5 @@ class WithdrawOrderRefreshResponse(ApiSchema):
     status: str
     source_ids: list[str]
     requested_at: datetime
+    query_range: WithdrawOrderQueryRange | None
     message: str

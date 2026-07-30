@@ -110,7 +110,7 @@ onBeforeUnmount(() => {
       <el-menu :default-active="activeMenu" router :collapse="collapsed">
         <el-menu-item index="/batches">
           <el-icon><DataAnalysis /></el-icon>
-          <template #title>对比任务</template>
+          <template #title>充值订单</template>
         </el-menu-item>
         <el-menu-item index="/withdraw-orders">
           <el-icon><Wallet /></el-icon>

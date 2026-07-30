@@ -442,6 +442,13 @@ async def test_withdraw_operator_summary_aggregates_local_cache_by_trimmed_opera
                     entry_label="待审查",
                     active=True,
                 ),
+                DataDictionaryEntry(
+                    source_id="rajwin",
+                    dictionary_type="withdraw_status",
+                    entry_code="5",
+                    entry_label="提交中",
+                    active=True,
+                ),
                 # A source-specific code with the same review-state label is
                 # excluded too; the summary is not tied solely to 0 / 4.
                 DataDictionaryEntry(
@@ -536,6 +543,16 @@ async def test_withdraw_operator_summary_aggregates_local_cache_by_trimmed_opera
                 ),
                 WithdrawOrderSnapshot(
                     source_id="rajwin",
+                    remote_order_id="bob-submitting",
+                    uid="110",
+                    create_time="2026-07-30 10:58:00",
+                    create_time_utc=datetime(2026, 7, 30, 5, 28, tzinfo=UTC),
+                    audit_admin="Bob",
+                    status="5",
+                    synced_at=datetime(2026, 7, 30, 5, 43, tzinfo=UTC),
+                ),
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
                     remote_order_id="alice-source-specific-review",
                     uid="109",
                     create_time="2026-07-30 10:59:00",
@@ -600,7 +617,7 @@ async def test_withdraw_operator_summary_aggregates_local_cache_by_trimmed_opera
                 source_id="rajwin",
                 create_time_start="2026-07-30 10:00:00",
                 create_time_end="2026-07-30 11:00:00",
-                statuses=["0", "4"],
+                statuses=["0", "4", "5"],
             ),
             settings=settings,
             now=query_time,

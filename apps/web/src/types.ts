@@ -302,6 +302,7 @@ export interface WithdrawOrderRefreshResult {
   status: 'queued'
   sourceIds: string[]
   requestedAt: string
+  queryRange: WithdrawOrderQueryRange | null
   message: string
 }
 

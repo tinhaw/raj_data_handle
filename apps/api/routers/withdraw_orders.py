@@ -121,6 +121,7 @@ async def queue_withdraw_order_refresh(
         result = await queue_withdraw_order_refreshes(
             session,
             source_id=payload.source_id,
+            query_range=payload.query_range,
             actor_user_id=auth.user.id,
         )
     except SourceNotFoundError as exc:
@@ -136,5 +137,10 @@ async def queue_withdraw_order_refresh(
         status="queued",
         source_ids=result.source_ids,
         requested_at=result.requested_at,
-        message=f"已提交 {len(result.source_ids)} 个盘口的后台同步任务。",
+        query_range=result.query_range,
+        message=(
+            f"已提交 {len(result.source_ids)} 个盘口的后台同步任务，将按所选时间范围刷新。"
+            if result.query_range
+            else f"已提交 {len(result.source_ids)} 个盘口的后台同步任务。"
+        ),
     )

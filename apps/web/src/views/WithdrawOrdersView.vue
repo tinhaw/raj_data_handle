@@ -6,6 +6,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 
 import { apiErrorMessage } from '../api/client'
 import { fetchEnabledSources } from '../api/sources'
+import { fetchRetentionSettings } from '../api/systemSettings'
 import {
   queryWithdrawOperatorSummary,
   queryWithdrawOrders,
@@ -20,14 +21,33 @@ import type {
   WithdrawOrderQueryResponse,
   WithdrawOrderSummary,
   WithdrawStatusDictionaryEntry,
+  WithdrawOrderQueryRange,
 } from '../types'
 import { formatDateTime } from '../ui'
 
 type WithdrawTab = 'orders' | 'operators'
 
-const OPERATOR_SUMMARY_EXCLUDED_STATUS_CODES = new Set(['0', '4'])
-const OPERATOR_SUMMARY_EXCLUDED_STATUS_LABELS = new Set(['待审核', '待审查'])
+const OPERATOR_SUMMARY_EXCLUDED_STATUS_CODES = new Set(['0', '4', '5'])
+const OPERATOR_SUMMARY_EXCLUDED_STATUS_LABELS = new Set(['待审核', '待审查', '提交中'])
 const OPERATOR_CHART_COLORS = ['#377eea', '#39b8b0', '#f5a623', '#8d6ee8', '#ec6b62', '#5d8fc5']
+const MANUAL_REFRESH_RANGE_OPTIONS: Array<{
+  value: WithdrawOrderQueryRange
+  label: string
+  description: string
+}> = [
+  {
+    value: 'today',
+    label: '今日 00:00:00 至 23:59:59',
+    description: '按所选盘口的业务时区读取当天订单；未来时间会自动截断。',
+  },
+  { value: 'last_1_hour', label: '最近 1 小时', description: '从后台实际执行时刻向前滚动 1 小时。' },
+  { value: 'last_2_hours', label: '最近 2 小时', description: '从后台实际执行时刻向前滚动 2 小时。' },
+  { value: 'last_3_hours', label: '最近 3 小时', description: '从后台实际执行时刻向前滚动 3 小时。' },
+  { value: 'last_6_hours', label: '最近 6 小时', description: '从后台实际执行时刻向前滚动 6 小时。' },
+  { value: 'last_12_hours', label: '最近 12 小时', description: '从后台实际执行时刻向前滚动 12 小时。' },
+  { value: 'last_24_hours', label: '最近 24 小时', description: '从后台实际执行时刻向前滚动 24 小时。' },
+  { value: 'last_48_hours', label: '最近 48 小时', description: '从后台实际执行时刻向前滚动 48 小时。' },
+]
 
 const emptySummary: WithdrawOrderSummary = {
   orderCount: 0,
@@ -41,6 +61,9 @@ const emptySummary: WithdrawOrderSummary = {
 const activeTab = ref<WithdrawTab>('orders')
 const loading = ref(false)
 const refreshStarting = ref(false)
+const manualRefreshDialogVisible = ref(false)
+const manualRefreshSettingsLoading = ref(false)
+const manualRefreshQueryRange = ref<WithdrawOrderQueryRange>('today')
 const sourcesLoading = ref(false)
 const sources = ref<SourceConfig[]>([])
 const response = ref<WithdrawOrderQueryResponse | null>(null)
@@ -195,6 +218,11 @@ const refreshStatusTagType = computed<'success' | 'warning' | 'danger' | 'info' 
 const refreshInProgress = computed(() =>
   ['queued', 'pending', 'running', 'refreshing'].includes(normalizedRefreshStatus.value),
 )
+const manualRefreshRangeDescription = computed(
+  () =>
+    MANUAL_REFRESH_RANGE_OPTIONS.find((option) => option.value === manualRefreshQueryRange.value)
+      ?.description || '',
+)
 const operatorSummaryStatusOptions = computed(() => {
   const options = new Map<string, WithdrawStatusDictionaryEntry>()
   for (const entry of operatorSummaryDictionary.value) {
@@ -218,18 +246,22 @@ const operatorSummaryStatusOptions = computed(() => {
   )
 })
 
-function amountText(value: string | null | undefined): string {
+function amountText(value: string | null | undefined, maximumFractionDigits = 2): string {
   const amount = Number(value)
   if (!Number.isFinite(amount)) return '—'
   try {
     return new Intl.NumberFormat('en-IN', {
       style: 'currency',
       currency: currency.value,
-      maximumFractionDigits: 2,
+      maximumFractionDigits,
     }).format(amount)
   } catch {
-    return amount.toLocaleString('en-IN', { maximumFractionDigits: 2 }) + ' ' + currency.value
+    return amount.toLocaleString('en-IN', { maximumFractionDigits }) + ' ' + currency.value
   }
+}
+
+function summaryAmountText(value: string | null | undefined): string {
+  return amountText(value, 0)
 }
 
 function statusText(
@@ -357,12 +389,30 @@ async function loadOperatorSummary(resetPage = false): Promise<void> {
   }
 }
 
+async function openManualRefreshDialog(): Promise<void> {
+  if (!validateFilters() || refreshStarting.value) return
+  manualRefreshDialogVisible.value = true
+  manualRefreshSettingsLoading.value = true
+  try {
+    const settings = await fetchRetentionSettings()
+    manualRefreshQueryRange.value = settings.withdrawOrderQueryRange
+  } catch {
+    ElMessage.warning('无法读取系统默认时间范围，请手动选择本次刷新范围。')
+  } finally {
+    manualRefreshSettingsLoading.value = false
+  }
+}
+
 async function startRefresh(): Promise<void> {
   if (!validateFilters() || refreshStarting.value) return
   refreshStarting.value = true
   try {
-    const result = await startWithdrawOrderRefresh({ sourceId: filters.sourceId })
+    const result = await startWithdrawOrderRefresh({
+      sourceId: filters.sourceId,
+      queryRange: manualRefreshQueryRange.value,
+    })
     queuedAt.value = result.requestedAt
+    manualRefreshDialogVisible.value = false
     ElMessage.success(result.message || '已提交后台同步任务。')
     await load(false, true)
   } catch (error) {
@@ -585,7 +635,7 @@ onMounted(async () => {
                 :icon="Refresh"
                 :loading="refreshStarting"
                 :disabled="!filters.sourceId"
-                @click="startRefresh"
+                @click="openManualRefreshDialog"
               >
                 启动一次刷新
               </el-button>
@@ -661,17 +711,17 @@ onMounted(async () => {
             </article>
             <article class="surface-card metric-card">
               <span>提现金额</span>
-              <strong>{{ amountText(summary.amount) }}</strong>
+              <strong>{{ summaryAmountText(summary.amount) }}</strong>
               <small>amount 汇总</small>
             </article>
             <article class="surface-card metric-card">
               <span>实际到账</span>
-              <strong>{{ amountText(summary.realAmount) }}</strong>
+              <strong>{{ summaryAmountText(summary.realAmount) }}</strong>
               <small>real_amount 汇总</small>
             </article>
             <article class="surface-card metric-card">
               <span>平均提现金额</span>
-              <strong>{{ amountText(summary.averageAmount) }}</strong>
+              <strong>{{ summaryAmountText(summary.averageAmount) }}</strong>
               <small>提现金额 / 订单数</small>
             </article>
           </section>
@@ -802,7 +852,7 @@ onMounted(async () => {
               </label>
             </div>
             <div class="query-card__footer">
-              <span>仅统计本地缓存；待审核、待审查不参与统计或展示。空操作人员归为“系统”。</span>
+              <span>仅统计本地缓存；待审核、待审查、提交中不参与统计或展示。空操作人员归为“系统”。</span>
               <el-button
                 type="primary"
                 :icon="Search"
@@ -892,6 +942,50 @@ onMounted(async () => {
         </div>
       </el-tab-pane>
     </el-tabs>
+
+    <el-dialog
+      v-model="manualRefreshDialogVisible"
+      title="选择本次刷新时间范围"
+      width="min(480px, calc(100vw - 32px))"
+      :close-on-click-modal="false"
+    >
+      <p class="manual-refresh-dialog__intro">
+        将为 {{ selectedOrderSource?.displayName || '所选盘口' }} 提交一次后台同步任务。本次选择只影响这一次刷新，不修改系统配置的定时同步范围。
+      </p>
+      <label class="manual-refresh-dialog__field">
+        <span>刷新时间范围</span>
+        <el-select
+          v-model="manualRefreshQueryRange"
+          :loading="manualRefreshSettingsLoading"
+          :disabled="manualRefreshSettingsLoading"
+        >
+          <el-option
+            v-for="option in MANUAL_REFRESH_RANGE_OPTIONS"
+            :key="option.value"
+            :label="option.label"
+            :value="option.value"
+          />
+        </el-select>
+      </label>
+      <p class="manual-refresh-dialog__help">{{ manualRefreshRangeDescription }}</p>
+      <el-alert
+        title="任务由后台工作进程执行；若该盘口正在同步，本次选择会在当前任务结束后生效。"
+        type="info"
+        :closable="false"
+        show-icon
+      />
+      <template #footer>
+        <el-button :disabled="refreshStarting" @click="manualRefreshDialogVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="refreshStarting"
+          :disabled="manualRefreshSettingsLoading"
+          @click="startRefresh"
+        >
+          确认并刷新
+        </el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="operatorSummaryChartVisible"
@@ -1154,6 +1248,35 @@ onMounted(async () => {
   margin: 0 0 14px;
   color: #647e99;
   font-size: 13px;
+}
+
+.manual-refresh-dialog__intro,
+.manual-refresh-dialog__help {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.manual-refresh-dialog__field {
+  display: grid;
+  gap: 8px;
+  margin: 20px 0 8px;
+}
+
+.manual-refresh-dialog__field > span {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.manual-refresh-dialog__field :deep(.el-select) {
+  width: 100%;
+}
+
+.manual-refresh-dialog__help {
+  min-height: 24px;
+  margin-bottom: 16px;
 }
 
 .operator-chart-summary strong {

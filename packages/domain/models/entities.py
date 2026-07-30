@@ -200,6 +200,7 @@ class WithdrawOrderRefreshState(Base):
     )
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="idle", index=True)
     manual_request_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    manual_query_range: Mapped[str | None] = mapped_column(String(32))
     last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

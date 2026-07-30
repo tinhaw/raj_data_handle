@@ -274,7 +274,7 @@ async def test_worker_refreshes_approved_fields_then_page_reads_the_local_cache(
 
 
 @pytest.mark.asyncio
-async def test_manual_queue_overrides_interval_but_not_an_active_lease(
+async def test_manual_queue_uses_the_selected_range_but_not_an_active_lease(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = _settings()
@@ -320,10 +320,12 @@ async def test_manual_queue_overrides_interval_but_not_an_active_lease(
         queued = await queue_withdraw_order_refreshes(
             session,
             source_id="rajwin",
+            query_range="last_3_hours",
             actor_user_id=None,
             now=started_at + timedelta(minutes=1),
         )
         assert queued.source_ids == ["rajwin"]
+        assert queued.query_range == "last_3_hours"
         assert len(
             await run_due_withdraw_order_refreshes(
                 session,
@@ -346,6 +348,12 @@ async def test_manual_queue_overrides_interval_but_not_an_active_lease(
         ) == []
 
     assert len(FakeWithdrawClient.calls) == 2
+    assert FakeWithdrawClient.calls[1] == {
+        "base_url": "https://rajwin.example.test",
+        "page_size": 100,
+        "create_start": "2026-07-30T07:01:00.000Z",
+        "create_end": "2026-07-30T10:01:00.000Z",
+    }
     await engine.dispose()
 
 

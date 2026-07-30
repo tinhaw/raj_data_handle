@@ -41,8 +41,8 @@ WITHDRAW_ORDER_ROLLING_RANGE_HOURS = {
     "last_24_hours": 24,
     "last_48_hours": 48,
 }
-OPERATOR_SUMMARY_EXCLUDED_STATUS_CODES = frozenset({"0", "4"})
-OPERATOR_SUMMARY_EXCLUDED_STATUS_LABELS = frozenset({"待审核", "待审查"})
+OPERATOR_SUMMARY_EXCLUDED_STATUS_CODES = frozenset({"0", "4", "5"})
+OPERATOR_SUMMARY_EXCLUDED_STATUS_LABELS = frozenset({"待审核", "待审查", "提交中"})
 WithdrawOrderQueryRange = Literal[
     "today",
     "last_1_hour",
@@ -116,7 +116,7 @@ def _as_utc(value: datetime | None) -> datetime | None:
 
 
 def _is_operator_summary_excluded_status(entry: dict[str, object]) -> bool:
-    """Keep in-progress review states out of personnel performance totals."""
+    """Keep non-final workflow states out of personnel performance totals."""
 
     return (
         str(entry.get("code") or "").strip() in OPERATOR_SUMMARY_EXCLUDED_STATUS_CODES

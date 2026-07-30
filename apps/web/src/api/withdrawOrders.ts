@@ -3,6 +3,7 @@ import type {
   WithdrawOperatorSummaryResponse,
   WithdrawOrderQueryResponse,
   WithdrawOrderRefreshResult,
+  WithdrawOrderQueryRange,
 } from '../types'
 
 export interface WithdrawOrderQuery {
@@ -40,6 +41,7 @@ export async function queryWithdrawOperatorSummary(
 
 export async function startWithdrawOrderRefresh(payload: {
   sourceId?: string
+  queryRange?: WithdrawOrderQueryRange
 } = {}): Promise<WithdrawOrderRefreshResult> {
   return (await api.post<WithdrawOrderRefreshResult>('/withdraw-orders/refresh', payload)).data
 }

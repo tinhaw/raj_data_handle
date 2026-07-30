@@ -11,6 +11,7 @@ import type { BatchRecord, OperationalSummary, SourceConfig } from '../types'
 import { formatDateTime, statusLabel, statusTagType } from '../ui'
 
 const router = useRouter()
+const activeTab = ref('comparison')
 const loading = ref(false)
 const batches = ref<BatchRecord[]>([])
 const sources = ref<SourceConfig[]>([])
@@ -110,103 +111,116 @@ onMounted(async () => {
   <div class="page-stack">
     <header class="page-header">
       <div>
-        <span class="page-eyebrow">COMPARISON TASKS</span>
-        <h1>对比任务</h1>
-        <p>集中查看历史任务、运行状态和处理结果，并从这里发起新的数据对比。</p>
-      </div>
-      <div class="header-actions">
-        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
-        <el-button type="primary" :icon="Plus" @click="router.push('/batches/new')">
-          新建比对
-        </el-button>
+        <span class="page-eyebrow">PAYIN ORDERS</span>
+        <h1>充值订单</h1>
+        <p>集中查看充值订单的对比任务、运行状态和处理结果。</p>
       </div>
     </header>
 
-    <section class="filter-bar surface-card">
-      <el-select v-model="filters.sourceId" clearable placeholder="全部盘口" @change="load">
-        <el-option
-          v-for="source in sources"
-          :key="source.sourceId"
-          :label="source.displayName"
-          :value="source.sourceId"
-        />
-      </el-select>
-      <el-select v-model="filters.businessType" clearable placeholder="全部业务" @change="load">
-        <el-option label="充值 / 代收" value="payin" />
-        <el-option label="提现 / 代付" value="payout" />
-      </el-select>
-      <el-select v-model="filters.batchStatus" clearable placeholder="全部状态" @change="load">
-        <el-option label="待确认" value="awaiting_confirmation" />
-        <el-option label="执行中" value="validating" />
-        <el-option label="已完成" value="completed" />
-        <el-option label="失败" value="failed" />
-        <el-option label="已取消" value="cancelled" />
-      </el-select>
-      <span class="filter-total">共 {{ total }} 条任务记录</span>
-    </section>
+    <el-tabs v-model="activeTab" class="payin-tabs">
+      <el-tab-pane label="对比任务" name="comparison">
+        <div class="tab-stack">
+          <header class="tab-pane-header">
+            <div>
+              <h2>对比任务</h2>
+              <p>集中查看历史任务、运行状态和处理结果，并从这里发起新的数据对比。</p>
+            </div>
+            <div class="header-actions">
+              <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+              <el-button type="primary" :icon="Plus" @click="router.push('/batches/new')">
+                新建比对
+              </el-button>
+            </div>
+          </header>
 
-    <section class="task-summary surface-card" aria-label="任务状态摘要">
-      <article class="task-summary__item">
-        <span>任务总数</span>
-        <strong>{{ total }}</strong>
-        <small>当前筛选结果</small>
-      </article>
-      <article class="task-summary__item task-summary__item--warning">
-        <span>待确认</span>
-        <strong>{{ awaitingCount }}</strong>
-        <small>确认后才会开始执行</small>
-      </article>
-      <article class="task-summary__item task-summary__item--active">
-        <span>执行中</span>
-        <strong>{{ activeCount }}</strong>
-        <small>正在查询或比对</small>
-      </article>
-      <article class="task-summary__item task-summary__item--danger">
-        <span>失败 / 不完整</span>
-        <strong>{{ issueCount }}</strong>
-        <small>需要优先处理</small>
-      </article>
-    </section>
+          <section class="filter-bar surface-card">
+            <el-select v-model="filters.sourceId" clearable placeholder="全部盘口" @change="load">
+              <el-option
+                v-for="source in sources"
+                :key="source.sourceId"
+                :label="source.displayName"
+                :value="source.sourceId"
+              />
+            </el-select>
+            <el-select v-model="filters.businessType" clearable placeholder="全部业务" @change="load">
+              <el-option label="充值 / 代收" value="payin" />
+              <el-option label="提现 / 代付" value="payout" />
+            </el-select>
+            <el-select v-model="filters.batchStatus" clearable placeholder="全部状态" @change="load">
+              <el-option label="待确认" value="awaiting_confirmation" />
+              <el-option label="执行中" value="validating" />
+              <el-option label="已完成" value="completed" />
+              <el-option label="失败" value="failed" />
+              <el-option label="已取消" value="cancelled" />
+            </el-select>
+            <span class="filter-total">共 {{ total }} 条任务记录</span>
+          </section>
 
-    <section class="surface-card table-card">
-      <div class="section-heading">
-        <div>
-          <h2>任务记录</h2>
-          <p>异常、待确认与执行中的任务优先展示；每次重新比对都会保留执行版本。</p>
+          <section class="task-summary surface-card" aria-label="任务状态摘要">
+            <article class="task-summary__item">
+              <span>任务总数</span>
+              <strong>{{ total }}</strong>
+              <small>当前筛选结果</small>
+            </article>
+            <article class="task-summary__item task-summary__item--warning">
+              <span>待确认</span>
+              <strong>{{ awaitingCount }}</strong>
+              <small>确认后才会开始执行</small>
+            </article>
+            <article class="task-summary__item task-summary__item--active">
+              <span>执行中</span>
+              <strong>{{ activeCount }}</strong>
+              <small>正在查询或比对</small>
+            </article>
+            <article class="task-summary__item task-summary__item--danger">
+              <span>失败 / 不完整</span>
+              <strong>{{ issueCount }}</strong>
+              <small>需要优先处理</small>
+            </article>
+          </section>
+
+          <section class="surface-card table-card">
+            <div class="section-heading">
+              <div>
+                <h2>任务记录</h2>
+                <p>异常、待确认与执行中的任务优先展示；每次重新比对都会保留执行版本。</p>
+              </div>
+            </div>
+            <el-table
+              v-loading="loading"
+              :data="sortedBatches"
+              empty-text="暂无对比任务，请点击右上角“新建对比”"
+              @row-click="(row: BatchRecord) => router.push(`/batches/${row.id}`)"
+            >
+              <el-table-column label="盘口" min-width="130" prop="sourceDisplayName" />
+              <el-table-column label="业务类型" width="120">
+                <template #default="{ row }">
+                  {{ row.businessType === 'payin' ? '充值 / 代收' : '提现 / 代付' }}
+                </template>
+              </el-table-column>
+              <el-table-column label="文件" min-width="220" prop="uploadedFileName" show-overflow-tooltip />
+              <el-table-column label="版本" width="90">
+                <template #default="{ row }">
+                  V{{ row.runVersion }}
+                  <el-tag v-if="row.rerunOfBatchId" size="small" type="info">重跑</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="120">
+                <template #default="{ row }">
+                  <el-tag :type="statusTagType(row.status)">{{ statusLabel(row.status) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="创建时间" min-width="180">
+                <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
+              </el-table-column>
+              <el-table-column label="结果到期" min-width="180">
+                <template #default="{ row }">{{ formatDateTime(row.resultExpiresAt) }}</template>
+              </el-table-column>
+            </el-table>
+          </section>
         </div>
-      </div>
-      <el-table
-        v-loading="loading"
-        :data="sortedBatches"
-        empty-text="暂无对比任务，请点击右上角“新建对比”"
-        @row-click="(row: BatchRecord) => router.push(`/batches/${row.id}`)"
-      >
-        <el-table-column label="盘口" min-width="130" prop="sourceDisplayName" />
-        <el-table-column label="业务类型" width="120">
-          <template #default="{ row }">
-            {{ row.businessType === 'payin' ? '充值 / 代收' : '提现 / 代付' }}
-          </template>
-        </el-table-column>
-        <el-table-column label="文件" min-width="220" prop="uploadedFileName" show-overflow-tooltip />
-        <el-table-column label="版本" width="90">
-          <template #default="{ row }">
-            V{{ row.runVersion }}
-            <el-tag v-if="row.rerunOfBatchId" size="small" type="info">重跑</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="120">
-          <template #default="{ row }">
-            <el-tag :type="statusTagType(row.status)">{{ statusLabel(row.status) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="创建时间" min-width="180">
-          <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
-        </el-table-column>
-        <el-table-column label="结果到期" min-width="180">
-          <template #default="{ row }">{{ formatDateTime(row.resultExpiresAt) }}</template>
-        </el-table-column>
-      </el-table>
-    </section>
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
 
@@ -263,7 +277,68 @@ onMounted(async () => {
   color: var(--danger);
 }
 
+.payin-tabs :deep(.el-tabs__header) {
+  margin: 0;
+}
+
+.payin-tabs :deep(.el-tabs__item) {
+  height: 52px;
+  padding: 0 18px;
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.payin-tabs :deep(.el-tabs__item.is-active) {
+  color: var(--teal);
+}
+
+.payin-tabs :deep(.el-tabs__active-bar) {
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--teal);
+}
+
+.payin-tabs :deep(.el-tabs__nav-wrap::after) {
+  height: 1px;
+  background: var(--border);
+}
+
+.payin-tabs :deep(.el-tabs__content) {
+  padding-top: 20px;
+}
+
+.tab-stack {
+  display: grid;
+  min-width: 0;
+  gap: 20px;
+}
+
+.tab-pane-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.tab-pane-header h2 {
+  margin: 0;
+  color: var(--ink-strong);
+  font-size: 20px;
+}
+
+.tab-pane-header p {
+  margin: 6px 0 0;
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
 @media (max-width: 980px) {
+  .tab-pane-header,
+  .header-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .task-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -279,6 +354,10 @@ onMounted(async () => {
 }
 
 @media (max-width: 640px) {
+  .payin-tabs :deep(.el-tabs__item) {
+    padding: 0 12px;
+  }
+
   .task-summary {
     grid-template-columns: 1fr;
   }

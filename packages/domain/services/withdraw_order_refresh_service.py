@@ -25,6 +25,7 @@ from packages.domain.services.remote_withdraw_service import (
 from packages.domain.services.source_service import get_source
 from packages.domain.services.system_setting_service import get_retention_settings
 from packages.domain.services.withdraw_order_service import (
+    WITHDRAW_ORDER_QUERY_RANGES,
     WithdrawOrderCacheSchemaPendingError,
     withdraw_order_query_window,
 )
@@ -50,6 +51,7 @@ class WithdrawOrderRefreshClaimLostError(RuntimeError):
 class WithdrawOrderRefreshQueueResult:
     source_ids: list[str]
     requested_at: datetime
+    query_range: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,11 +188,14 @@ async def queue_withdraw_order_refreshes(
     session: AsyncSession,
     *,
     source_id: str | None,
+    query_range: str | None = None,
     actor_user_id: int | None,
     now: datetime | None = None,
 ) -> WithdrawOrderRefreshQueueResult:
     """Persist a manual refresh request; never contact a remote source here."""
 
+    if query_range is not None and query_range not in WITHDRAW_ORDER_QUERY_RANGES:
+        raise WithdrawOrderRefreshValidationError("不支持的提现订单刷新时间范围。")
     requested_at = _coerce_now(now)
     if source_id:
         source = await get_source(session, source_id)
@@ -221,6 +226,7 @@ async def queue_withdraw_order_refreshes(
                 now=requested_at,
             )
             state.manual_request_at = requested_at
+            state.manual_query_range = query_range
             # Do not overwrite an active lease.  The run completion keeps a
             # newer request marker and the worker will immediately queue it.
             if not (
@@ -237,7 +243,7 @@ async def queue_withdraw_order_refreshes(
             actor_user_id=actor_user_id,
             target_type="withdraw_order_refresh",
             target_id=source_id or "all",
-            metadata={"sourceIds": queued_ids},
+            metadata={"sourceIds": queued_ids, "queryRange": query_range},
         )
         await session.commit()
     except (OperationalError, ProgrammingError) as exc:
@@ -247,7 +253,11 @@ async def queue_withdraw_order_refreshes(
         raise WithdrawOrderCacheSchemaPendingError(
             "提现订单本地缓存正在初始化，请在数据库迁移完成后重试。"
         ) from exc
-    return WithdrawOrderRefreshQueueResult(source_ids=queued_ids, requested_at=requested_at)
+    return WithdrawOrderRefreshQueueResult(
+        source_ids=queued_ids,
+        requested_at=requested_at,
+        query_range=query_range,
+    )
 
 
 async def _claim_next_due_refresh(
@@ -280,8 +290,18 @@ async def _claim_next_due_refresh(
             now=now,
         ):
             continue
+        manual_request_at = _as_utc(state.manual_request_at)
+        last_started_at = _as_utc(state.last_started_at)
+        use_manual_range = manual_request_at is not None and (
+            last_started_at is None or manual_request_at > last_started_at
+        )
+        query_range = (
+            state.manual_query_range
+            if use_manual_range and state.manual_query_range
+            else retention.withdraw_order_query_range
+        )
         window_start, window_end = withdraw_order_query_window(
-            query_range=retention.withdraw_order_query_range,
+            query_range=query_range,
             timezone_name=source.business_timezone,
             now=now,
         )
@@ -302,7 +322,7 @@ async def _claim_next_due_refresh(
             credential_version=source.credential_version,
             business_timezone=source.business_timezone,
             page_size=retention.withdraw_order_refresh_page_size,
-            query_range=retention.withdraw_order_query_range,
+            query_range=query_range,
             started_at=now,
             lease_expires_at=lease_expires_at,
             window_start=window_start,
@@ -338,6 +358,7 @@ async def _record_refresh_failure(
         and _as_utc(state.manual_request_at) <= claim.started_at
     ):
         state.manual_request_at = None
+        state.manual_query_range = None
     state.updated_at = finished_at
     await session.commit()
     return WithdrawOrderRefreshRunResult(source_id=claim.source_id, status="failed")
@@ -367,6 +388,7 @@ async def _requeue_cancelled_refresh(
         or _as_utc(state.manual_request_at) <= claim.started_at
     ):
         state.manual_request_at = cancelled_at
+        state.manual_query_range = claim.query_range
     state.updated_at = cancelled_at
     await session.commit()
 
@@ -539,6 +561,7 @@ async def _persist_refresh_success(
         and _as_utc(state.manual_request_at) <= claim.started_at
     ):
         state.manual_request_at = None
+        state.manual_query_range = None
     state.updated_at = finished_at
     await session.commit()
     return WithdrawOrderRefreshRunResult(
