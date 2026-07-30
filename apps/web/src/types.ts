@@ -39,7 +39,15 @@ export interface SourceConfig {
   updatedAt: string
 }
 
-export type WithdrawOrderQueryRange = 'today' | 'last_24_hours' | 'last_48_hours'
+export type WithdrawOrderQueryRange =
+  | 'today'
+  | 'last_1_hour'
+  | 'last_2_hours'
+  | 'last_3_hours'
+  | 'last_6_hours'
+  | 'last_12_hours'
+  | 'last_24_hours'
+  | 'last_48_hours'
 
 export interface RetentionSettings {
   uploadedFileRetentionDays: number

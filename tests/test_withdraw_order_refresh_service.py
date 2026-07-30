@@ -94,6 +94,31 @@ def _source(settings: Settings, *, source_id: str, base_url: str) -> SourceConfi
             datetime(2026, 7, 30, 10, 0, tzinfo=UTC),
         ),
         (
+            "last_1_hour",
+            datetime(2026, 7, 30, 9, 0, tzinfo=UTC),
+            datetime(2026, 7, 30, 10, 0, tzinfo=UTC),
+        ),
+        (
+            "last_2_hours",
+            datetime(2026, 7, 30, 8, 0, tzinfo=UTC),
+            datetime(2026, 7, 30, 10, 0, tzinfo=UTC),
+        ),
+        (
+            "last_3_hours",
+            datetime(2026, 7, 30, 7, 0, tzinfo=UTC),
+            datetime(2026, 7, 30, 10, 0, tzinfo=UTC),
+        ),
+        (
+            "last_6_hours",
+            datetime(2026, 7, 30, 4, 0, tzinfo=UTC),
+            datetime(2026, 7, 30, 10, 0, tzinfo=UTC),
+        ),
+        (
+            "last_12_hours",
+            datetime(2026, 7, 29, 22, 0, tzinfo=UTC),
+            datetime(2026, 7, 30, 10, 0, tzinfo=UTC),
+        ),
+        (
             "last_24_hours",
             datetime(2026, 7, 29, 10, 0, tzinfo=UTC),
             datetime(2026, 7, 30, 10, 0, tzinfo=UTC),

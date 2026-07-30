@@ -5,7 +5,16 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-WithdrawOrderQueryRange = Literal["today", "last_24_hours", "last_48_hours"]
+WithdrawOrderQueryRange = Literal[
+    "today",
+    "last_1_hour",
+    "last_2_hours",
+    "last_3_hours",
+    "last_6_hours",
+    "last_12_hours",
+    "last_24_hours",
+    "last_48_hours",
+]
 
 
 class RetentionSettingsResponse(BaseModel):

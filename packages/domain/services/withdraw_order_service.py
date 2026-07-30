@@ -19,8 +19,35 @@ from packages.domain.services.source_service import get_source
 from packages.domain.services.system_setting_service import get_retention_settings
 
 WALL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
-WITHDRAW_ORDER_QUERY_RANGES = {"today", "last_24_hours", "last_48_hours"}
-WithdrawOrderQueryRange = Literal["today", "last_24_hours", "last_48_hours"]
+WITHDRAW_ORDER_QUERY_RANGES = {
+    "today",
+    "last_1_hour",
+    "last_2_hours",
+    "last_3_hours",
+    "last_6_hours",
+    "last_12_hours",
+    "last_24_hours",
+    "last_48_hours",
+}
+WITHDRAW_ORDER_ROLLING_RANGE_HOURS = {
+    "last_1_hour": 1,
+    "last_2_hours": 2,
+    "last_3_hours": 3,
+    "last_6_hours": 6,
+    "last_12_hours": 12,
+    "last_24_hours": 24,
+    "last_48_hours": 48,
+}
+WithdrawOrderQueryRange = Literal[
+    "today",
+    "last_1_hour",
+    "last_2_hours",
+    "last_3_hours",
+    "last_6_hours",
+    "last_12_hours",
+    "last_24_hours",
+    "last_48_hours",
+]
 
 
 class WithdrawOrderValidationError(ValueError):
@@ -99,10 +126,9 @@ def withdraw_order_query_window(
         local_day_end = local_now.replace(hour=23, minute=59, second=59, microsecond=0)
         local_end = min(local_day_end, local_now)
         return local_start.astimezone(UTC), local_end.astimezone(UTC)
-    else:
-        duration = timedelta(hours=24 if normalized_range == "last_24_hours" else 48)
-        utc_end = effective_now.astimezone(UTC)
-        return utc_end - duration, utc_end
+    duration = timedelta(hours=WITHDRAW_ORDER_ROLLING_RANGE_HOURS[normalized_range])
+    utc_end = effective_now.astimezone(UTC)
+    return utc_end - duration, utc_end
 
 
 def summarize_withdraw_orders(

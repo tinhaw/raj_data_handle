@@ -35,13 +35,38 @@ const withdrawOrderQueryRangeOptions: Array<{
     description: '按盘口业务时区获取当天订单；未来时间会在同步时自动截断。',
   },
   {
+    value: 'last_1_hour',
+    label: '最近 1 小时',
+    description: '从同步执行时刻向前滚动 1 小时。',
+  },
+  {
+    value: 'last_2_hours',
+    label: '最近 2 小时',
+    description: '从同步执行时刻向前滚动 2 小时。',
+  },
+  {
+    value: 'last_3_hours',
+    label: '最近 3 小时',
+    description: '从同步执行时刻向前滚动 3 小时。',
+  },
+  {
+    value: 'last_6_hours',
+    label: '最近 6 小时',
+    description: '从同步执行时刻向前滚动 6 小时。',
+  },
+  {
+    value: 'last_12_hours',
+    label: '最近 12 小时',
+    description: '从同步执行时刻向前滚动 12 小时。',
+  },
+  {
     value: 'last_24_hours',
-    label: '最新 24 小时',
+    label: '最近 24 小时',
     description: '从同步执行时刻向前滚动 24 小时。',
   },
   {
     value: 'last_48_hours',
-    label: '最新 48 小时',
+    label: '最近 48 小时',
     description: '从同步执行时刻向前滚动 48 小时。',
   },
 ]

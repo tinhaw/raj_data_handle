@@ -17,8 +17,31 @@ from packages.domain.services.system_setting_service import (
 
 
 @pytest.mark.parametrize(
+    "value",
+    [
+        "today",
+        "last_1_hour",
+        "last_2_hours",
+        "last_3_hours",
+        "last_6_hours",
+        "last_12_hours",
+        "last_24_hours",
+        "last_48_hours",
+    ],
+)
+def test_settings_accepts_configured_withdraw_order_query_range(value: str) -> None:
+    settings = Settings(
+        secret_key="test-secret-key-that-is-longer-than-32-characters",
+        database_url="sqlite+aiosqlite:///:memory:",
+        withdraw_order_query_range=value,
+    )
+
+    assert settings.withdraw_order_query_range == value
+
+
+@pytest.mark.parametrize(
     ("refresh_interval_hours", "query_range"),
-    [(1, "today"), (24, "last_48_hours")],
+    [(1, "today"), (24, "last_48_hours"), (6, "last_6_hours")],
 )
 async def test_retention_defaults_and_versioned_update(
     refresh_interval_hours: int,
@@ -126,7 +149,19 @@ def test_withdraw_order_refresh_interval_is_limited_to_one_through_twenty_four(
         )
 
 
-@pytest.mark.parametrize("value", ["today", "last_24_hours", "last_48_hours"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "today",
+        "last_1_hour",
+        "last_2_hours",
+        "last_3_hours",
+        "last_6_hours",
+        "last_12_hours",
+        "last_24_hours",
+        "last_48_hours",
+    ],
+)
 def test_withdraw_order_query_range_accepts_only_configured_presets(value: str) -> None:
     payload = RetentionSettingsUpdateRequest(
         uploadedFileRetentionDays=3,
@@ -140,7 +175,7 @@ def test_withdraw_order_query_range_accepts_only_configured_presets(value: str) 
     assert payload.withdraw_order_query_range == value
 
 
-@pytest.mark.parametrize("value", ["last_12_hours", "all", "", "TODAY"])
+@pytest.mark.parametrize("value", ["last_4_hours", "last_13_hours", "all", "", "TODAY"])
 def test_withdraw_order_query_range_rejects_other_values(value: str) -> None:
     with pytest.raises(ValidationError):
         RetentionSettingsUpdateRequest(

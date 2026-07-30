@@ -53,7 +53,16 @@ class Settings(BaseSettings):
     # been applied. This fallback is used only when the singleton setting row
     # is first initialized.
     withdraw_order_refresh_interval_hours: int = Field(default=1, ge=1, le=24)
-    withdraw_order_query_range: Literal["today", "last_24_hours", "last_48_hours"] = "today"
+    withdraw_order_query_range: Literal[
+        "today",
+        "last_1_hour",
+        "last_2_hours",
+        "last_3_hours",
+        "last_6_hours",
+        "last_12_hours",
+        "last_24_hours",
+        "last_48_hours",
+    ] = "today"
 
     @field_validator("environment")
     @classmethod
