@@ -3,6 +3,8 @@ import type { WithdrawOrderQueryResponse, WithdrawOrderRefreshResult } from '../
 
 export interface WithdrawOrderQuery {
   sourceId: string
+  createTimeStart?: string
+  createTimeEnd?: string
   uid?: string
   status?: string
   auditAdmin?: string

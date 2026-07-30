@@ -32,6 +32,7 @@ def _response(
         resultRetentionDays=retention.result_retention_days,
         remoteCacheRetentionDays=retention.remote_cache_retention_days,
         withdrawOrderRefreshIntervalHours=retention.withdraw_order_refresh_interval_hours,
+        withdrawOrderRefreshPageSize=retention.withdraw_order_refresh_page_size,
         withdrawOrderQueryRange=retention.withdraw_order_query_range or "today",
         sessionTtlDays=session_ttl_days,
         configVersion=retention.config_version,

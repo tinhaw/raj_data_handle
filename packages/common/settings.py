@@ -7,6 +7,8 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+WITHDRAW_ORDER_REFRESH_PAGE_SIZES = frozenset({10, 20, 30, 50, 100})
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -53,6 +55,10 @@ class Settings(BaseSettings):
     # been applied. This fallback is used only when the singleton setting row
     # is first initialized.
     withdraw_order_refresh_interval_hours: int = Field(default=1, ge=1, le=24)
+    # Keep this aligned with the page-size choices exposed by the remote
+    # withdrawal-order management page.  The database-backed system setting
+    # takes precedence after its migration is applied.
+    withdraw_order_refresh_page_size: int = Field(default=100)
     withdraw_order_query_range: Literal[
         "today",
         "last_1_hour",
@@ -83,6 +89,13 @@ class Settings(BaseSettings):
         if normalized not in {"lax", "strict", "none"}:
             raise ValueError("session_cookie_samesite must be lax, strict, or none")
         return normalized
+
+    @field_validator("withdraw_order_refresh_page_size")
+    @classmethod
+    def validate_withdraw_order_refresh_page_size(cls, value: int) -> int:
+        if value not in WITHDRAW_ORDER_REFRESH_PAGE_SIZES:
+            raise ValueError("withdraw_order_refresh_page_size must be 10, 20, 30, 50, or 100")
+        return value
 
     @property
     def is_production(self) -> bool:

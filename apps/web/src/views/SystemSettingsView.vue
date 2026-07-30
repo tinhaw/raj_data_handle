@@ -9,7 +9,11 @@ import {
   updateRetentionSettings,
 } from '../api/systemSettings'
 import { isAdmin } from '../stores/auth'
-import type { RetentionSettings, WithdrawOrderQueryRange } from '../types'
+import type {
+  RetentionSettings,
+  WithdrawOrderQueryRange,
+  WithdrawOrderRefreshPageSize,
+} from '../types'
 import { formatDateTime } from '../ui'
 
 const loading = ref(false)
@@ -20,6 +24,7 @@ const form = reactive({
   resultRetentionDays: 30,
   remoteCacheRetentionDays: 30,
   withdrawOrderRefreshIntervalHours: 1,
+  withdrawOrderRefreshPageSize: 100 as WithdrawOrderRefreshPageSize,
   withdrawOrderQueryRange: 'today' as WithdrawOrderQueryRange,
   sessionTtlDays: 30,
 })
@@ -71,12 +76,21 @@ const withdrawOrderQueryRangeOptions: Array<{
   },
 ]
 
+const withdrawOrderRefreshPageSizeOptions: Array<{
+  value: WithdrawOrderRefreshPageSize
+  label: string
+}> = ([10, 20, 30, 50, 100] as WithdrawOrderRefreshPageSize[]).map((value) => ({
+  value,
+  label: `${value} 条/页`,
+}))
+
 function applySettings(settings: RetentionSettings): void {
   current.value = settings
   form.uploadedFileRetentionDays = settings.uploadedFileRetentionDays
   form.resultRetentionDays = settings.resultRetentionDays
   form.remoteCacheRetentionDays = settings.remoteCacheRetentionDays
   form.withdrawOrderRefreshIntervalHours = settings.withdrawOrderRefreshIntervalHours
+  form.withdrawOrderRefreshPageSize = settings.withdrawOrderRefreshPageSize
   form.withdrawOrderQueryRange = settings.withdrawOrderQueryRange
   form.sessionTtlDays = settings.sessionTtlDays
 }
@@ -180,6 +194,19 @@ onMounted(load)
                 :disabled="!isAdmin"
               />
               <span class="field-help">允许范围为 1–24 小时；后台按此周期执行同步。</span>
+            </el-form-item>
+            <el-form-item label="后台单次请求条数">
+              <el-select v-model="form.withdrawOrderRefreshPageSize" :disabled="!isAdmin">
+                <el-option
+                  v-for="option in withdrawOrderRefreshPageSizeOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+              <span class="field-help">
+                每次请求远端提现订单的分页大小；默认 100 条/页。仅影响后台同步，不影响本地列表分页。
+              </span>
             </el-form-item>
             <el-form-item label="后台查询时间范围">
               <el-select v-model="form.withdrawOrderQueryRange" :disabled="!isAdmin">

@@ -131,6 +131,45 @@ def withdraw_order_query_window(
     return utc_end - duration, utc_end
 
 
+def local_withdraw_order_query_window(
+    *,
+    create_time_start: str | None,
+    create_time_end: str | None,
+    timezone_name: str,
+    cache_window_start: datetime,
+    cache_window_end: datetime,
+) -> tuple[datetime, datetime]:
+    """Intersect an optional page-local wall-time filter with cached data.
+
+    The page's time range is expressed in the selected source's business
+    timezone.  It never changes the worker's remote query: this helper only
+    narrows the already configured local cache window.
+    """
+
+    if create_time_start is None and create_time_end is None:
+        return cache_window_start, cache_window_end
+    if create_time_start is None or create_time_end is None:
+        raise WithdrawOrderValidationError("创建时间范围必须同时提供开始和结束时间。")
+    try:
+        business_timezone = ZoneInfo(timezone_name)
+        requested_start = datetime.strptime(create_time_start, WALL_TIME_FORMAT).replace(
+            tzinfo=business_timezone
+        )
+        requested_end = datetime.strptime(create_time_end, WALL_TIME_FORMAT).replace(
+            tzinfo=business_timezone
+        )
+    except ValueError as exc:
+        raise WithdrawOrderValidationError(
+            "创建时间必须使用 YYYY-MM-DD HH:mm:ss 格式。"
+        ) from exc
+    if requested_start > requested_end:
+        raise WithdrawOrderValidationError("创建时间范围的开始时间不能晚于结束时间。")
+    return (
+        max(cache_window_start, requested_start.astimezone(UTC)),
+        min(cache_window_end, requested_end.astimezone(UTC)),
+    )
+
+
 def summarize_withdraw_orders(
     orders: list[dict[str, Any]],
     *,
@@ -226,7 +265,8 @@ async def query_withdraw_orders(
 
     The active global query range bounds every local result, ensuring a prior
     wider cache cannot leak into a page after an administrator narrows the
-    refresh policy.
+    refresh policy.  A page-provided creation-time range can only narrow that
+    local window; it never triggers or changes a remote request.
     """
 
     source = await get_source(session, request.source_id)
@@ -237,10 +277,17 @@ async def query_withdraw_orders(
     if query_at.tzinfo is None:
         query_at = query_at.replace(tzinfo=UTC)
     retention = await get_retention_settings(session, defaults=current_settings)
-    window_start, window_end = withdraw_order_query_window(
+    cache_window_start, cache_window_end = withdraw_order_query_window(
         query_range=retention.withdraw_order_query_range,
         timezone_name=source.business_timezone,
         now=query_at,
+    )
+    window_start, window_end = local_withdraw_order_query_window(
+        create_time_start=request.create_time_start,
+        create_time_end=request.create_time_end,
+        timezone_name=source.business_timezone,
+        cache_window_start=cache_window_start,
+        cache_window_end=cache_window_end,
     )
 
     statement = select(WithdrawOrderSnapshot).where(

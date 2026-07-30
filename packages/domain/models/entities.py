@@ -101,6 +101,11 @@ class SystemRetentionSetting(Base):
         nullable=False,
         default=1,
     )
+    withdraw_order_refresh_page_size: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=100,
+    )
     withdraw_order_query_range: Mapped[str] = mapped_column(
         String(24),
         nullable=False,

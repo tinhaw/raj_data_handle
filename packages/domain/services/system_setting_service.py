@@ -18,13 +18,54 @@ class SystemSettingsSchemaPendingError(RuntimeError):
     pass
 
 
-def _is_missing_withdraw_query_range_column(
+def _is_missing_withdraw_refresh_policy_column(
     error: OperationalError | ProgrammingError,
 ) -> bool:
     message = str(error).lower()
-    return "withdraw_order_query_range" in message and (
-        "does not exist" in message or "no such column" in message
+    return (
+        "withdraw_order_query_range" in message
+        or "withdraw_order_refresh_page_size" in message
+    ) and ("does not exist" in message or "no such column" in message)
+
+
+async def _load_legacy_retention_row(
+    session: AsyncSession,
+) -> tuple[object | None, bool, bool]:
+    """Read a settings row while one or both refresh-policy migrations are pending.
+
+    The ORM cannot select a model with a column that has not been migrated yet.
+    Try the newest compatible projection first, then progressively fall back so
+    a staged deployment can still serve a read-only settings response while
+    migrations 0006 or 0007 are pending.
+    """
+
+    base_columns = (
+        "id, uploaded_file_retention_days, result_retention_days, "
+        "remote_cache_retention_days, withdraw_order_refresh_interval_hours, "
     )
+    projections = (
+        ("withdraw_order_query_range, withdraw_order_refresh_page_size, ", True, True),
+        ("withdraw_order_query_range, ", True, False),
+        ("", False, False),
+    )
+    for extra_columns, has_query_range, has_page_size in projections:
+        try:
+            result = await session.execute(
+                text(
+                    "SELECT "
+                    f"{base_columns}{extra_columns}"
+                    "config_version, updated_by, updated_at "
+                    "FROM system_retention_settings WHERE id = :id"
+                ),
+                {"id": RETENTION_SETTINGS_ID},
+            )
+        except (OperationalError, ProgrammingError) as exc:
+            if not _is_missing_withdraw_refresh_policy_column(exc):
+                raise
+            await session.rollback()
+            continue
+        return result.mappings().one_or_none(), has_query_range, has_page_size
+    return None, False, False
 
 
 async def _load_retention_settings(
@@ -32,32 +73,23 @@ async def _load_retention_settings(
     *,
     defaults: Settings | None = None,
 ) -> tuple[SystemRetentionSetting, bool]:
-    """Load settings and identify a rollout awaiting migration 0006.
+    """Load settings and identify a rollout awaiting migrations 0006 or 0007.
 
     Application code is released separately from database migrations.  The ORM
-    model therefore cannot be selected directly against a database that has
-    migration 0005 but not 0006: SQLAlchemy includes the newly added column in
-    its SELECT.  GET endpoints can safely use the default preset during that
-    brief window; writes must wait for the migration.
+    model therefore cannot be selected directly against a database missing a
+    newly added refresh-policy column: SQLAlchemy includes it in its SELECT.
+    GET endpoints can safely use defaults during that brief window; writes
+    must wait for the relevant migration.
     """
 
     current_defaults = defaults or get_settings()
     try:
         row = await session.get(SystemRetentionSetting, RETENTION_SETTINGS_ID)
     except (OperationalError, ProgrammingError) as exc:
-        if not _is_missing_withdraw_query_range_column(exc):
+        if not _is_missing_withdraw_refresh_policy_column(exc):
             raise
         await session.rollback()
-        result = await session.execute(
-            text(
-                "SELECT id, uploaded_file_retention_days, result_retention_days, "
-                "remote_cache_retention_days, withdraw_order_refresh_interval_hours, "
-                "config_version, updated_by, updated_at "
-                "FROM system_retention_settings WHERE id = :id"
-            ),
-            {"id": RETENTION_SETTINGS_ID},
-        )
-        legacy = result.mappings().one_or_none()
+        legacy, has_query_range, has_page_size = await _load_legacy_retention_row(session)
         if legacy is None:
             raise SystemSettingsSchemaPendingError(
                 "提现订单刷新配置正在初始化，请在数据库迁移完成后重试。"
@@ -71,7 +103,16 @@ async def _load_retention_settings(
                 withdraw_order_refresh_interval_hours=int(
                     legacy["withdraw_order_refresh_interval_hours"]
                 ),
-                withdraw_order_query_range=current_defaults.withdraw_order_query_range,
+                withdraw_order_refresh_page_size=(
+                    int(legacy["withdraw_order_refresh_page_size"])
+                    if has_page_size
+                    else current_defaults.withdraw_order_refresh_page_size
+                ),
+                withdraw_order_query_range=(
+                    str(legacy["withdraw_order_query_range"])
+                    if has_query_range
+                    else current_defaults.withdraw_order_query_range
+                ),
                 config_version=int(legacy["config_version"]),
                 updated_by=legacy["updated_by"],
                 updated_at=legacy["updated_at"],
@@ -90,6 +131,7 @@ async def _load_retention_settings(
         withdraw_order_refresh_interval_hours=(
             current_defaults.withdraw_order_refresh_interval_hours
         ),
+        withdraw_order_refresh_page_size=current_defaults.withdraw_order_refresh_page_size,
         withdraw_order_query_range=current_defaults.withdraw_order_query_range,
     )
     session.add(row)
@@ -120,13 +162,14 @@ async def update_retention_settings(
     row, schema_pending = await _load_retention_settings(session)
     if schema_pending:
         raise SystemSettingsSchemaPendingError(
-            "提现订单查询范围配置正在初始化，请在数据库迁移完成后重新保存。"
+            "提现订单刷新配置正在初始化，请在数据库迁移完成后重新保存。"
         )
     previous = {
         "uploadedFileRetentionDays": row.uploaded_file_retention_days,
         "resultRetentionDays": row.result_retention_days,
         "remoteCacheRetentionDays": row.remote_cache_retention_days,
         "withdrawOrderRefreshIntervalHours": row.withdraw_order_refresh_interval_hours,
+        "withdrawOrderRefreshPageSize": row.withdraw_order_refresh_page_size,
         "withdrawOrderQueryRange": row.withdraw_order_query_range,
         "sessionTtlDays": session_settings.session_ttl_days,
     }
@@ -135,6 +178,8 @@ async def update_retention_settings(
     row.remote_cache_retention_days = payload.remote_cache_retention_days
     if payload.withdraw_order_refresh_interval_hours is not None:
         row.withdraw_order_refresh_interval_hours = payload.withdraw_order_refresh_interval_hours
+    if payload.withdraw_order_refresh_page_size is not None:
+        row.withdraw_order_refresh_page_size = payload.withdraw_order_refresh_page_size
     if payload.withdraw_order_query_range is not None:
         row.withdraw_order_query_range = payload.withdraw_order_query_range
     row.config_version += 1
@@ -159,6 +204,7 @@ async def update_retention_settings(
                     "withdrawOrderRefreshIntervalHours": (
                         row.withdraw_order_refresh_interval_hours
                     ),
+                    "withdrawOrderRefreshPageSize": row.withdraw_order_refresh_page_size,
                     "withdrawOrderQueryRange": row.withdraw_order_query_range,
                     "sessionTtlDays": session_settings.session_ttl_days,
                 },

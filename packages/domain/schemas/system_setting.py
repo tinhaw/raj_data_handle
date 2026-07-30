@@ -15,6 +15,7 @@ WithdrawOrderQueryRange = Literal[
     "last_24_hours",
     "last_48_hours",
 ]
+WithdrawOrderRefreshPageSize = Literal[10, 20, 30, 50, 100]
 
 
 class RetentionSettingsResponse(BaseModel):
@@ -27,6 +28,9 @@ class RetentionSettingsResponse(BaseModel):
         ge=1,
         le=24,
         alias="withdrawOrderRefreshIntervalHours",
+    )
+    withdraw_order_refresh_page_size: WithdrawOrderRefreshPageSize = Field(
+        alias="withdrawOrderRefreshPageSize",
     )
     withdraw_order_query_range: WithdrawOrderQueryRange = Field(
         alias="withdrawOrderQueryRange",
@@ -50,6 +54,12 @@ class RetentionSettingsUpdateRequest(BaseModel):
         ge=1,
         le=24,
         alias="withdrawOrderRefreshIntervalHours",
+    )
+    # Optional so older clients can save other settings during a staged
+    # rollout; any explicitly supplied value is one of the remote choices.
+    withdraw_order_refresh_page_size: WithdrawOrderRefreshPageSize | None = Field(
+        default=None,
+        alias="withdrawOrderRefreshPageSize",
     )
     # Optional so older clients can save other settings during a staged
     # rollout; any explicitly supplied value is constrained to these presets.

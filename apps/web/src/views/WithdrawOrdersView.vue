@@ -37,6 +37,7 @@ const queuedAt = ref<string | null>(null)
 const knownStatuses = ref<string[]>([])
 const filters = reactive({
   sourceId: '',
+  createTimeRange: null as [string, string] | null,
   uid: '',
   status: '',
   auditAdmin: '',
@@ -162,8 +163,12 @@ async function load(resetPage = false, quiet = false): Promise<void> {
   if (resetPage) page.value = 1
   loading.value = true
   try {
+    const [createTimeStart, createTimeEnd] = filters.createTimeRange || []
+    const hasCreateTimeRange = Boolean(createTimeStart && createTimeEnd)
     const result = await queryWithdrawOrders({
       sourceId: filters.sourceId,
+      createTimeStart: hasCreateTimeRange ? createTimeStart : undefined,
+      createTimeEnd: hasCreateTimeRange ? createTimeEnd : undefined,
       uid: filters.uid || undefined,
       status: filters.status || undefined,
       auditAdmin: filters.auditAdmin || undefined,
@@ -206,6 +211,7 @@ function resetLocalResult(): void {
 
 function handleSourceChange(): void {
   page.value = 1
+  filters.createTimeRange = null
   filters.status = ''
   resetLocalResult()
   void load(true)
@@ -282,6 +288,21 @@ onMounted(async () => {
             />
           </el-select>
         </label>
+        <label class="query-field query-field--time-range">
+          <span>创建时间（{{ selectedSource?.businessTimezone || '盘口业务时区' }}）</span>
+          <el-date-picker
+            v-model="filters.createTimeRange"
+            type="datetimerange"
+            value-format="YYYY-MM-DD HH:mm:ss"
+            format="YYYY-MM-DD HH:mm:ss"
+            range-separator="至"
+            start-placeholder="开始时间"
+            end-placeholder="结束时间"
+            clearable
+            :disabled="!filters.sourceId"
+            style="width: 100%"
+          />
+        </label>
         <label class="query-field">
           <span>用户 UID</span>
           <el-input v-model.trim="filters.uid" clearable placeholder="精确 UID" />
@@ -303,7 +324,7 @@ onMounted(async () => {
         </label>
       </div>
       <div class="query-card__footer">
-        <span>筛选只作用于本地数据库；后台同步的时间范围与间隔由系统配置统一控制。</span>
+        <span>筛选只作用于本地缓存；时间范围按盘口业务时区解释，不影响后台同步的时间范围与间隔。</span>
         <el-button type="primary" :icon="Search" :loading="loading" @click="load(true)">
           查询本地订单
         </el-button>
@@ -456,6 +477,10 @@ onMounted(async () => {
   width: 100%;
 }
 
+.query-field--time-range {
+  grid-column: span 2;
+}
+
 .query-card__footer {
   display: flex;
   align-items: center;
@@ -543,6 +568,10 @@ onMounted(async () => {
 @media (max-width: 640px) {
   .query-card__grid {
     grid-template-columns: 1fr;
+  }
+
+  .query-field--time-range {
+    grid-column: span 1;
   }
 
   .table-pagination {

@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import httpx
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from packages.common.settings import Settings
@@ -12,6 +13,7 @@ from packages.domain.models import (
     Base,
     DataDictionaryEntry,
     SourceConfig,
+    SystemRetentionSetting,
     WithdrawOrderRefreshState,
     WithdrawOrderSnapshot,
 )
@@ -232,6 +234,128 @@ def test_withdraw_summary_uses_same_filtered_rows_for_metrics_and_charts() -> No
         {"bucket": "2026-07-30 09:00", "count": 2, "amount": "300.00", "real_amount": "293.00"},
         {"bucket": "2026-07-30 10:00", "count": 1, "amount": "50.00", "real_amount": "50.00"},
     ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"create_time_start": "2026-07-30 10:00:00"},
+        {"create_time_end": "2026-07-30 10:00:00"},
+        {
+            "create_time_start": "2026-07-30 10:00:00",
+            "create_time_end": "2026-07-30 09:59:59",
+        },
+        {
+            "create_time_start": "2026-07-30T10:00:00",
+            "create_time_end": "2026-07-30 11:00:00",
+        },
+    ],
+)
+def test_withdraw_query_time_range_requires_a_complete_ordered_wall_time_pair(
+    payload: dict[str, str],
+) -> None:
+    with pytest.raises(ValidationError):
+        WithdrawOrderQueryRequest(source_id="rajwin", **payload)
+
+
+@pytest.mark.asyncio
+async def test_withdraw_query_time_range_only_filters_local_cache_in_source_timezone() -> None:
+    settings = Settings(
+        secret_key="test-secret-key-that-is-longer-than-32-characters",
+        database_url="sqlite+aiosqlite:///:memory:",
+    )
+    engine = create_async_engine(settings.database_url)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        session.add_all(
+            [
+                SourceConfig(
+                    source_id="rajwin",
+                    display_name="RajWin",
+                    enabled=True,
+                    business_timezone="Asia/Kolkata",
+                    currency="INR",
+                ),
+                # At 06:00 UTC, the configured last-two-hours cache spans
+                # 09:30:00 through 11:30:00 in the source's Asia/Kolkata time.
+                SystemRetentionSetting(
+                    id=1,
+                    uploaded_file_retention_days=3,
+                    result_retention_days=30,
+                    remote_cache_retention_days=30,
+                    withdraw_order_refresh_interval_hours=1,
+                    withdraw_order_query_range="last_2_hours",
+                ),
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="outside-cache-window",
+                    uid="100",
+                    amount="10.00",
+                    real_amount="10.00",
+                    create_time="2026-07-30 09:00:00",
+                    create_time_utc=datetime(2026, 7, 30, 3, 30, tzinfo=UTC),
+                    status="0",
+                ),
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="included-start",
+                    uid="101",
+                    amount="20.00",
+                    real_amount="19.00",
+                    create_time="2026-07-30 10:00:00",
+                    create_time_utc=datetime(2026, 7, 30, 4, 30, tzinfo=UTC),
+                    status="0",
+                ),
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="included-end",
+                    uid="102",
+                    amount="30.00",
+                    real_amount="29.00",
+                    create_time="2026-07-30 11:00:00",
+                    create_time_utc=datetime(2026, 7, 30, 5, 30, tzinfo=UTC),
+                    status="3",
+                ),
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="outside-page-range",
+                    uid="103",
+                    amount="40.00",
+                    real_amount="39.00",
+                    create_time="2026-07-30 11:30:00",
+                    create_time_utc=datetime(2026, 7, 30, 6, 0, tzinfo=UTC),
+                    status="3",
+                ),
+            ]
+        )
+        await session.commit()
+
+        result = await query_withdraw_orders(
+            session,
+            request=WithdrawOrderQueryRequest(
+                source_id="rajwin",
+                # This is 03:30–05:30 UTC, so the local query intersects it
+                # with the configured cache's 04:00–06:00 UTC window.
+                create_time_start="2026-07-30 09:00:00",
+                create_time_end="2026-07-30 11:00:00",
+            ),
+            settings=settings,
+            now=datetime(2026, 7, 30, 6, 0, tzinfo=UTC),
+        )
+
+    assert [item["id"] for item in result.items] == ["included-end", "included-start"]
+    assert result.total == 2
+    assert result.effective_create_time_end == "2026-07-30 11:00:00"
+    assert result.summary["order_count"] == 2
+    assert result.summary["amount"] == "50.00"
+    assert result.summary["real_amount"] == "48.00"
+    assert result.summary["status_distribution"] == [
+        {"status": "0", "count": 1, "amount": "20.00", "real_amount": "19.00"},
+        {"status": "3", "count": 1, "amount": "30.00", "real_amount": "29.00"},
+    ]
+    await engine.dispose()
 
 
 @pytest.mark.asyncio

@@ -68,6 +68,7 @@ class _RefreshClaim:
     encrypted_credentials: str
     credential_version: int
     business_timezone: str
+    page_size: int
     query_range: str
     started_at: datetime
     lease_expires_at: datetime
@@ -300,6 +301,7 @@ async def _claim_next_due_refresh(
             encrypted_credentials=source.encrypted_credentials or "",
             credential_version=source.credential_version,
             business_timezone=source.business_timezone,
+            page_size=retention.withdraw_order_refresh_page_size,
             query_range=retention.withdraw_order_query_range,
             started_at=now,
             lease_expires_at=lease_expires_at,
@@ -568,6 +570,7 @@ async def _execute_refresh_claim(
             username=username,
             password=password,
             totp_secret=totp_secret,
+            page_size=claim.page_size,
         ) as client:
             async def renew_lease() -> None:
                 await _renew_refresh_lease(session, claim=claim)

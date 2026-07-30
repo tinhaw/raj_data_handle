@@ -49,11 +49,14 @@ export type WithdrawOrderQueryRange =
   | 'last_24_hours'
   | 'last_48_hours'
 
+export type WithdrawOrderRefreshPageSize = 10 | 20 | 30 | 50 | 100
+
 export interface RetentionSettings {
   uploadedFileRetentionDays: number
   resultRetentionDays: number
   remoteCacheRetentionDays: number
   withdrawOrderRefreshIntervalHours: number
+  withdrawOrderRefreshPageSize: WithdrawOrderRefreshPageSize
   withdrawOrderQueryRange: WithdrawOrderQueryRange
   sessionTtlDays: number
   configVersion: number

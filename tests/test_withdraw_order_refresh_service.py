@@ -33,8 +33,9 @@ class FakeWithdrawClient:
     outcomes: dict[str, WithdrawFetchResult | BaseException] = {}
     calls: list[dict[str, object]] = []
 
-    def __init__(self, *, base_url: str, **_: object) -> None:
+    def __init__(self, *, base_url: str, page_size: int = 100, **_: object) -> None:
         self.base_url = base_url
+        self.page_size = page_size
 
     async def __aenter__(self) -> FakeWithdrawClient:
         return self
@@ -44,7 +45,9 @@ class FakeWithdrawClient:
 
     async def fetch_all_withdraw_orders(self, **kwargs: object) -> WithdrawFetchResult:
         on_page_fetched = kwargs.pop("on_page_fetched", None)
-        FakeWithdrawClient.calls.append({"base_url": self.base_url, **kwargs})
+        FakeWithdrawClient.calls.append(
+            {"base_url": self.base_url, "page_size": self.page_size, **kwargs}
+        )
         outcome = FakeWithdrawClient.outcomes[self.base_url]
         if isinstance(outcome, BaseException):
             raise outcome
@@ -210,6 +213,7 @@ async def test_worker_refreshes_approved_fields_then_page_reads_the_local_cache(
                     result_retention_days=30,
                     remote_cache_retention_days=30,
                     withdraw_order_refresh_interval_hours=24,
+                    withdraw_order_refresh_page_size=50,
                     withdraw_order_query_range="today",
                 ),
             ]
@@ -238,6 +242,7 @@ async def test_worker_refreshes_approved_fields_then_page_reads_the_local_cache(
     assert FakeWithdrawClient.calls == [
         {
             "base_url": "https://rajwin.example.test",
+            "page_size": 50,
             "create_start": "2026-07-29T18:30:00.000Z",
             "create_end": "2026-07-30T10:00:00.000Z",
         }
