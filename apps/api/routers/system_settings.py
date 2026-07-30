@@ -32,6 +32,7 @@ def _response(
         resultRetentionDays=retention.result_retention_days,
         remoteCacheRetentionDays=retention.remote_cache_retention_days,
         withdrawOrderRefreshIntervalHours=retention.withdraw_order_refresh_interval_hours,
+        withdrawOrderQueryRange=retention.withdraw_order_query_range or "today",
         sessionTtlDays=session_ttl_days,
         configVersion=retention.config_version,
         updatedBy=retention.updated_by,
@@ -45,7 +46,10 @@ async def retention_settings(
     session: AsyncSession = Depends(get_db_session),
 ) -> RetentionSettingsResponse:
     session_settings = await get_session_settings(session)
-    retention = await get_retention_settings(session)
+    try:
+        retention = await get_retention_settings(session)
+    except SystemSettingsSchemaPendingError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return _response(
         retention,
         session_ttl_days=(

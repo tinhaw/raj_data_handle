@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -166,6 +167,7 @@ class RajAdminWithdrawClient(RajAdminChargeClient):
         create_end: str,
         uid: str = "",
         status: str = "",
+        on_page_fetched: Callable[[], Awaitable[None]] | None = None,
     ) -> WithdrawFetchResult:
         orders: list[dict[str, Any]] = []
         fetched_pages = 0
@@ -183,6 +185,8 @@ class RajAdminWithdrawClient(RajAdminChargeClient):
             orders.extend(items)
             remote_total = page_info["total"]
             total_page = page_info["total_page"]
+            if on_page_fetched is not None:
+                await on_page_fetched()
             if total_page > MAX_WITHDRAW_PAGES:
                 raise RemoteResponseError("提现订单数量过多，请缩小查询时间范围。")
             if page >= total_page:

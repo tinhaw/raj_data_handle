@@ -9,8 +9,6 @@ from packages.common.schemas import ApiSchema
 
 class WithdrawOrderQueryRequest(ApiSchema):
     source_id: str = Field(min_length=2, max_length=64)
-    create_time_start: str = Field(min_length=19, max_length=19)
-    create_time_end: str = Field(min_length=19, max_length=19)
     uid: str | None = Field(default=None, max_length=64)
     status: str | None = Field(default=None, max_length=40)
     audit_admin: str | None = Field(default=None, max_length=120)
@@ -79,5 +77,27 @@ class WithdrawOrderQueryResponse(ApiSchema):
     currency: str
     effective_create_time_end: str
     fetched_at: datetime
+    local_updated_at: datetime | None
+    last_refreshed_at: datetime | None
+    refresh_status: str
     status_dictionary: list[WithdrawStatusDictionaryEntry]
     summary: WithdrawOrderSummary
+
+
+class WithdrawOrderRefreshRequest(ApiSchema):
+    """Queue one source, or all eligible sources when source_id is omitted."""
+
+    source_id: str | None = Field(default=None, min_length=2, max_length=64)
+
+    @field_validator("source_id")
+    @classmethod
+    def normalize_source_id(cls, value: str | None) -> str | None:
+        normalized = (value or "").strip()
+        return normalized or None
+
+
+class WithdrawOrderRefreshResponse(ApiSchema):
+    status: str
+    source_ids: list[str]
+    requested_at: datetime
+    message: str

@@ -7,13 +7,17 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from packages.common.security import encrypt_credentials
 from packages.common.settings import Settings
-from packages.domain.models import Base, DataDictionaryEntry, SourceConfig
+from packages.domain.models import (
+    Base,
+    DataDictionaryEntry,
+    SourceConfig,
+    WithdrawOrderRefreshState,
+    WithdrawOrderSnapshot,
+)
 from packages.domain.schemas.withdraw_order import WithdrawOrderQueryRequest
 from packages.domain.services.remote_withdraw_service import (
     RajAdminWithdrawClient,
-    WithdrawFetchResult,
     normalize_withdraw_order,
 )
 from packages.domain.services.withdraw_order_service import (
@@ -65,6 +69,11 @@ def test_withdraw_order_normalizer_keeps_only_approved_fields() -> None:
 @pytest.mark.asyncio
 async def test_withdraw_client_posts_filters_and_paginates_all_safe_rows() -> None:
     request_bodies: list[dict[str, object]] = []
+    renewals = 0
+
+    async def on_page_fetched() -> None:
+        nonlocal renewals
+        renewals += 1
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/api/system/login"):
@@ -118,6 +127,7 @@ async def test_withdraw_client_posts_filters_and_paginates_all_safe_rows() -> No
             create_end="2026-07-30T18:29:59.000Z",
             uid="1001",
             status="3",
+            on_page_fetched=on_page_fetched,
         )
 
     assert result.complete is True
@@ -126,6 +136,7 @@ async def test_withdraw_client_posts_filters_and_paginates_all_safe_rows() -> No
     assert [item["id"] for item in result.orders] == ["1", "2"]
     assert all("info" not in item and "ip" not in item for item in result.orders)
     assert [body["page"] for body in request_bodies] == [1, 2]
+    assert renewals == 2
     assert all(body["uid"] == "1001" and body["status"] == "3" for body in request_bodies)
     assert all(
         body["create_time"]
@@ -223,46 +234,8 @@ def test_withdraw_summary_uses_same_filtered_rows_for_metrics_and_charts() -> No
     ]
 
 
-class FakeWithdrawClient:
-    def __init__(self, **_: object) -> None:
-        pass
-
-    async def __aenter__(self) -> FakeWithdrawClient:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        return None
-
-    async def fetch_all_withdraw_orders(self, **_: object) -> WithdrawFetchResult:
-        return WithdrawFetchResult(
-            orders=[
-                {
-                    "id": "one",
-                    "uid": "100",
-                    "amount": "50.00",
-                    "real_amount": "49.00",
-                    "create_time": "2026-07-30 10:00:00",
-                    "status": "0",
-                },
-                {
-                    "id": "two",
-                    "uid": "101",
-                    "amount": "100.00",
-                    "real_amount": "98.00",
-                    "create_time": "2026-07-30 11:00:00",
-                    "status": "3",
-                },
-            ],
-            fetched_pages=1,
-            remote_total=2,
-            complete=True,
-        )
-
-
 @pytest.mark.asyncio
-async def test_withdraw_query_returns_only_its_source_status_dictionary(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_withdraw_query_reads_only_source_scoped_local_cache_and_dictionary() -> None:
     settings = Settings(
         secret_key="test-secret-key-that-is-longer-than-32-characters",
         database_url="sqlite+aiosqlite:///:memory:",
@@ -271,26 +244,13 @@ async def test_withdraw_query_returns_only_its_source_status_dictionary(
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
-    monkeypatch.setattr(
-        "packages.domain.services.withdraw_order_service.RajAdminWithdrawClient",
-        FakeWithdrawClient,
-    )
-
     async with factory() as session:
         rajwin = SourceConfig(
             source_id="rajwin",
             display_name="RajWin",
-            base_url="https://admin.example.test",
             enabled=True,
             business_timezone="Asia/Kolkata",
             currency="INR",
-            credential_version=1,
-        )
-        rajwin.encrypted_credentials = encrypt_credentials(
-            {"username": "reader", "password": "test-password", "totp_secret": "JBSWY3DPEHPK3PXP"},
-            source_id=rajwin.source_id,
-            credential_version=rajwin.credential_version,
-            settings=settings,
         )
         session.add_all(
             [
@@ -322,6 +282,61 @@ async def test_withdraw_query_returns_only_its_source_status_dictionary(
                     entry_label="RajLuck 专用文案",
                     active=True,
                 ),
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="one",
+                    uid="100",
+                    amount="50.00",
+                    real_amount="49.00",
+                    create_time="2026-07-30 10:00:00",
+                    create_time_utc=datetime(2026, 7, 30, 4, 30, tzinfo=UTC),
+                    status="0",
+                    synced_at=datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
+                ),
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="two",
+                    uid="101",
+                    amount="100.00",
+                    real_amount="98.00",
+                    create_time="2026-07-30 11:00:00",
+                    create_time_utc=datetime(2026, 7, 30, 5, 30, tzinfo=UTC),
+                    status="3",
+                    synced_at=datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
+                ),
+                # The page uses the current system refresh range, so this
+                # retained older row must not appear when the preset is today.
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="older",
+                    uid="999",
+                    amount="999.00",
+                    real_amount="999.00",
+                    create_time="2026-07-29 10:00:00",
+                    create_time_utc=datetime(2026, 7, 29, 4, 30, tzinfo=UTC),
+                    status="9",
+                    synced_at=datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
+                ),
+                WithdrawOrderSnapshot(
+                    source_id="rajluck",
+                    remote_order_id="other-source",
+                    uid="200",
+                    amount="500.00",
+                    real_amount="500.00",
+                    create_time="2026-07-30 10:00:00",
+                    create_time_utc=datetime(2026, 7, 30, 4, 30, tzinfo=UTC),
+                    status="0",
+                    synced_at=datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
+                ),
+                WithdrawOrderRefreshState(
+                    source_id="rajwin",
+                    status="succeeded",
+                    last_remote_total=17,
+                    last_cached_total=2,
+                    last_fetched_pages=1,
+                    last_complete=True,
+                    last_succeeded_at=datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
+                ),
             ]
         )
         await session.commit()
@@ -330,8 +345,6 @@ async def test_withdraw_query_returns_only_its_source_status_dictionary(
             session,
             request=WithdrawOrderQueryRequest(
                 source_id="rajwin",
-                create_time_start="2026-07-30 00:00:00",
-                create_time_end="2026-07-30 23:59:59",
             ),
             settings=settings,
             now=datetime(2026, 7, 30, 18, 0, tzinfo=UTC),
@@ -345,4 +358,8 @@ async def test_withdraw_query_returns_only_its_source_status_dictionary(
         {"code": "0", "label": "待审核", "active": True},
         {"code": "3", "label": "出款完成", "active": False},
     ]
+    assert result.remote_total == 17
+    assert result.fetched_pages == 1
+    assert result.complete is True
+    assert [item["id"] for item in result.items] == ["two", "one"]
     await engine.dispose()

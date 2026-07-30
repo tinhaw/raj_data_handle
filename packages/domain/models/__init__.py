@@ -16,6 +16,8 @@ from packages.domain.models.entities import (
     SystemRetentionSetting,
     SystemSessionSetting,
     UserNotification,
+    WithdrawOrderRefreshState,
+    WithdrawOrderSnapshot,
 )
 
 __all__ = [
@@ -36,4 +38,6 @@ __all__ = [
     "SystemSessionSetting",
     "SystemRetentionSetting",
     "UserNotification",
+    "WithdrawOrderRefreshState",
+    "WithdrawOrderSnapshot",
 ]

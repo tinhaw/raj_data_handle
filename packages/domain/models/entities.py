@@ -101,6 +101,11 @@ class SystemRetentionSetting(Base):
         nullable=False,
         default=1,
     )
+    withdraw_order_query_range: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="today",
+    )
     config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
     updated_at: Mapped[datetime] = mapped_column(
@@ -115,6 +120,92 @@ class SystemSessionSetting(Base):
     session_ttl_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class WithdrawOrderSnapshot(Base):
+    """Approved withdrawal-order fields cached from one read-only source.
+
+    The table intentionally has no raw remote payload column.  It is safe for
+    the monitoring page to query without exposing account, IP, bank, or other
+    unrelated remote fields.
+    """
+
+    __tablename__ = "withdraw_order_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id",
+            "remote_order_id",
+            name="uq_withdraw_order_snapshot_source_remote_id",
+        ),
+        Index(
+            "ix_withdraw_order_snapshot_source_create_time",
+            "source_id",
+            "create_time_utc",
+        ),
+        Index(
+            "ix_withdraw_order_snapshot_source_status",
+            "source_id",
+            "status",
+        ),
+        Index(
+            "ix_withdraw_order_snapshot_source_uid",
+            "source_id",
+            "uid",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    remote_order_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    uid: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    amount: Mapped[str | None] = mapped_column(String(64))
+    real_amount: Mapped[str | None] = mapped_column(String(64))
+    create_time: Mapped[str | None] = mapped_column(String(32))
+    create_time_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    update_time: Mapped[str | None] = mapped_column(String(32))
+    submit_time: Mapped[str | None] = mapped_column(String(32))
+    audit_admin: Mapped[str | None] = mapped_column(String(160))
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
+    )
+
+
+class WithdrawOrderRefreshState(Base):
+    """Source-scoped background refresh state and durable manual request marker."""
+
+    __tablename__ = "withdraw_order_refresh_states"
+
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="idle", index=True)
+    manual_request_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_window_start_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_window_end_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_remote_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_cached_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_fetched_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_error: Mapped[str | None] = mapped_column(String(500))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )

@@ -8,11 +8,18 @@ from packages.common.database import get_db_session
 from packages.domain.schemas.withdraw_order import (
     WithdrawOrderQueryRequest,
     WithdrawOrderQueryResponse,
+    WithdrawOrderRefreshRequest,
+    WithdrawOrderRefreshResponse,
 )
 from packages.domain.services.auth_service import AuthContext
-from packages.domain.services.remote_charge_service import RemoteChargeError
 from packages.domain.services.source_service import SourceNotFoundError
+from packages.domain.services.system_setting_service import SystemSettingsSchemaPendingError
+from packages.domain.services.withdraw_order_refresh_service import (
+    WithdrawOrderRefreshValidationError,
+    queue_withdraw_order_refreshes,
+)
 from packages.domain.services.withdraw_order_service import (
+    WithdrawOrderCacheSchemaPendingError,
     WithdrawOrderValidationError,
     query_withdraw_orders,
 )
@@ -32,9 +39,9 @@ async def withdraw_order_query(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except WithdrawOrderValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except RemoteChargeError as exc:
+    except (WithdrawOrderCacheSchemaPendingError, SystemSettingsSchemaPendingError) as exc:
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
     return WithdrawOrderQueryResponse(
@@ -51,6 +58,44 @@ async def withdraw_order_query(
         currency=result.currency,
         effective_create_time_end=result.effective_create_time_end,
         fetched_at=result.fetched_at,
+        local_updated_at=result.local_updated_at,
+        last_refreshed_at=result.last_refreshed_at,
+        refresh_status=result.refresh_status,
         status_dictionary=result.status_dictionary,
         summary=result.summary,
+    )
+
+
+@router.post(
+    "/refresh",
+    response_model=WithdrawOrderRefreshResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def queue_withdraw_order_refresh(
+    payload: WithdrawOrderRefreshRequest = WithdrawOrderRefreshRequest(),
+    auth: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_db_session),
+) -> WithdrawOrderRefreshResponse:
+    """Queue a worker-owned read-only cache refresh without remote I/O in API."""
+
+    try:
+        result = await queue_withdraw_order_refreshes(
+            session,
+            source_id=payload.source_id,
+            actor_user_id=auth.user.id,
+        )
+    except SourceNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except WithdrawOrderRefreshValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except WithdrawOrderCacheSchemaPendingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    return WithdrawOrderRefreshResponse(
+        status="queued",
+        source_ids=result.source_ids,
+        requested_at=result.requested_at,
+        message=f"已提交 {len(result.source_ids)} 个盘口的后台同步任务。",
     )

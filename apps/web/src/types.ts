@@ -39,11 +39,14 @@ export interface SourceConfig {
   updatedAt: string
 }
 
+export type WithdrawOrderQueryRange = 'today' | 'last_24_hours' | 'last_48_hours'
+
 export interface RetentionSettings {
   uploadedFileRetentionDays: number
   resultRetentionDays: number
   remoteCacheRetentionDays: number
   withdrawOrderRefreshIntervalHours: number
+  withdrawOrderQueryRange: WithdrawOrderQueryRange
   sessionTtlDays: number
   configVersion: number
   updatedBy: number | null
@@ -256,6 +259,21 @@ export interface WithdrawStatusDictionaryEntry {
   active: boolean
 }
 
+export interface WithdrawOrderRefreshResult {
+  status: 'queued'
+  sourceIds: string[]
+  requestedAt: string
+  message: string
+}
+
+export type WithdrawOrderRefreshStatus =
+  | 'not_started'
+  | 'idle'
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+
 export interface WithdrawOrderQueryResponse {
   items: WithdrawOrder[]
   total: number
@@ -270,6 +288,9 @@ export interface WithdrawOrderQueryResponse {
   currency: string
   effectiveCreateTimeEnd: string
   fetchedAt: string
+  localUpdatedAt: string | null
+  lastRefreshedAt: string | null
+  refreshStatus: WithdrawOrderRefreshStatus
   statusDictionary: WithdrawStatusDictionaryEntry[]
   summary: WithdrawOrderSummary
 }

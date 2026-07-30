@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+WithdrawOrderQueryRange = Literal["today", "last_24_hours", "last_48_hours"]
 
 
 class RetentionSettingsResponse(BaseModel):
@@ -15,6 +18,9 @@ class RetentionSettingsResponse(BaseModel):
         ge=1,
         le=24,
         alias="withdrawOrderRefreshIntervalHours",
+    )
+    withdraw_order_query_range: WithdrawOrderQueryRange = Field(
+        alias="withdrawOrderQueryRange",
     )
     session_ttl_days: int = Field(alias="sessionTtlDays")
     config_version: int = Field(alias="configVersion")
@@ -35,5 +41,11 @@ class RetentionSettingsUpdateRequest(BaseModel):
         ge=1,
         le=24,
         alias="withdrawOrderRefreshIntervalHours",
+    )
+    # Optional so older clients can save other settings during a staged
+    # rollout; any explicitly supplied value is constrained to these presets.
+    withdraw_order_query_range: WithdrawOrderQueryRange | None = Field(
+        default=None,
+        alias="withdrawOrderQueryRange",
     )
     session_ttl_days: int = Field(ge=1, le=365, alias="sessionTtlDays")

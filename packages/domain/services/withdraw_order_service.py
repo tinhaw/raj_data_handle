@@ -4,25 +4,31 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import desc, func, select
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from packages.common.security import SecurityValidationError, decrypt_credentials
 from packages.common.settings import Settings, get_settings
+from packages.domain.models import WithdrawOrderRefreshState, WithdrawOrderSnapshot
 from packages.domain.schemas.withdraw_order import WithdrawOrderQueryRequest
 from packages.domain.services.data_dictionary_service import withdraw_status_dictionary
-from packages.domain.services.remote_withdraw_service import RajAdminWithdrawClient
 from packages.domain.services.source_service import get_source
+from packages.domain.services.system_setting_service import get_retention_settings
 
-MAX_QUERY_WINDOW = timedelta(days=31)
-REMOTE_TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.000Z"
 WALL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+WITHDRAW_ORDER_QUERY_RANGES = {"today", "last_24_hours", "last_48_hours"}
+WithdrawOrderQueryRange = Literal["today", "last_24_hours", "last_48_hours"]
 
 
 class WithdrawOrderValidationError(ValueError):
     pass
+
+
+class WithdrawOrderCacheSchemaPendingError(RuntimeError):
+    """The application is running before migration 0006 has been applied."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +44,9 @@ class WithdrawOrderQueryResult:
     currency: str
     effective_create_time_end: str
     fetched_at: datetime
+    local_updated_at: datetime | None
+    last_refreshed_at: datetime | None
+    refresh_status: str
     status_dictionary: list[dict[str, object]]
     summary: dict[str, Any]
 
@@ -53,29 +62,47 @@ def _decimal_text(value: Decimal) -> str:
     return format(value.quantize(Decimal("0.01")), "f")
 
 
-def _parse_window(
-    start_value: str,
-    end_value: str,
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def normalize_withdraw_order_query_range(value: str | None) -> WithdrawOrderQueryRange:
+    """Use the safe default if a legacy row contains an invalid preset."""
+
+    if value in WITHDRAW_ORDER_QUERY_RANGES:
+        return value  # type: ignore[return-value]
+    return "today"
+
+
+def withdraw_order_query_window(
     *,
+    query_range: str,
     timezone_name: str,
     now: datetime,
 ) -> tuple[datetime, datetime]:
-    try:
-        business_timezone = ZoneInfo(timezone_name)
-        start = datetime.strptime(start_value, WALL_TIME_FORMAT).replace(tzinfo=business_timezone)
-        end = datetime.strptime(end_value, WALL_TIME_FORMAT).replace(tzinfo=business_timezone)
-    except ValueError as exc:
-        raise WithdrawOrderValidationError("查询时间必须使用 YYYY-MM-DD HH:mm:ss 格式。") from exc
-    if end < start:
-        raise WithdrawOrderValidationError("查询结束时间不能早于开始时间。")
-    if end - start > MAX_QUERY_WINDOW:
-        raise WithdrawOrderValidationError("提现订单查询时间范围不能超过 31 天。")
-    now_utc = now.astimezone(UTC)
-    start_utc = start.astimezone(UTC)
-    end_utc = min(end.astimezone(UTC), now_utc)
-    if start_utc > now_utc:
-        raise WithdrawOrderValidationError("查询开始时间不能晚于当前时间。")
-    return start_utc, end_utc
+    """Return the effective UTC cache window for one source.
+
+    ``today`` is defined in the source business timezone.  Its configured end
+    is 23:59:59, but querying a future timestamp offers no value and was not
+    supported by every remote source, so the effective end is capped at the
+    refresh/query time.  Rolling presets end at that same time.
+    """
+
+    effective_now = now if now.tzinfo else now.replace(tzinfo=UTC)
+    business_timezone = ZoneInfo(timezone_name)
+    local_now = effective_now.astimezone(business_timezone)
+    normalized_range = normalize_withdraw_order_query_range(query_range)
+    if normalized_range == "today":
+        local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        local_day_end = local_now.replace(hour=23, minute=59, second=59, microsecond=0)
+        local_end = min(local_day_end, local_now)
+        return local_start.astimezone(UTC), local_end.astimezone(UTC)
+    else:
+        duration = timedelta(hours=24 if normalized_range == "last_24_hours" else 48)
+        utc_end = effective_now.astimezone(UTC)
+        return utc_end - duration, utc_end
 
 
 def summarize_withdraw_orders(
@@ -138,6 +165,30 @@ def summarize_withdraw_orders(
     }
 
 
+def snapshot_to_withdraw_order(snapshot: WithdrawOrderSnapshot) -> dict[str, Any]:
+    """Project a cache row onto the only fields allowed in the UI/API."""
+
+    return {
+        "id": snapshot.remote_order_id,
+        "uid": snapshot.uid,
+        "amount": snapshot.amount,
+        "real_amount": snapshot.real_amount,
+        "create_time": snapshot.create_time,
+        "update_time": snapshot.update_time,
+        "submit_time": snapshot.submit_time,
+        "audit_admin": snapshot.audit_admin,
+        "status": snapshot.status,
+    }
+
+
+def _is_missing_withdraw_cache_schema(error: OperationalError | ProgrammingError) -> bool:
+    message = str(error).lower()
+    return (
+        "withdraw_order_snapshots" in message
+        or "withdraw_order_refresh_states" in message
+    ) and ("does not exist" in message or "no such table" in message)
+
+
 async def query_withdraw_orders(
     session: AsyncSession,
     *,
@@ -145,80 +196,93 @@ async def query_withdraw_orders(
     settings: Settings | None = None,
     now: datetime | None = None,
 ) -> WithdrawOrderQueryResult:
+    """Query the local cache only; remote calls are worker-owned.
+
+    The active global query range bounds every local result, ensuring a prior
+    wider cache cannot leak into a page after an administrator narrows the
+    refresh policy.
+    """
+
     source = await get_source(session, request.source_id)
     if not source.enabled:
         raise WithdrawOrderValidationError("所选盘口尚未启用。")
-    if not source.base_url or not source.encrypted_credentials:
-        raise WithdrawOrderValidationError("所选盘口缺少远端地址或凭据。")
     current_settings = settings or get_settings()
-    query_started_at = now or datetime.now(UTC)
-    start_utc, end_utc = _parse_window(
-        request.create_time_start,
-        request.create_time_end,
+    query_at = now or datetime.now(UTC)
+    if query_at.tzinfo is None:
+        query_at = query_at.replace(tzinfo=UTC)
+    retention = await get_retention_settings(session, defaults=current_settings)
+    window_start, window_end = withdraw_order_query_window(
+        query_range=retention.withdraw_order_query_range,
         timezone_name=source.business_timezone,
-        now=query_started_at,
+        now=query_at,
     )
-    try:
-        credentials = decrypt_credentials(
-            source.encrypted_credentials,
-            source_id=source.source_id,
-            credential_version=source.credential_version,
-            settings=current_settings,
-        )
-    except SecurityValidationError as exc:
-        raise WithdrawOrderValidationError("已保存的盘口凭据无法解密。") from exc
-    try:
-        username = credentials["username"]
-        password = credentials["password"]
-        totp_secret = credentials["totp_secret"]
-    except KeyError as exc:
-        raise WithdrawOrderValidationError("已保存的盘口凭据不完整。") from exc
 
-    async with RajAdminWithdrawClient(
-        base_url=source.base_url,
-        username=username,
-        password=password,
-        totp_secret=totp_secret,
-    ) as client:
-        fetched = await client.fetch_all_withdraw_orders(
-            create_start=start_utc.strftime(REMOTE_TIME_FORMAT),
-            create_end=end_utc.strftime(REMOTE_TIME_FORMAT),
-            uid=request.uid or "",
-            status=request.status or "",
-        )
-
-    filtered_orders = fetched.orders
+    statement = select(WithdrawOrderSnapshot).where(
+        WithdrawOrderSnapshot.source_id == source.source_id,
+        WithdrawOrderSnapshot.create_time_utc.is_not(None),
+        WithdrawOrderSnapshot.create_time_utc >= window_start,
+        WithdrawOrderSnapshot.create_time_utc <= window_end,
+    )
+    if request.uid:
+        statement = statement.where(WithdrawOrderSnapshot.uid == request.uid)
+    if request.status:
+        statement = statement.where(WithdrawOrderSnapshot.status == request.status)
     if request.audit_admin:
-        expected_operator = request.audit_admin.casefold()
-        filtered_orders = [
-            order
-            for order in filtered_orders
-            if expected_operator in str(order.get("audit_admin") or "").casefold()
-        ]
-    summary = summarize_withdraw_orders(
-        filtered_orders,
-        window_start=start_utc,
-        window_end=end_utc,
+        statement = statement.where(
+            func.lower(WithdrawOrderSnapshot.audit_admin).contains(request.audit_admin.casefold())
+        )
+    statement = statement.order_by(
+        WithdrawOrderSnapshot.create_time_utc.is_(None),
+        desc(WithdrawOrderSnapshot.create_time_utc),
+        desc(WithdrawOrderSnapshot.remote_order_id),
     )
-    status_dictionary = await withdraw_status_dictionary(
-        session,
-        source_id=source.source_id,
+
+    try:
+        snapshots = list(await session.scalars(statement))
+        refresh_state = await session.get(WithdrawOrderRefreshState, source.source_id)
+    except (OperationalError, ProgrammingError) as exc:
+        if not _is_missing_withdraw_cache_schema(exc):
+            raise
+        await session.rollback()
+        raise WithdrawOrderCacheSchemaPendingError(
+            "提现订单本地缓存正在初始化，请在数据库迁移完成后重试。"
+        ) from exc
+
+    orders = [snapshot_to_withdraw_order(snapshot) for snapshot in snapshots]
+    summary = summarize_withdraw_orders(
+        orders,
+        window_start=window_start,
+        window_end=window_end,
     )
     offset = (request.page - 1) * request.page_size
+    status_dictionary = await withdraw_status_dictionary(session, source_id=source.source_id)
+    local_updated_at = max(
+        (_as_utc(item.synced_at) for item in snapshots),
+        default=None,
+    )
     return WithdrawOrderQueryResult(
-        items=filtered_orders[offset : offset + request.page_size],
-        total=len(filtered_orders),
-        remote_total=fetched.remote_total,
-        fetched_pages=fetched.fetched_pages,
-        complete=fetched.complete,
+        items=orders[offset : offset + request.page_size],
+        total=len(orders),
+        remote_total=(
+            refresh_state.last_remote_total if refresh_state is not None else len(orders)
+        ),
+        fetched_pages=refresh_state.last_fetched_pages if refresh_state is not None else 0,
+        complete=refresh_state.last_complete if refresh_state is not None else False,
         source_id=source.source_id,
         source_display_name=source.display_name,
         business_timezone=source.business_timezone,
         currency=source.currency,
-        effective_create_time_end=end_utc.astimezone(ZoneInfo(source.business_timezone)).strftime(
-            WALL_TIME_FORMAT
+        effective_create_time_end=window_end.astimezone(
+            ZoneInfo(source.business_timezone)
+        ).strftime(WALL_TIME_FORMAT),
+        fetched_at=query_at,
+        local_updated_at=local_updated_at,
+        last_refreshed_at=(
+            _as_utc(refresh_state.last_succeeded_at)
+            if refresh_state is not None
+            else None
         ),
-        fetched_at=datetime.now(UTC),
+        refresh_status=refresh_state.status if refresh_state is not None else "not_started",
         status_dictionary=status_dictionary,
         summary=summary,
     )

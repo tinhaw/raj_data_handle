@@ -9,7 +9,7 @@ import {
   updateRetentionSettings,
 } from '../api/systemSettings'
 import { isAdmin } from '../stores/auth'
-import type { RetentionSettings } from '../types'
+import type { RetentionSettings, WithdrawOrderQueryRange } from '../types'
 import { formatDateTime } from '../ui'
 
 const loading = ref(false)
@@ -20,8 +20,31 @@ const form = reactive({
   resultRetentionDays: 30,
   remoteCacheRetentionDays: 30,
   withdrawOrderRefreshIntervalHours: 1,
+  withdrawOrderQueryRange: 'today' as WithdrawOrderQueryRange,
   sessionTtlDays: 30,
 })
+
+const withdrawOrderQueryRangeOptions: Array<{
+  value: WithdrawOrderQueryRange
+  label: string
+  description: string
+}> = [
+  {
+    value: 'today',
+    label: '今日 00:00:00 至 23:59:59',
+    description: '按盘口业务时区获取当天订单；未来时间会在同步时自动截断。',
+  },
+  {
+    value: 'last_24_hours',
+    label: '最新 24 小时',
+    description: '从同步执行时刻向前滚动 24 小时。',
+  },
+  {
+    value: 'last_48_hours',
+    label: '最新 48 小时',
+    description: '从同步执行时刻向前滚动 48 小时。',
+  },
+]
 
 function applySettings(settings: RetentionSettings): void {
   current.value = settings
@@ -29,6 +52,7 @@ function applySettings(settings: RetentionSettings): void {
   form.resultRetentionDays = settings.resultRetentionDays
   form.remoteCacheRetentionDays = settings.remoteCacheRetentionDays
   form.withdrawOrderRefreshIntervalHours = settings.withdrawOrderRefreshIntervalHours
+  form.withdrawOrderQueryRange = settings.withdrawOrderQueryRange
   form.sessionTtlDays = settings.sessionTtlDays
 }
 
@@ -47,7 +71,7 @@ async function save(): Promise<void> {
   saving.value = true
   try {
     applySettings(await updateRetentionSettings({ ...form }))
-    ElMessage.success('系统配置已更新；提现订单下次进入页面时会使用新的刷新间隔。')
+    ElMessage.success('系统配置已更新；提现订单后台同步会在下一个周期使用新的规则。')
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '保留策略保存失败。'))
   } finally {
@@ -70,8 +94,8 @@ onMounted(load)
     </header>
 
     <el-alert
-      title="保留时间按创建时配置固化"
-      description="修改默认值不会追溯改变已有文件、批次或远端缓存的过期时间。"
+      title="保留策略的生效范围"
+      description="修改文件、批次及订单级结果的默认值不会追溯改变已有数据；提现订单本地缓存按当前缓存保留天数清理。"
       type="info"
       show-icon
       :closable="false"
@@ -117,12 +141,12 @@ onMounted(load)
 
       <section class="settings-section">
         <div class="settings-section-heading">
-          <h2>提现订单刷新</h2>
-          <p>配置提现订单页面的统一自动刷新频率。</p>
+          <h2>提现订单后台同步</h2>
+          <p>后台按统一规则从远端同步；提现订单页仅查询本地数据。</p>
         </div>
         <el-form label-position="top">
           <div class="form-grid">
-            <el-form-item label="自动刷新间隔（小时）">
+            <el-form-item label="后台刷新间隔（小时）">
               <el-input-number
                 v-model="form.withdrawOrderRefreshIntervalHours"
                 :min="1"
@@ -130,7 +154,24 @@ onMounted(load)
                 :precision="0"
                 :disabled="!isAdmin"
               />
-              <span class="field-help">允许范围为 1–24 小时；保存后由提现订单页面使用。</span>
+              <span class="field-help">允许范围为 1–24 小时；后台按此周期执行同步。</span>
+            </el-form-item>
+            <el-form-item label="后台查询时间范围">
+              <el-select v-model="form.withdrawOrderQueryRange" :disabled="!isAdmin">
+                <el-option
+                  v-for="option in withdrawOrderQueryRangeOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+              <span class="field-help">
+                {{
+                  withdrawOrderQueryRangeOptions.find(
+                    (option) => option.value === form.withdrawOrderQueryRange,
+                  )?.description
+                }}
+              </span>
             </el-form-item>
           </div>
         </el-form>
@@ -238,6 +279,10 @@ onMounted(load)
   display: block;
   margin-top: 8px;
   line-height: 1.5;
+}
+
+.settings-card :deep(.el-select) {
+  width: 100%;
 }
 
 .settings-footer {

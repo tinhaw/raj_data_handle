@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 
 import { apiErrorMessage } from '../api/client'
 import { fetchEnabledSources } from '../api/sources'
-import { fetchRetentionSettings } from '../api/systemSettings'
-import { queryWithdrawOrders } from '../api/withdrawOrders'
+import { queryWithdrawOrders, startWithdrawOrderRefresh } from '../api/withdrawOrders'
 import type {
   SourceConfig,
   WithdrawOrder,
@@ -26,6 +25,7 @@ const emptySummary: WithdrawOrderSummary = {
 }
 
 const loading = ref(false)
+const refreshStarting = ref(false)
 const sourcesLoading = ref(false)
 const sources = ref<SourceConfig[]>([])
 const response = ref<WithdrawOrderQueryResponse | null>(null)
@@ -33,16 +33,14 @@ const rows = ref<WithdrawOrder[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(50)
-const refreshIntervalHours = ref<number | null>(null)
+const queuedAt = ref<string | null>(null)
 const knownStatuses = ref<string[]>([])
 const filters = reactive({
   sourceId: '',
-  dateRange: [] as string[],
   uid: '',
   status: '',
   auditAdmin: '',
 })
-let refreshTimer: number | undefined
 
 const selectedSource = computed(() =>
   sources.value.find((source) => source.sourceId === filters.sourceId),
@@ -53,32 +51,57 @@ const statusEntryByCode = computed(
   () => new Map(statusDictionary.value.map((entry) => [entry.code, entry])),
 )
 const currency = computed(() => response.value?.currency || selectedSource.value?.currency || 'INR')
-const timezone = computed(
-  () => response.value?.businessTimezone || selectedSource.value?.businessTimezone || 'Asia/Kolkata',
+const localUpdatedText = computed(() =>
+  response.value ? formatDateTime(response.value.localUpdatedAt) : '尚未查询',
 )
-const lastUpdatedText = computed(() =>
-  response.value ? formatDateTime(response.value.fetchedAt) : '尚未查询',
+const refreshIsIncomplete = computed(
+  () => response.value?.refreshStatus === 'succeeded' && response.value.complete === false,
 )
-const refreshLabel = computed(() => {
-  const hours = refreshIntervalHours.value
-  return hours === null ? '自动刷新未配置' : `每 ${hours} 小时刷新`
+const syncTimingText = computed(() => {
+  if (response.value?.lastRefreshedAt) {
+    if (refreshIsIncomplete.value) {
+      return `上次同步 ${formatDateTime(response.value.lastRefreshedAt)} · 结果不完整，已保留本地缓存`
+    }
+    return `上次成功 ${formatDateTime(response.value.lastRefreshedAt)}`
+  }
+  if (queuedAt.value) return `请求于 ${formatDateTime(queuedAt.value)}`
+  return '尚未成功同步'
 })
-
-function businessDate(timeZone: string): string {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date())
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
-  return `${values.year}-${values.month}-${values.day}`
-}
-
-function setTodayRange(): void {
-  const day = businessDate(selectedSource.value?.businessTimezone || 'Asia/Kolkata')
-  filters.dateRange = [`${day} 00:00:00`, `${day} 23:59:59`]
-}
+const normalizedRefreshStatus = computed(() => {
+  const responseStatus = response.value?.refreshStatus
+  const status = queuedAt.value && (!responseStatus || responseStatus === 'not_started')
+    ? 'queued'
+    : (responseStatus || 'not_started')
+  return status.trim().toLowerCase()
+})
+const refreshStatusLabel = computed(() => {
+  if (refreshIsIncomplete.value) return '同步不完整'
+  const labels: Record<string, string> = {
+    not_started: '暂无同步记录',
+    idle: '等待下次同步',
+    queued: '已排队',
+    pending: '已排队',
+    running: '同步中',
+    refreshing: '同步中',
+    completed: '同步完成',
+    succeeded: '同步完成',
+    success: '同步完成',
+    failed: '同步失败',
+  }
+  return labels[normalizedRefreshStatus.value] || response.value?.refreshStatus || '暂无同步记录'
+})
+const refreshStatusTagType = computed<'success' | 'warning' | 'danger' | 'info' | 'primary'>(() => {
+  if (refreshIsIncomplete.value) return 'warning'
+  if (['failed', 'error'].includes(normalizedRefreshStatus.value)) return 'danger'
+  if (['queued', 'pending', 'running', 'refreshing'].includes(normalizedRefreshStatus.value)) {
+    return 'warning'
+  }
+  if (['completed', 'succeeded', 'success'].includes(normalizedRefreshStatus.value)) return 'success'
+  return 'info'
+})
+const refreshInProgress = computed(() =>
+  ['queued', 'pending', 'running', 'refreshing'].includes(normalizedRefreshStatus.value),
+)
 
 function amountText(value: string | null | undefined): string {
   const amount = Number(value)
@@ -96,7 +119,7 @@ function amountText(value: string | null | undefined): string {
 
 function statusLabel(status: string): string {
   const code = status.trim()
-  const label = statusEntryByCode.value.get(code)?.label.trim()
+  const label = statusEntryByCode.value.get(code)?.label?.trim()
   return label || code || '—'
 }
 
@@ -131,10 +154,6 @@ function validateFilters(): boolean {
     ElMessage.warning('请先选择盘口。')
     return false
   }
-  if (filters.dateRange.length !== 2) {
-    ElMessage.warning('请选择完整的创建时间范围。')
-    return false
-  }
   return true
 }
 
@@ -145,8 +164,6 @@ async function load(resetPage = false, quiet = false): Promise<void> {
   try {
     const result = await queryWithdrawOrders({
       sourceId: filters.sourceId,
-      createTimeStart: filters.dateRange[0]!,
-      createTimeEnd: filters.dateRange[1]!,
       uid: filters.uid || undefined,
       status: filters.status || undefined,
       auditAdmin: filters.auditAdmin || undefined,
@@ -157,49 +174,41 @@ async function load(resetPage = false, quiet = false): Promise<void> {
     rows.value = result.items
     total.value = result.total
     mergeKnownStatuses(result.summary.statusDistribution.map((item) => item.status))
-    if (!result.complete && !quiet) {
-      ElMessage.warning('远端分页期间数据发生变化，本次汇总可能不完整，请稍后刷新。')
-    }
   } catch (error) {
-    if (!quiet) ElMessage.error(apiErrorMessage(error, '提现订单加载失败。'))
+    if (!quiet) ElMessage.error(apiErrorMessage(error, '本地提现订单加载失败。'))
   } finally {
     loading.value = false
   }
 }
 
-function resetTimer(): void {
-  if (refreshTimer) window.clearInterval(refreshTimer)
-  refreshTimer = undefined
-  if (refreshIntervalHours.value !== null) {
-    refreshTimer = window.setInterval(() => {
-      void load(false, true)
-    }, refreshIntervalHours.value * 60 * 60 * 1_000)
-  }
-}
-
-async function loadRefreshInterval(): Promise<void> {
+async function startRefresh(): Promise<void> {
+  if (!validateFilters() || refreshStarting.value) return
+  refreshStarting.value = true
   try {
-    const settings = await fetchRetentionSettings()
-    const hours = settings.withdrawOrderRefreshIntervalHours
-    if (!Number.isInteger(hours) || hours < 1 || hours > 24) {
-      throw new Error('自动刷新间隔必须为 1–24 小时。')
-    }
-    refreshIntervalHours.value = hours
-    resetTimer()
+    const result = await startWithdrawOrderRefresh({ sourceId: filters.sourceId })
+    queuedAt.value = result.requestedAt
+    ElMessage.success(result.message || '已提交后台同步任务。')
+    await load(false, true)
   } catch (error) {
-    refreshIntervalHours.value = null
-    ElMessage.warning(apiErrorMessage(error, '自动刷新配置加载失败，已关闭自动刷新。'))
+    ElMessage.error(apiErrorMessage(error, '提现订单后台同步启动失败。'))
+  } finally {
+    refreshStarting.value = false
   }
 }
 
-function handleSourceChange(): void {
-  setTodayRange()
-  page.value = 1
-  filters.status = ''
+function resetLocalResult(): void {
   response.value = null
   rows.value = []
   total.value = 0
   knownStatuses.value = []
+  queuedAt.value = null
+}
+
+function handleSourceChange(): void {
+  page.value = 1
+  filters.status = ''
+  resetLocalResult()
+  void load(true)
 }
 
 function handlePageChange(nextPage: number): void {
@@ -213,13 +222,11 @@ function handlePageSizeChange(nextPageSize: number): void {
 }
 
 onMounted(async () => {
-  const refreshIntervalPromise = loadRefreshInterval()
   sourcesLoading.value = true
   try {
     sources.value = await fetchEnabledSources()
     if (sources.value.length) {
       filters.sourceId = sources.value[0]!.sourceId
-      setTodayRange()
       await load(true)
     }
   } catch (error) {
@@ -227,11 +234,6 @@ onMounted(async () => {
   } finally {
     sourcesLoading.value = false
   }
-  await refreshIntervalPromise
-})
-
-onBeforeUnmount(() => {
-  if (refreshTimer) window.clearInterval(refreshTimer)
 })
 </script>
 
@@ -241,17 +243,24 @@ onBeforeUnmount(() => {
       <div>
         <span class="page-eyebrow">WITHDRAWAL MONITOR</span>
         <h1>提现订单</h1>
-        <p>按业务时间查询远端提现订单，自动刷新列表，并以相同筛选条件汇总订单量与金额。</p>
+        <p>仅查询本地已同步的提现订单；远端同步由系统配置的后台任务执行。</p>
       </div>
       <div class="header-actions">
         <div class="refresh-state">
-          <span class="refresh-state__dot" :class="{ 'is-live': refreshIntervalHours !== null }" />
+          <span class="refresh-state__dot" :class="{ 'is-live': refreshInProgress }" />
           <div>
-            <strong>{{ refreshLabel }}</strong>
-            <small>更新于 {{ lastUpdatedText }}</small>
+            <strong>后台同步：{{ refreshStatusLabel }}</strong>
+            <small>{{ syncTimingText }} · 本地更新 {{ localUpdatedText }}</small>
           </div>
         </div>
-        <el-button :icon="Refresh" :loading="loading" @click="load(false)">立即刷新</el-button>
+        <el-button
+          :icon="Refresh"
+          :loading="refreshStarting"
+          :disabled="!filters.sourceId"
+          @click="startRefresh"
+        >
+          启动一次刷新
+        </el-button>
       </div>
     </header>
 
@@ -272,18 +281,6 @@ onBeforeUnmount(() => {
               :value="source.sourceId"
             />
           </el-select>
-        </label>
-        <label class="query-field query-field--time">
-          <span>创建时间（{{ timezone }}）</span>
-          <el-date-picker
-            v-model="filters.dateRange"
-            type="datetimerange"
-            value-format="YYYY-MM-DD HH:mm:ss"
-            format="YYYY-MM-DD HH:mm:ss"
-            range-separator="至"
-            start-placeholder="开始时间"
-            end-placeholder="结束时间"
-          />
         </label>
         <label class="query-field">
           <span>用户 UID</span>
@@ -306,11 +303,9 @@ onBeforeUnmount(() => {
         </label>
       </div>
       <div class="query-card__footer">
-        <span>
-          截止时间晚于当前时刻时，后端会自动截断到本次请求时间；单次查询最多 31 天。
-        </span>
+        <span>筛选只作用于本地数据库；后台同步的时间范围与间隔由系统配置统一控制。</span>
         <el-button type="primary" :icon="Search" :loading="loading" @click="load(true)">
-          查询订单
+          查询本地订单
         </el-button>
       </div>
     </section>
@@ -319,7 +314,7 @@ onBeforeUnmount(() => {
       <article class="surface-card metric-card metric-card--orders">
         <span>订单总数</span>
         <strong>{{ summary.orderCount.toLocaleString() }}</strong>
-        <small>当前筛选条件</small>
+        <small>当前本地筛选条件</small>
       </article>
       <article class="surface-card metric-card">
         <span>提现金额</span>
@@ -342,17 +337,13 @@ onBeforeUnmount(() => {
       <div class="section-heading">
         <div>
           <h2>提现订单列表</h2>
-          <p>
-            共 {{ total.toLocaleString() }} 条；已读取远端
-            {{ response?.fetchedPages || 0 }} 页，统计截止
-            {{ response?.effectiveCreateTimeEnd || '—' }}。
-          </p>
+          <p>共 {{ total.toLocaleString() }} 条；本地数据更新时间：{{ localUpdatedText }}。</p>
         </div>
-        <el-tag :type="response?.complete === false ? 'warning' : 'success'" effect="plain">
-          {{ response?.complete === false ? '分页有变动' : '分页完整' }}
+        <el-tag :type="refreshStatusTagType" effect="plain">
+          {{ refreshStatusLabel }}
         </el-tag>
       </div>
-      <el-table v-loading="loading" :data="rows" empty-text="当前条件下暂无提现订单">
+      <el-table v-loading="loading" :data="rows" empty-text="当前本地数据中暂无提现订单">
         <el-table-column label="订单 ID" min-width="150" prop="id" fixed="left" />
         <el-table-column label="用户 UID" min-width="140" prop="uid" />
         <el-table-column label="提现金额" min-width="140" align="right">
@@ -406,12 +397,13 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 9px;
-  min-width: 170px;
+  min-width: 240px;
 }
 
 .refresh-state__dot {
   width: 9px;
   height: 9px;
+  flex: 0 0 auto;
   border-radius: 50%;
   background: #a0aec0;
   box-shadow: 0 0 0 4px rgba(160, 174, 192, 0.12);
@@ -443,7 +435,7 @@ onBeforeUnmount(() => {
 
 .query-card__grid {
   display: grid;
-  grid-template-columns: minmax(160px, 0.8fr) minmax(360px, 1.8fr) repeat(3, minmax(150px, 0.8fr));
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
   gap: 14px;
   padding: 18px;
 }
@@ -460,8 +452,7 @@ onBeforeUnmount(() => {
   font-weight: 800;
 }
 
-.query-field :deep(.el-select),
-.query-field :deep(.el-date-editor) {
+.query-field :deep(.el-select) {
   width: 100%;
 }
 
@@ -517,23 +508,26 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--border);
 }
 
-@media (max-width: 1500px) {
+@media (max-width: 1100px) {
   .query-card__grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .query-field--time {
-    grid-column: span 2;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 900px) {
-  .query-card__grid {
-    grid-template-columns: 1fr 1fr;
+  .page-header,
+  .header-actions {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
-  .query-field--time {
-    grid-column: 1 / -1;
+  .header-actions {
+    width: 100%;
+  }
+
+  .refresh-state,
+  .header-actions .el-button {
+    width: 100%;
   }
 
   .query-card__footer {
@@ -549,10 +543,6 @@ onBeforeUnmount(() => {
 @media (max-width: 640px) {
   .query-card__grid {
     grid-template-columns: 1fr;
-  }
-
-  .query-field--time {
-    grid-column: auto;
   }
 
   .table-pagination {

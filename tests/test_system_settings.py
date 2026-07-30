@@ -16,8 +16,14 @@ from packages.domain.services.system_setting_service import (
 )
 
 
-@pytest.mark.parametrize("refresh_interval_hours", [1, 24])
-async def test_retention_defaults_and_versioned_update(refresh_interval_hours: int) -> None:
+@pytest.mark.parametrize(
+    ("refresh_interval_hours", "query_range"),
+    [(1, "today"), (24, "last_48_hours")],
+)
+async def test_retention_defaults_and_versioned_update(
+    refresh_interval_hours: int,
+    query_range: str,
+) -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -37,6 +43,7 @@ async def test_retention_defaults_and_versioned_update(refresh_interval_hours: i
         assert current.result_retention_days == 30
         assert current.remote_cache_retention_days == 30
         assert current.withdraw_order_refresh_interval_hours == 1
+        assert current.withdraw_order_query_range == "today"
         assert session_settings is not None
         assert session_settings.session_ttl_days == 30
 
@@ -47,6 +54,7 @@ async def test_retention_defaults_and_versioned_update(refresh_interval_hours: i
                 resultRetentionDays=45,
                 remoteCacheRetentionDays=60,
                 withdrawOrderRefreshIntervalHours=refresh_interval_hours,
+                withdrawOrderQueryRange=query_range,
                 sessionTtlDays=45,
             ),
             actor_user_id=1,
@@ -60,6 +68,7 @@ async def test_retention_defaults_and_versioned_update(refresh_interval_hours: i
     assert updated.result_retention_days == 45
     assert updated.remote_cache_retention_days == 60
     assert updated.withdraw_order_refresh_interval_hours == refresh_interval_hours
+    assert updated.withdraw_order_query_range == query_range
     assert updated_session_settings.session_ttl_days == 45
     assert audit is not None
     assert audit.metadata_json["previous"]["withdrawOrderRefreshIntervalHours"] == 1
@@ -67,6 +76,7 @@ async def test_retention_defaults_and_versioned_update(refresh_interval_hours: i
         audit.metadata_json["current"]["withdrawOrderRefreshIntervalHours"]
         == refresh_interval_hours
     )
+    assert audit.metadata_json["current"]["withdrawOrderQueryRange"] == query_range
     await engine.dispose()
 
 
@@ -78,6 +88,7 @@ def test_system_settings_api_response_exposes_refresh_interval_in_camel_case() -
             result_retention_days=30,
             remote_cache_retention_days=30,
             withdraw_order_refresh_interval_hours=24,
+            withdraw_order_query_range="last_24_hours",
             config_version=1,
             updated_at=datetime.now(UTC),
         ),
@@ -85,6 +96,7 @@ def test_system_settings_api_response_exposes_refresh_interval_in_camel_case() -
     )
 
     assert response.model_dump(by_alias=True)["withdrawOrderRefreshIntervalHours"] == 24
+    assert response.model_dump(by_alias=True)["withdrawOrderQueryRange"] == "last_24_hours"
 
 
 @pytest.mark.parametrize("value", [1, 24])
@@ -110,5 +122,32 @@ def test_withdraw_order_refresh_interval_is_limited_to_one_through_twenty_four(
             resultRetentionDays=30,
             remoteCacheRetentionDays=30,
             withdrawOrderRefreshIntervalHours=value,
+            sessionTtlDays=30,
+        )
+
+
+@pytest.mark.parametrize("value", ["today", "last_24_hours", "last_48_hours"])
+def test_withdraw_order_query_range_accepts_only_configured_presets(value: str) -> None:
+    payload = RetentionSettingsUpdateRequest(
+        uploadedFileRetentionDays=3,
+        resultRetentionDays=30,
+        remoteCacheRetentionDays=30,
+        withdrawOrderRefreshIntervalHours=1,
+        withdrawOrderQueryRange=value,
+        sessionTtlDays=30,
+    )
+
+    assert payload.withdraw_order_query_range == value
+
+
+@pytest.mark.parametrize("value", ["last_12_hours", "all", "", "TODAY"])
+def test_withdraw_order_query_range_rejects_other_values(value: str) -> None:
+    with pytest.raises(ValidationError):
+        RetentionSettingsUpdateRequest(
+            uploadedFileRetentionDays=3,
+            resultRetentionDays=30,
+            remoteCacheRetentionDays=30,
+            withdrawOrderRefreshIntervalHours=1,
+            withdrawOrderQueryRange=value,
             sessionTtlDays=30,
         )
