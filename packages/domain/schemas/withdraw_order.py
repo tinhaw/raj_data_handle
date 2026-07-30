@@ -5,7 +5,7 @@ from datetime import datetime
 from pydantic import Field, field_validator, model_validator
 
 from packages.common.schemas import ApiSchema
-from packages.domain.schemas.system_setting import WithdrawOrderQueryRange
+from packages.domain.schemas.system_setting import WithdrawOrderRefreshRange
 
 
 class WithdrawOrderLocalQueryRequest(ApiSchema):
@@ -61,10 +61,26 @@ class WithdrawOrderLocalQueryRequest(ApiSchema):
 class WithdrawOrderQueryRequest(WithdrawOrderLocalQueryRequest):
     uid: str | None = Field(default=None, max_length=64)
     status: str | None = Field(default=None, max_length=40)
+    order_num: str | None = Field(default=None, max_length=160)
+    out_trade_no: str | None = Field(default=None, max_length=160)
+    pay_channel: str | None = Field(default=None, max_length=120)
 
-    @field_validator("uid", "status")
+    @field_validator("uid", "status", "order_num", "out_trade_no", "pay_channel")
     @classmethod
     def normalize_query_optional_filter(cls, value: str | None) -> str | None:
+        normalized = (value or "").strip()
+        return normalized or None
+
+
+class WithdrawChannelSummaryRequest(WithdrawOrderLocalQueryRequest):
+    """Aggregate approved local snapshots by business day and payment channel."""
+
+    pay_channel: str | None = Field(default=None, max_length=120)
+    page_size: int = Field(default=50, ge=10, le=100)
+
+    @field_validator("pay_channel")
+    @classmethod
+    def normalize_channel_filter(cls, value: str | None) -> str | None:
         normalized = (value or "").strip()
         return normalized or None
 
@@ -104,13 +120,21 @@ class WithdrawOperatorSummaryRequest(WithdrawOrderLocalQueryRequest):
 class WithdrawOrderResponse(ApiSchema):
     id: str
     uid: str
+    order_num: str | None
+    out_trade_no: str | None
+    pay_channel_name: str | None
+    pay_channel: str | None
     amount: str | None
     real_amount: str | None
+    fee: str | None
     create_time: str | None
     update_time: str | None
     submit_time: str | None
     audit_admin: str | None
     status: str
+    status_label: str | None
+    is_first: str | None
+    channel: str | None
 
 
 class WithdrawStatusSummary(ApiSchema):
@@ -142,6 +166,11 @@ class WithdrawStatusDictionaryEntry(ApiSchema):
     active: bool
 
 
+class WithdrawChannelDictionaryEntry(ApiSchema):
+    code: str
+    label: str
+
+
 class WithdrawOrderQueryResponse(ApiSchema):
     items: list[WithdrawOrderResponse]
     total: int
@@ -160,7 +189,40 @@ class WithdrawOrderQueryResponse(ApiSchema):
     last_refreshed_at: datetime | None
     refresh_status: str
     status_dictionary: list[WithdrawStatusDictionaryEntry]
+    channel_dictionary: list[WithdrawChannelDictionaryEntry]
     summary: WithdrawOrderSummary
+
+
+class WithdrawChannelSummaryItem(ApiSchema):
+    date: str
+    pay_channel: str
+    pay_channel_name: str
+    order_count: int
+    successful_order_count: int
+    successful_amount: str
+    successful_fee: str
+    failed_order_count: int
+    submitted_order_count: int
+    rejected_order_count: int
+    successful_order_share: str
+    successful_amount_share: str
+    stuck_rate: str
+    success_rate: str
+
+
+class WithdrawChannelSummaryResponse(ApiSchema):
+    items: list[WithdrawChannelSummaryItem]
+    total: int
+    page: int
+    page_size: int
+    source_id: str
+    source_display_name: str
+    business_timezone: str
+    currency: str
+    effective_create_time_end: str
+    fetched_at: datetime
+    local_updated_at: datetime | None
+    channel_dictionary: list[WithdrawChannelDictionaryEntry]
 
 
 class WithdrawOperatorStatusCount(ApiSchema):
@@ -195,7 +257,7 @@ class WithdrawOrderRefreshRequest(ApiSchema):
     """Queue one source, or all eligible sources when source_id is omitted."""
 
     source_id: str | None = Field(default=None, min_length=2, max_length=64)
-    query_range: WithdrawOrderQueryRange | None = None
+    query_range: WithdrawOrderRefreshRange | None = None
 
     @field_validator("source_id")
     @classmethod
@@ -208,5 +270,5 @@ class WithdrawOrderRefreshResponse(ApiSchema):
     status: str
     source_ids: list[str]
     requested_at: datetime
-    query_range: WithdrawOrderQueryRange | None
+    query_range: WithdrawOrderRefreshRange | None
     message: str

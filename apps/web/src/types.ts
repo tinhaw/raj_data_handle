@@ -50,10 +50,12 @@ export type WithdrawOrderQueryRange =
   | 'last_48_hours'
 
 export type WithdrawOrderRefreshPageSize = 10 | 20 | 30 | 50 | 100
+export type WithdrawOrderRefreshRange = 'day_before_yesterday' | 'yesterday' | 'today'
 export type ChargeOrderQueryRange = WithdrawOrderQueryRange
 export type ChargeOrderRefreshPageSize = WithdrawOrderRefreshPageSize
 export type ChargeOrderRefreshRange = 'day_before_yesterday' | 'yesterday' | 'today'
 export type ChargeOrderExportDateMode = 'previous_day' | 'specific_date'
+export type WithdrawOrderExportDateMode = 'previous_day' | 'specific_date'
 
 export interface RetentionSettings {
   uploadedFileRetentionDays: number
@@ -62,6 +64,8 @@ export interface RetentionSettings {
   withdrawOrderRefreshIntervalHours: number
   withdrawOrderRefreshPageSize: WithdrawOrderRefreshPageSize
   withdrawOrderQueryRange: WithdrawOrderQueryRange
+  withdrawOrderExportDateMode: WithdrawOrderExportDateMode
+  withdrawOrderExportSpecificDate: string | null
   chargeOrderRefreshIntervalHours: number
   chargeOrderRefreshPageSize: ChargeOrderRefreshPageSize
   chargeOrderQueryRange: ChargeOrderQueryRange
@@ -241,13 +245,21 @@ export interface UserNotification {
 export interface WithdrawOrder {
   id: string
   uid: string
+  orderNum: string | null
+  outTradeNo: string | null
+  payChannelName: string | null
+  payChannel: string | null
   amount: string | null
   realAmount: string | null
+  fee: string | null
   createTime: string | null
   updateTime: string | null
   submitTime: string | null
   auditAdmin: string | null
   status: string
+  statusLabel: string | null
+  isFirst: string | null
+  channel: string | null
 }
 
 export interface WithdrawStatusSummary {
@@ -277,6 +289,11 @@ export interface WithdrawStatusDictionaryEntry {
   code: string
   label: string
   active: boolean
+}
+
+export interface WithdrawChannelDictionaryEntry {
+  code: string
+  label: string
 }
 
 export interface WithdrawOperatorStatusCount {
@@ -311,7 +328,7 @@ export interface WithdrawOrderRefreshResult {
   status: 'queued'
   sourceIds: string[]
   requestedAt: string
-  queryRange: WithdrawOrderQueryRange | null
+  queryRange: WithdrawOrderRefreshRange | null
   message: string
 }
 
@@ -341,7 +358,40 @@ export interface WithdrawOrderQueryResponse {
   lastRefreshedAt: string | null
   refreshStatus: WithdrawOrderRefreshStatus
   statusDictionary: WithdrawStatusDictionaryEntry[]
+  channelDictionary: WithdrawChannelDictionaryEntry[]
   summary: WithdrawOrderSummary
+}
+
+export interface WithdrawChannelSummaryItem {
+  date: string
+  payChannel: string
+  payChannelName: string
+  orderCount: number
+  successfulOrderCount: number
+  successfulAmount: string
+  successfulFee: string
+  failedOrderCount: number
+  submittedOrderCount: number
+  rejectedOrderCount?: number
+  successfulOrderShare: string
+  successfulAmountShare: string
+  stuckRate: string
+  successRate: string
+}
+
+export interface WithdrawChannelSummaryResponse {
+  items: WithdrawChannelSummaryItem[]
+  total: number
+  page: number
+  pageSize: number
+  sourceId: string
+  sourceDisplayName: string
+  businessTimezone: string
+  currency: string
+  effectiveCreateTimeEnd: string
+  fetchedAt: string
+  localUpdatedAt: string | null
+  channelDictionary: WithdrawChannelDictionaryEntry[]
 }
 
 export interface ChargeOrder {

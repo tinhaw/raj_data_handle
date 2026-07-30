@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
@@ -16,26 +15,22 @@ from packages.domain.models import (
     WithdrawOrderRefreshState,
     WithdrawOrderSnapshot,
 )
-from packages.domain.schemas.withdraw_order import WithdrawOrderQueryRequest
 from packages.domain.services.remote_withdraw_service import WithdrawFetchResult
-from packages.domain.services.retention_cleanup_service import cleanup_expired_data
 from packages.domain.services.withdraw_order_refresh_service import (
     queue_withdraw_order_refreshes,
     run_due_withdraw_order_refreshes,
 )
-from packages.domain.services.withdraw_order_service import (
-    query_withdraw_orders,
-    withdraw_order_query_window,
-)
 
 
 class FakeWithdrawClient:
-    outcomes: dict[str, WithdrawFetchResult | BaseException] = {}
-    calls: list[dict[str, object]] = []
+    """Read-only remote double matching the Excel export client contract."""
 
-    def __init__(self, *, base_url: str, page_size: int = 100, **_: object) -> None:
+    statuses: list[dict[str, str]] = []
+    export_outcomes: dict[str, WithdrawFetchResult | BaseException] = {}
+    events: list[tuple[str, object]] = []
+
+    def __init__(self, *, base_url: str, **_: object) -> None:
         self.base_url = base_url
-        self.page_size = page_size
 
     async def __aenter__(self) -> FakeWithdrawClient:
         return self
@@ -43,476 +38,333 @@ class FakeWithdrawClient:
     async def __aexit__(self, *_: object) -> None:
         return None
 
-    async def fetch_all_withdraw_orders(self, **kwargs: object) -> WithdrawFetchResult:
-        on_page_fetched = kwargs.pop("on_page_fetched", None)
-        FakeWithdrawClient.calls.append(
-            {"base_url": self.base_url, "page_size": self.page_size, **kwargs}
-        )
-        outcome = FakeWithdrawClient.outcomes[self.base_url]
+    async def fetch_withdraw_statuses(self) -> list[dict[str, str]]:
+        FakeWithdrawClient.events.append(("statuses", self.base_url))
+        return FakeWithdrawClient.statuses
+
+    async def export_withdraw_orders(self, **kwargs: object) -> WithdrawFetchResult:
+        FakeWithdrawClient.events.append(("export", {"base_url": self.base_url, **kwargs}))
+        outcome = FakeWithdrawClient.export_outcomes[self.base_url]
         if isinstance(outcome, BaseException):
             raise outcome
-        if on_page_fetched is not None:
-            await on_page_fetched()  # type: ignore[misc]
         return outcome
-
-
-class FakeStorage:
-    async def delete(self, _: str) -> None:
-        return None
 
 
 def _settings() -> Settings:
     return Settings(
         secret_key="test-secret-key-that-is-longer-than-32-characters",
         database_url="sqlite+aiosqlite:///:memory:",
-        withdraw_order_refresh_interval_hours=24,
     )
 
 
-def _source(settings: Settings, *, source_id: str, base_url: str) -> SourceConfig:
+def _source(settings: Settings, *, source_id: str = "rajwin") -> SourceConfig:
     source = SourceConfig(
         source_id=source_id,
         display_name=source_id.title(),
-        base_url=base_url,
+        base_url=f"https://{source_id}.example.test",
         enabled=True,
         business_timezone="Asia/Kolkata",
         currency="INR",
         credential_version=1,
     )
     source.encrypted_credentials = encrypt_credentials(
-        {"username": "reader", "password": "test-password", "totp_secret": "JBSWY3DPEHPK3PXP"},
+        {
+            "username": "reader",
+            "password": "test-password",
+            "totp_secret": "JBSWY3DPEHPK3PXP",
+        },
         source_id=source_id,
-        credential_version=1,
+        credential_version=source.credential_version,
         settings=settings,
     )
     return source
 
 
-@pytest.mark.parametrize(
-    ("query_range", "expected_start", "expected_end"),
-    [
-        (
-            "today",
-            datetime(2026, 7, 29, 18, 30, tzinfo=UTC),
-            datetime(2026, 7, 30, 10, 0, tzinfo=UTC),
-        ),
-        (
-            "last_1_hour",
-            datetime(2026, 7, 30, 9, 0, tzinfo=UTC),
-            datetime(2026, 7, 30, 10, 0, tzinfo=UTC),
-        ),
-        (
-            "last_2_hours",
-            datetime(2026, 7, 30, 8, 0, tzinfo=UTC),
-            datetime(2026, 7, 30, 10, 0, tzinfo=UTC),
-        ),
-        (
-            "last_3_hours",
-            datetime(2026, 7, 30, 7, 0, tzinfo=UTC),
-            datetime(2026, 7, 30, 10, 0, tzinfo=UTC),
-        ),
-        (
-            "last_6_hours",
-            datetime(2026, 7, 30, 4, 0, tzinfo=UTC),
-            datetime(2026, 7, 30, 10, 0, tzinfo=UTC),
-        ),
-        (
-            "last_12_hours",
-            datetime(2026, 7, 29, 22, 0, tzinfo=UTC),
-            datetime(2026, 7, 30, 10, 0, tzinfo=UTC),
-        ),
-        (
-            "last_24_hours",
-            datetime(2026, 7, 29, 10, 0, tzinfo=UTC),
-            datetime(2026, 7, 30, 10, 0, tzinfo=UTC),
-        ),
-        (
-            "last_48_hours",
-            datetime(2026, 7, 28, 10, 0, tzinfo=UTC),
-            datetime(2026, 7, 30, 10, 0, tzinfo=UTC),
-        ),
-    ],
-)
-def test_refresh_query_windows_are_limited_to_the_allowed_source_time_presets(
-    query_range: str,
-    expected_start: datetime,
-    expected_end: datetime,
-) -> None:
-    start, end = withdraw_order_query_window(
-        query_range=query_range,
-        timezone_name="Asia/Kolkata",
-        now=datetime(2026, 7, 30, 10, 0, tzinfo=UTC),
+def _retention() -> SystemRetentionSetting:
+    return SystemRetentionSetting(
+        id=1,
+        uploaded_file_retention_days=3,
+        result_retention_days=30,
+        remote_cache_retention_days=30,
+        withdraw_order_export_date_mode="previous_day",
     )
 
-    assert (start, end) == (expected_start, expected_end)
+
+def _order(
+    remote_order_id: str,
+    *,
+    status_label: str = "代付成功",
+    create_time: str = "2026-07-30 10:00:00",
+    audit_person: str = "Operator A",
+) -> dict[str, object]:
+    return {
+        "remote_order_id": remote_order_id,
+        "uid": "10001",
+        "order_num": f"withdraw-{remote_order_id}",
+        "out_trade_no": f"third-{remote_order_id}",
+        "pay_channel_name": "Channel A",
+        "pay_channel": "channel-a",
+        "amount": "100.00",
+        "fee": "3.00",
+        "real_amount": "97.00",
+        "is_first": "是",
+        # This is deliberately changed by the refresh service from the Excel
+        # label to the source-specific dictionary code.
+        "status": "3",
+        "status_label": status_label,
+        "create_time": create_time,
+        "submit_time": "2026-07-30 10:01:00",
+        "update_time": "2026-07-30 10:02:00",
+        "audit_person": audit_person,
+        # A malformed remote double may carry such data; it must not become a
+        # snapshot column or local cache payload.
+        "bank_account": "must-not-persist",
+        "mobile": "must-not-persist",
+    }
 
 
-@pytest.mark.parametrize(
-    "now",
-    [
-        datetime(2026, 3, 8, 17, 0, tzinfo=UTC),
-        datetime(2026, 11, 1, 17, 0, tzinfo=UTC),
-    ],
-)
-def test_rolling_refresh_windows_are_exact_hours_across_dst(now: datetime) -> None:
-    start, end = withdraw_order_query_window(
-        query_range="last_24_hours",
-        timezone_name="America/New_York",
-        now=now,
-    )
-
-    assert end == now
-    assert end - start == timedelta(hours=24)
+async def _database() -> tuple[object, async_sessionmaker]:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    return engine, async_sessionmaker(engine, expire_on_commit=False)
 
 
 @pytest.mark.asyncio
-async def test_worker_refreshes_approved_fields_then_page_reads_the_local_cache(
+async def test_daily_excel_refresh_runs_at_000501_and_caches_only_approved_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = _settings()
-    engine = create_async_engine(settings.database_url)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    FakeWithdrawClient.calls = []
-    FakeWithdrawClient.outcomes = {
-        "https://rajwin.example.test": WithdrawFetchResult(
-            orders=[
-                {
-                    "id": "safe-1",
-                    "uid": "100",
-                    "amount": "500.00",
-                    "real_amount": "490.00",
-                    "create_time": "2026-07-30 10:00:00",
-                    "update_time": "2026-07-30 10:01:00",
-                    "submit_time": "2026-07-30 10:02:00",
-                    "audit_admin": "operator",
-                    "status": "3",
-                    "info": {"account": "must-not-persist"},
-                    "ip": "192.0.2.1",
-                }
-            ],
+    engine, factory = await _database()
+    source = _source(settings)
+    FakeWithdrawClient.statuses = [
+        {"code": "success-custom", "label": "代付成功"},
+        {"code": "submitted-custom", "label": "已提交代付"},
+    ]
+    FakeWithdrawClient.export_outcomes = {
+        source.base_url or "": WithdrawFetchResult(
+            orders=[_order("one"), _order("two", status_label="已提交代付")],
+            fetched_pages=1,
+            remote_total=2,
+            complete=True,
+            export_row_count=3,
+            duplicate_count=1,
+        )
+    }
+    FakeWithdrawClient.events = []
+    monkeypatch.setattr(
+        "packages.domain.services.withdraw_order_refresh_service.RajAdminWithdrawClient",
+        FakeWithdrawClient,
+    )
+
+    # 00:05:00 in India is still before the agreed automatic export time.
+    before_due = datetime(2026, 7, 30, 18, 35, tzinfo=UTC)
+    due = datetime(2026, 7, 30, 18, 35, 1, tzinfo=UTC)
+    async with factory() as session:
+        session.add_all([source, _retention()])
+        await session.commit()
+
+        assert (
+            await run_due_withdraw_order_refreshes(
+                session,
+                now=before_due,
+                settings=settings,
+            )
+            == []
+        )
+        result = await run_due_withdraw_order_refreshes(session, now=due, settings=settings)
+        snapshots = list(
+            await session.scalars(
+                select(WithdrawOrderSnapshot).order_by(WithdrawOrderSnapshot.remote_order_id)
+            )
+        )
+        state = await session.get(WithdrawOrderRefreshState, "rajwin")
+
+    assert [item.status for item in result] == ["succeeded"]
+    assert FakeWithdrawClient.events == [
+        ("statuses", "https://rajwin.example.test"),
+        (
+            "export",
+            {
+                "base_url": "https://rajwin.example.test",
+                "create_start": "2026-07-30 00:00:00",
+                "create_end": "2026-07-30 23:59:59",
+            },
+        ),
+    ]
+    assert [row.remote_order_id for row in snapshots] == ["one", "two"]
+    first = snapshots[0]
+    assert first.order_num == "withdraw-one"
+    assert first.out_trade_no == "third-one"
+    assert first.pay_channel == "channel-a"
+    assert first.fee == "3.00"
+    assert first.audit_admin == "Operator A"
+    assert first.status == "success-custom"
+    assert first.status_label == "代付成功"
+    assert not hasattr(first, "bank_account")
+    assert not hasattr(first, "mobile")
+    assert state is not None
+    assert state.last_remote_total == 2
+    assert state.last_cached_total == 2
+    assert state.last_fetched_pages == 1
+    assert state.last_complete is True
+    assert state.last_export_row_count == 3
+    assert state.last_imported_count == 2
+    assert state.last_duplicate_count == 1
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query_range", "expected_day"),
+    [
+        ("day_before_yesterday", "2026-07-28"),
+        ("yesterday", "2026-07-29"),
+        ("today", "2026-07-30"),
+    ],
+)
+async def test_manual_excel_refresh_uses_calendar_day_presets(
+    monkeypatch: pytest.MonkeyPatch,
+    query_range: str,
+    expected_day: str,
+) -> None:
+    settings = _settings()
+    engine, factory = await _database()
+    source = _source(settings)
+    FakeWithdrawClient.statuses = [{"code": "success", "label": "代付成功"}]
+    FakeWithdrawClient.export_outcomes = {
+        source.base_url or "": WithdrawFetchResult(
+            orders=[_order("manual", create_time=f"{expected_day} 12:00:00")],
             fetched_pages=1,
             remote_total=1,
             complete=True,
+            export_row_count=1,
         )
     }
+    FakeWithdrawClient.events = []
     monkeypatch.setattr(
         "packages.domain.services.withdraw_order_refresh_service.RajAdminWithdrawClient",
         FakeWithdrawClient,
     )
-
-    refresh_time = datetime(2026, 7, 30, 10, 0, tzinfo=UTC)
+    queued_at = datetime(2026, 7, 30, 10, 0, tzinfo=UTC)
     async with factory() as session:
-        session.add_all(
-            [
-                _source(settings, source_id="rajwin", base_url="https://rajwin.example.test"),
-                SystemRetentionSetting(
-                    id=1,
-                    uploaded_file_retention_days=3,
-                    result_retention_days=30,
-                    remote_cache_retention_days=30,
-                    withdraw_order_refresh_interval_hours=24,
-                    withdraw_order_refresh_page_size=50,
-                    withdraw_order_query_range="today",
-                ),
-            ]
-        )
+        session.add_all([source, _retention()])
         await session.commit()
-
-        outcomes = await run_due_withdraw_order_refreshes(
-            session,
-            now=refresh_time,
-            settings=settings,
-        )
-        snapshot = await session.scalar(select(WithdrawOrderSnapshot))
-        state = await session.get(
-            WithdrawOrderRefreshState,
-            "rajwin",
-            populate_existing=True,
-        )
-        local_result = await query_withdraw_orders(
-            session,
-            request=WithdrawOrderQueryRequest(source_id="rajwin"),
-            now=refresh_time,
-            settings=settings,
-        )
-
-    assert [result.status for result in outcomes] == ["succeeded"]
-    assert FakeWithdrawClient.calls == [
-        {
-            "base_url": "https://rajwin.example.test",
-            "page_size": 50,
-            "create_start": "2026-07-29T18:30:00.000Z",
-            "create_end": "2026-07-30T10:00:00.000Z",
-        }
-    ]
-    assert snapshot is not None
-    assert snapshot.remote_order_id == "safe-1"
-    assert snapshot.uid == "100"
-    assert snapshot.amount == "500.00"
-    assert snapshot.status == "3"
-    assert not hasattr(snapshot, "info")
-    assert not hasattr(snapshot, "ip")
-    assert state is not None
-    assert state.status == "succeeded"
-    assert state.last_remote_total == 1
-    assert local_result.items == [
-        {
-            "id": "safe-1",
-            "uid": "100",
-            "amount": "500.00",
-            "real_amount": "490.00",
-            "create_time": "2026-07-30 10:00:00",
-            "update_time": "2026-07-30 10:01:00",
-            "submit_time": "2026-07-30 10:02:00",
-            "audit_admin": "operator",
-            "status": "3",
-        }
-    ]
-    await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_manual_queue_uses_the_selected_range_but_not_an_active_lease(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    settings = _settings()
-    engine = create_async_engine(settings.database_url)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    FakeWithdrawClient.calls = []
-    FakeWithdrawClient.outcomes = {
-        "https://rajwin.example.test": WithdrawFetchResult(
-            orders=[], fetched_pages=1, remote_total=0, complete=True
-        )
-    }
-    monkeypatch.setattr(
-        "packages.domain.services.withdraw_order_refresh_service.RajAdminWithdrawClient",
-        FakeWithdrawClient,
-    )
-
-    started_at = datetime(2026, 7, 30, 10, 0, tzinfo=UTC)
-    async with factory() as session:
-        session.add_all(
-            [
-                _source(settings, source_id="rajwin", base_url="https://rajwin.example.test"),
-                SystemRetentionSetting(
-                    id=1,
-                    uploaded_file_retention_days=3,
-                    result_retention_days=30,
-                    remote_cache_retention_days=30,
-                    withdraw_order_refresh_interval_hours=24,
-                    withdraw_order_query_range="today",
-                ),
-            ]
-        )
-        await session.commit()
-        assert len(
-            await run_due_withdraw_order_refreshes(
-                session,
-                now=started_at,
-                settings=settings,
-            )
-        ) == 1
-
         queued = await queue_withdraw_order_refreshes(
             session,
             source_id="rajwin",
-            query_range="last_3_hours",
+            query_range=query_range,
             actor_user_id=None,
-            now=started_at + timedelta(minutes=1),
+            now=queued_at,
         )
-        assert queued.source_ids == ["rajwin"]
-        assert queued.query_range == "last_3_hours"
-        assert len(
-            await run_due_withdraw_order_refreshes(
-                session,
-                now=started_at + timedelta(minutes=1),
-                settings=settings,
-            )
-        ) == 1
+        result = await run_due_withdraw_order_refreshes(session, now=queued_at, settings=settings)
 
-        state = await session.get(WithdrawOrderRefreshState, "rajwin")
-        assert state is not None
-        state.status = "running"
-        state.last_started_at = started_at + timedelta(minutes=2)
-        state.lease_expires_at = started_at + timedelta(hours=1)
-        state.manual_request_at = started_at + timedelta(minutes=3)
+    assert queued.query_range == query_range
+    assert result[0].status == "succeeded"
+    # A manual day other than yesterday can be followed by the overdue daily
+    # export in the same worker pass.  The first export is the queued manual
+    # request and must retain the user's selected calendar day.
+    assert FakeWithdrawClient.events[1] == (
+        "export",
+        {
+            "base_url": "https://rajwin.example.test",
+            "create_start": f"{expected_day} 00:00:00",
+            "create_end": f"{expected_day} 23:59:59",
+        },
+    )
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_manual_excel_refresh_defaults_to_yesterday(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    engine, factory = await _database()
+    source = _source(settings)
+    FakeWithdrawClient.statuses = [{"code": "success", "label": "代付成功"}]
+    FakeWithdrawClient.export_outcomes = {
+        source.base_url or "": WithdrawFetchResult(
+            orders=[_order("yesterday", create_time="2026-07-29 12:00:00")],
+            fetched_pages=1,
+            remote_total=1,
+            complete=True,
+            export_row_count=1,
+        )
+    }
+    FakeWithdrawClient.events = []
+    monkeypatch.setattr(
+        "packages.domain.services.withdraw_order_refresh_service.RajAdminWithdrawClient",
+        FakeWithdrawClient,
+    )
+    queued_at = datetime(2026, 7, 30, 10, 0, tzinfo=UTC)
+    async with factory() as session:
+        session.add_all([source, _retention()])
         await session.commit()
-        assert await run_due_withdraw_order_refreshes(
+        queued = await queue_withdraw_order_refreshes(
             session,
-            now=started_at + timedelta(minutes=4),
-            settings=settings,
-        ) == []
+            source_id="rajwin",
+            actor_user_id=None,
+            now=queued_at,
+        )
+        await run_due_withdraw_order_refreshes(session, now=queued_at, settings=settings)
 
-    assert len(FakeWithdrawClient.calls) == 2
-    assert FakeWithdrawClient.calls[1] == {
+    assert queued.query_range == "yesterday"
+    assert FakeWithdrawClient.events[-1][1] == {
         "base_url": "https://rajwin.example.test",
-        "page_size": 100,
-        "create_start": "2026-07-30T07:01:00.000Z",
-        "create_end": "2026-07-30T10:01:00.000Z",
+        "create_start": "2026-07-29 00:00:00",
+        "create_end": "2026-07-29 23:59:59",
     }
     await engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_cancelled_refresh_releases_lease_and_requeues_source(
+async def test_unmapped_export_status_fails_without_replacing_existing_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = _settings()
-    engine = create_async_engine(settings.database_url)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    FakeWithdrawClient.calls = []
-    FakeWithdrawClient.outcomes = {
-        "https://rajwin.example.test": asyncio.CancelledError(),
+    engine, factory = await _database()
+    source = _source(settings)
+    FakeWithdrawClient.statuses = [{"code": "success", "label": "代付成功"}]
+    FakeWithdrawClient.export_outcomes = {
+        source.base_url or "": WithdrawFetchResult(
+            orders=[_order("new-row", status_label="远端新增状态")],
+            fetched_pages=1,
+            remote_total=1,
+            complete=True,
+            export_row_count=1,
+        )
     }
+    FakeWithdrawClient.events = []
     monkeypatch.setattr(
         "packages.domain.services.withdraw_order_refresh_service.RajAdminWithdrawClient",
         FakeWithdrawClient,
     )
-
-    started_at = datetime(2026, 7, 30, 10, 0, tzinfo=UTC)
+    due = datetime(2026, 7, 30, 18, 35, 1, tzinfo=UTC)
     async with factory() as session:
         session.add_all(
             [
-                _source(settings, source_id="rajwin", base_url="https://rajwin.example.test"),
-                SystemRetentionSetting(
-                    id=1,
-                    uploaded_file_retention_days=3,
-                    result_retention_days=30,
-                    remote_cache_retention_days=30,
-                    withdraw_order_refresh_interval_hours=24,
-                    withdraw_order_query_range="today",
-                ),
-            ]
-        )
-        await session.commit()
-
-        with pytest.raises(asyncio.CancelledError):
-            await run_due_withdraw_order_refreshes(
-                session,
-                now=started_at,
-                settings=settings,
-            )
-        state = await session.get(WithdrawOrderRefreshState, "rajwin", populate_existing=True)
-
-    assert state is not None
-    assert state.status == "queued"
-    assert state.lease_expires_at is None
-    assert state.manual_request_at is not None
-    assert state.last_error == "后台同步在工作进程停止前中断，已重新排队。"
-    await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_one_refresh_failure_is_persisted_and_does_not_block_another_source(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    settings = _settings()
-    engine = create_async_engine(settings.database_url)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    FakeWithdrawClient.calls = []
-    FakeWithdrawClient.outcomes = {
-        "https://bad.example.test": RuntimeError("Bearer should never be persisted"),
-        "https://good.example.test": WithdrawFetchResult(
-            orders=[], fetched_pages=1, remote_total=0, complete=True
-        ),
-    }
-    monkeypatch.setattr(
-        "packages.domain.services.withdraw_order_refresh_service.RajAdminWithdrawClient",
-        FakeWithdrawClient,
-    )
-
-    async with factory() as session:
-        session.add_all(
-            [
-                _source(settings, source_id="bad", base_url="https://bad.example.test"),
-                _source(settings, source_id="good", base_url="https://good.example.test"),
-                SystemRetentionSetting(
-                    id=1,
-                    uploaded_file_retention_days=3,
-                    result_retention_days=30,
-                    remote_cache_retention_days=30,
-                    withdraw_order_refresh_interval_hours=24,
-                    withdraw_order_query_range="today",
-                ),
-            ]
-        )
-        await session.commit()
-        outcomes = await run_due_withdraw_order_refreshes(
-            session,
-            now=datetime(2026, 7, 30, 10, 0, tzinfo=UTC),
-            settings=settings,
-        )
-        states = {
-            state.source_id: state
-            for state in await session.scalars(
-                select(WithdrawOrderRefreshState).order_by(WithdrawOrderRefreshState.source_id)
-            )
-        }
-
-    assert [(outcome.source_id, outcome.status) for outcome in outcomes] == [
-        ("bad", "failed"),
-        ("good", "succeeded"),
-    ]
-    assert states["bad"].last_error == "远端提现订单读取失败，请稍后重试。"
-    assert "Bearer" not in (states["bad"].last_error or "")
-    assert states["good"].status == "succeeded"
-    await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_retention_cleanup_removes_only_expired_withdraw_order_snapshots() -> None:
-    settings = _settings()
-    engine = create_async_engine(settings.database_url)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    now = datetime(2026, 7, 30, 10, 0, tzinfo=UTC)
-    async with factory() as session:
-        session.add_all(
-            [
-                SourceConfig(
-                    source_id="rajwin",
-                    display_name="RajWin",
-                    enabled=True,
-                    business_timezone="Asia/Kolkata",
-                    currency="INR",
-                ),
-                SystemRetentionSetting(
-                    id=1,
-                    uploaded_file_retention_days=3,
-                    result_retention_days=30,
-                    remote_cache_retention_days=3,
-                    withdraw_order_refresh_interval_hours=24,
-                    withdraw_order_query_range="today",
-                ),
+                source,
+                _retention(),
                 WithdrawOrderSnapshot(
                     source_id="rajwin",
-                    remote_order_id="expired",
+                    remote_order_id="old-row",
                     uid="100",
-                    status="0",
-                    synced_at=now - timedelta(days=4),
-                ),
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="retained",
-                    uid="101",
-                    status="3",
-                    synced_at=now - timedelta(days=2),
+                    create_time="2026-07-30 09:00:00",
+                    create_time_utc=datetime(2026, 7, 30, 3, 30, tzinfo=UTC),
+                    status="success",
+                    status_label="代付成功",
                 ),
             ]
         )
         await session.commit()
-        counts = await cleanup_expired_data(session, storage=FakeStorage(), now=now)
-        remaining_ids = list(await session.scalars(select(WithdrawOrderSnapshot.remote_order_id)))
+        result = await run_due_withdraw_order_refreshes(session, now=due, settings=settings)
+        snapshots = list(await session.scalars(select(WithdrawOrderSnapshot)))
+        state = await session.get(WithdrawOrderRefreshState, "rajwin")
 
-    assert counts["deletedWithdrawOrderSnapshots"] == 1
-    assert remaining_ids == ["retained"]
+    assert [item.status for item in result] == ["failed"]
+    assert [snapshot.remote_order_id for snapshot in snapshots] == ["old-row"]
+    assert state is not None
+    assert state.status == "failed"
+    assert state.last_error == "远端提现订单 Excel 导出或校验失败，请稍后重试。"
     await engine.dispose()

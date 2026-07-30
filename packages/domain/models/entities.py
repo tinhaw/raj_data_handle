@@ -112,6 +112,12 @@ class SystemRetentionSetting(Base):
         nullable=False,
         default="today",
     )
+    withdraw_order_export_date_mode: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="previous_day",
+    )
+    withdraw_order_export_specific_date: Mapped[date | None] = mapped_column(Date)
     charge_order_refresh_interval_hours: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
@@ -182,6 +188,21 @@ class WithdrawOrderSnapshot(Base):
             "source_id",
             "uid",
         ),
+        Index(
+            "ix_withdraw_order_snapshot_source_pay_channel",
+            "source_id",
+            "pay_channel",
+        ),
+        Index(
+            "ix_withdraw_order_snapshot_source_order_num",
+            "source_id",
+            "order_num",
+        ),
+        Index(
+            "ix_withdraw_order_snapshot_source_out_trade_no",
+            "source_id",
+            "out_trade_no",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -192,7 +213,12 @@ class WithdrawOrderSnapshot(Base):
     )
     remote_order_id: Mapped[str] = mapped_column(String(120), nullable=False)
     uid: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    order_num: Mapped[str | None] = mapped_column(String(160))
+    out_trade_no: Mapped[str | None] = mapped_column(String(160))
+    pay_channel_name: Mapped[str | None] = mapped_column(String(160))
+    pay_channel: Mapped[str | None] = mapped_column(String(120))
     amount: Mapped[str | None] = mapped_column(String(64))
+    fee: Mapped[str | None] = mapped_column(String(64))
     real_amount: Mapped[str | None] = mapped_column(String(64))
     create_time: Mapped[str | None] = mapped_column(String(32))
     create_time_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -200,6 +226,9 @@ class WithdrawOrderSnapshot(Base):
     submit_time: Mapped[str | None] = mapped_column(String(32))
     audit_admin: Mapped[str | None] = mapped_column(String(160))
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    status_label: Mapped[str | None] = mapped_column(String(120))
+    is_first: Mapped[str | None] = mapped_column(String(40))
+    channel: Mapped[str | None] = mapped_column(String(120))
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
@@ -232,6 +261,9 @@ class WithdrawOrderRefreshState(Base):
     last_cached_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_fetched_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_export_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_imported_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_duplicate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(String(500))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(

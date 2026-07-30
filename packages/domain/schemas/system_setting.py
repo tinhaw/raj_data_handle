@@ -16,6 +16,8 @@ WithdrawOrderQueryRange = Literal[
     "last_48_hours",
 ]
 WithdrawOrderRefreshPageSize = Literal[10, 20, 30, 50, 100]
+WithdrawOrderRefreshRange = Literal["day_before_yesterday", "yesterday", "today"]
+WithdrawOrderExportDateMode = Literal["previous_day", "specific_date"]
 ChargeOrderQueryRange = WithdrawOrderQueryRange
 ChargeOrderRefreshPageSize = WithdrawOrderRefreshPageSize
 ChargeOrderExportDateMode = Literal["previous_day", "specific_date"]
@@ -37,6 +39,12 @@ class RetentionSettingsResponse(BaseModel):
     )
     withdraw_order_query_range: WithdrawOrderQueryRange = Field(
         alias="withdrawOrderQueryRange",
+    )
+    withdraw_order_export_date_mode: WithdrawOrderExportDateMode = Field(
+        alias="withdrawOrderExportDateMode",
+    )
+    withdraw_order_export_specific_date: date | None = Field(
+        alias="withdrawOrderExportSpecificDate",
     )
     charge_order_refresh_interval_hours: int = Field(
         ge=1,
@@ -87,6 +95,14 @@ class RetentionSettingsUpdateRequest(BaseModel):
         default=None,
         alias="withdrawOrderQueryRange",
     )
+    withdraw_order_export_date_mode: WithdrawOrderExportDateMode | None = Field(
+        default=None,
+        alias="withdrawOrderExportDateMode",
+    )
+    withdraw_order_export_specific_date: date | None = Field(
+        default=None,
+        alias="withdrawOrderExportSpecificDate",
+    )
     charge_order_refresh_interval_hours: int | None = Field(
         default=None,
         ge=1,
@@ -112,7 +128,12 @@ class RetentionSettingsUpdateRequest(BaseModel):
     session_ttl_days: int = Field(ge=1, le=365, alias="sessionTtlDays")
 
     @model_validator(mode="after")
-    def validate_charge_export_date(self) -> RetentionSettingsUpdateRequest:
+    def validate_export_dates(self) -> RetentionSettingsUpdateRequest:
+        if (
+            self.withdraw_order_export_date_mode == "specific_date"
+            and self.withdraw_order_export_specific_date is None
+        ):
+            raise ValueError("提现订单选择指定日期时必须填写导出日期。")
         if (
             self.charge_order_export_date_mode == "specific_date"
             and self.charge_order_export_specific_date is None

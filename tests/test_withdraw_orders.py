@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from io import BytesIO
 
-import httpx
 import pytest
-from pydantic import ValidationError
-from sqlalchemy import text
+from openpyxl import Workbook
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from packages.common.settings import Settings
@@ -15,286 +13,201 @@ from packages.domain.models import (
     DataDictionaryEntry,
     SourceConfig,
     SystemRetentionSetting,
-    WithdrawOrderRefreshState,
     WithdrawOrderSnapshot,
 )
 from packages.domain.schemas.withdraw_order import (
-    WithdrawOperatorSummaryRequest,
+    WithdrawChannelSummaryRequest,
     WithdrawOrderQueryRequest,
 )
 from packages.domain.services.remote_withdraw_service import (
-    RajAdminWithdrawClient,
-    normalize_withdraw_order,
+    WITHDRAW_EXPORT_COLUMNS,
+    parse_withdraw_order_export,
 )
 from packages.domain.services.withdraw_order_service import (
-    query_withdraw_operator_summary,
+    query_withdraw_channel_summary,
     query_withdraw_orders,
-    summarize_withdraw_orders,
 )
 
 
-def test_withdraw_order_normalizer_keeps_only_approved_fields() -> None:
-    normalized = normalize_withdraw_order(
-        {
-            "id": 2865914,
-            "uid": 26258249,
-            "amount": 500,
-            "real_amount": "490.50",
-            "status": 3,
-            "audit_admin": "operator",
-            "submit_time": "2026-07-30 02:10:00",
-            "time": {
-                "create_time": "2026-07-30 02:08:33",
-                "update_time": "2026-07-30 02:09:00",
-            },
-            "info": {
-                "bank_name": "private-name",
-                "account": "1234567890",
-                "mobile": "9000000000",
-            },
-            "ip": "192.0.2.10",
-            "order_num": "not-approved-for-this-page",
-        }
+def _settings() -> Settings:
+    return Settings(
+        secret_key="test-secret-key-that-is-longer-than-32-characters",
+        database_url="sqlite+aiosqlite:///:memory:",
     )
 
-    assert normalized == {
-        "id": "2865914",
-        "uid": "26258249",
-        "amount": "500",
-        "real_amount": "490.50",
-        "create_time": "2026-07-30 02:08:33",
-        "update_time": "2026-07-30 02:09:00",
-        "submit_time": "2026-07-30 02:10:00",
-        "audit_admin": "operator",
-        "status": "3",
+
+def _workbook_bytes(rows: list[dict[str, object]]) -> bytes:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.append([*WITHDRAW_EXPORT_COLUMNS, "银行卡号", "手机号", "IFSC", "失败原因"])
+    for row in rows:
+        worksheet.append(
+            [row.get(column) for column in WITHDRAW_EXPORT_COLUMNS]
+            + [
+                row.get("银行卡号"),
+                row.get("手机号"),
+                row.get("IFSC"),
+                row.get("失败原因"),
+            ]
+        )
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
+def _export_row(**overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "主键": "remote-1",
+        "提现uid": "10001",
+        "提现订单号": "withdraw-remote-1",
+        "用户渠道": "affiliate-a",
+        "三方支付订单号": "third-remote-1",
+        "支付通道名称": "Channel A",
+        "支付通道": "channel-a",
+        "提现金额": "100.00",
+        "提现手续费": "3.00",
+        "到账金额": "97.00",
+        "是否首提": "是",
+        "状态": "代付成功",
+        "创建时间": datetime(2026, 7, 30, 10, 0),
+        "提交时间": datetime(2026, 7, 30, 10, 1),
+        "修改时间": datetime(2026, 7, 30, 10, 2),
+        "审核人": "Operator A",
+        "银行卡号": "must-not-copy",
+        "手机号": "must-not-copy",
+        "IFSC": "must-not-copy",
+        "失败原因": "must-not-copy",
     }
-    assert "info" not in normalized
-    assert "ip" not in normalized
-    assert "order_num" not in normalized
+    row.update(overrides)
+    return row
 
 
-@pytest.mark.asyncio
-async def test_withdraw_client_posts_filters_and_paginates_all_safe_rows() -> None:
-    request_bodies: list[dict[str, object]] = []
-    renewals = 0
+def test_withdraw_excel_parser_keeps_only_cache_whitelist() -> None:
+    orders = parse_withdraw_order_export(_workbook_bytes([_export_row()]))
 
-    async def on_page_fetched() -> None:
-        nonlocal renewals
-        renewals += 1
+    assert orders == [
+        {
+            "remote_order_id": "remote-1",
+            "uid": "10001",
+            "order_num": "withdraw-remote-1",
+            "channel": "affiliate-a",
+            "out_trade_no": "third-remote-1",
+            "pay_channel_name": "Channel A",
+            "pay_channel": "channel-a",
+            "amount": "100.00",
+            "fee": "3.00",
+            "real_amount": "97.00",
+            "is_first": "是",
+            "status": "3",
+            "status_label": "代付成功",
+            "create_time": "2026-07-30 10:00:00",
+            "submit_time": "2026-07-30 10:01:00",
+            "update_time": "2026-07-30 10:02:00",
+            "audit_person": "Operator A",
+        }
+    ]
+    for sensitive_key in ("银行卡号", "手机号", "IFSC", "失败原因"):
+        assert sensitive_key not in orders[0]
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/api/system/login"):
-            return httpx.Response(200, json={"data": {"token": "test-token"}})
-        assert request.url.path.endswith("/api/operate/withdrawOrder/index")
-        assert request.method == "POST"
-        assert request.headers["authorization"] == "Bearer test-token"
-        body = json.loads(request.content)
-        request_bodies.append(body)
-        page = int(body["page"])
-        return httpx.Response(
-            200,
-            json={
-                "data": {
-                    "items": [
-                        {
-                            "id": page,
-                            "uid": 100 + page,
-                            "amount": 100 * page,
-                            "real_amount": 90 * page,
-                            "status": page - 1,
-                            "time": {
-                                "create_time": f"2026-07-30 0{page}:00:00",
-                                "update_time": "-",
-                            },
-                            "submit_time": "-",
-                            "audit_admin": "",
-                            "info": {"account": "must-not-leak"},
-                            "ip": "192.0.2.1",
-                        }
-                    ],
-                    "pageInfo": {
-                        "total": 2,
-                        "currentPage": page,
-                        "totalPage": 2,
-                    },
-                }
-            },
-        )
 
-    async with RajAdminWithdrawClient(
-        base_url="https://admin.example.test",
-        username="reader",
-        password="password",
-        totp_secret="JBSWY3DPEHPK3PXP",
-        page_size=1,
-        transport=httpx.MockTransport(handler),
-    ) as client:
-        result = await client.fetch_all_withdraw_orders(
-            create_start="2026-07-29T18:30:00.000Z",
-            create_end="2026-07-30T18:29:59.000Z",
-            uid="1001",
-            status="3",
-            on_page_fetched=on_page_fetched,
-        )
-
-    assert result.complete is True
-    assert result.fetched_pages == 2
-    assert result.remote_total == 2
-    assert [item["id"] for item in result.orders] == ["1", "2"]
-    assert all("info" not in item and "ip" not in item for item in result.orders)
-    assert [body["page"] for body in request_bodies] == [1, 2]
-    assert renewals == 2
-    assert all(body["uid"] == "1001" and body["status"] == "3" for body in request_bodies)
-    assert all(
-        body["create_time"]
-        == ["2026-07-29T18:30:00.000Z", "2026-07-30T18:29:59.000Z"]
-        for body in request_bodies
+def test_withdraw_excel_parser_keeps_unknown_label_for_source_dictionary_validation() -> None:
+    orders = parse_withdraw_order_export(
+        _workbook_bytes([_export_row(状态="远端新增状态")])
     )
 
-
-@pytest.mark.asyncio
-async def test_withdraw_client_fetches_status_dictionary_through_read_allowlist() -> None:
-    login_attempts = 0
-    dictionary_attempts = 0
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal login_attempts, dictionary_attempts
-        if request.url.path.endswith("/api/system/login"):
-            login_attempts += 1
-            return httpx.Response(200, json={"data": {"token": f"test-token-{login_attempts}"}})
-
-        assert request.url.path.endswith("/api/system/dataDict/list")
-        assert request.method == "GET"
-        assert dict(request.url.params) == {"code": "withdraw_status"}
-        dictionary_attempts += 1
-        if dictionary_attempts == 1:
-            assert request.headers["authorization"] == "Bearer test-token-1"
-            return httpx.Response(401, json={"message": "expired"})
-        assert request.headers["authorization"] == "Bearer test-token-2"
-        return httpx.Response(
-            200,
-            json={
-                "success": True,
-                "data": [
-                    {"id": 88, "key": "-1", "title": "审核拒绝", "ignored": "not-stored"},
-                    {"id": 89, "key": 0, "title": "待审核"},
-                    {"id": 92, "key": "3", "title": "代付成功"},
-                ],
-            },
-        )
-
-    async with RajAdminWithdrawClient(
-        base_url="https://admin.example.test",
-        username="reader",
-        password="password",
-        totp_secret="JBSWY3DPEHPK3PXP",
-        transport=httpx.MockTransport(handler),
-    ) as client:
-        statuses = await client.fetch_withdraw_statuses()
-
-    assert statuses == [
-        {"code": "-1", "label": "审核拒绝"},
-        {"code": "0", "label": "待审核"},
-        {"code": "3", "label": "代付成功"},
-    ]
-    assert login_attempts == 2
-    assert dictionary_attempts == 2
+    # The parser stays schema-focused.  The refresh service will reject this
+    # row atomically if the selected source's status dictionary does not map
+    # the label, preserving the old cache (covered in refresh tests).
+    assert orders[0]["status"] == "远端新增状态"
+    assert orders[0]["status_label"] == "远端新增状态"
 
 
-def test_withdraw_summary_uses_same_filtered_rows_for_metrics_and_charts() -> None:
-    summary = summarize_withdraw_orders(
-        [
-            {
-                "amount": "100.00",
-                "real_amount": "98.00",
-                "status": "0",
-                "create_time": "2026-07-30 09:10:00",
-            },
-            {
-                "amount": "200.00",
-                "real_amount": "195.00",
-                "status": "3",
-                "create_time": "2026-07-30 09:30:00",
-            },
-            {
-                "amount": "50.00",
-                "real_amount": "50.00",
-                "status": "3",
-                "create_time": "2026-07-30 10:00:00",
-            },
-        ],
-        window_start=datetime(2026, 7, 30, 0, 0, tzinfo=UTC),
-        window_end=datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
-    )
-
-    assert summary["order_count"] == 3
-    assert summary["amount"] == "350.00"
-    assert summary["real_amount"] == "343.00"
-    assert summary["average_amount"] == "116.67"
-    assert summary["status_distribution"] == [
-        {"status": "0", "count": 1, "amount": "100.00", "real_amount": "98.00"},
-        {"status": "3", "count": 2, "amount": "250.00", "real_amount": "245.00"},
-    ]
-    assert summary["time_series"] == [
-        {"bucket": "2026-07-30 09:00", "count": 2, "amount": "300.00", "real_amount": "293.00"},
-        {"bucket": "2026-07-30 10:00", "count": 1, "amount": "50.00", "real_amount": "50.00"},
-    ]
+async def _database() -> tuple[object, async_sessionmaker]:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    return engine, async_sessionmaker(engine, expire_on_commit=False)
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"create_time_start": "2026-07-30 10:00:00"},
-        {"create_time_end": "2026-07-30 10:00:00"},
-        {
-            "create_time_start": "2026-07-30 10:00:00",
-            "create_time_end": "2026-07-30 09:59:59",
-        },
-        {
-            "create_time_start": "2026-07-30T10:00:00",
-            "create_time_end": "2026-07-30 11:00:00",
-        },
-    ],
-)
-def test_withdraw_query_time_range_requires_a_complete_ordered_wall_time_pair(
-    payload: dict[str, str],
-) -> None:
-    with pytest.raises(ValidationError):
-        WithdrawOrderQueryRequest(source_id="rajwin", **payload)
-
-
-def test_withdraw_operator_summary_request_normalizes_selected_statuses() -> None:
-    request = WithdrawOperatorSummaryRequest(
+def _snapshot(
+    remote_order_id: str,
+    *,
+    pay_channel: str,
+    pay_channel_name: str,
+    status: str,
+    status_label: str,
+    amount: str,
+    real_amount: str,
+    fee: str,
+    local_time: datetime,
+    audit_admin: str = "Operator A",
+) -> WithdrawOrderSnapshot:
+    return WithdrawOrderSnapshot(
         source_id="rajwin",
-        statuses=[" 3 ", "0", "3"],
+        remote_order_id=remote_order_id,
+        uid="10001",
+        order_num=f"withdraw-{remote_order_id}",
+        out_trade_no=f"third-{remote_order_id}",
+        pay_channel=pay_channel,
+        pay_channel_name=pay_channel_name,
+        amount=amount,
+        real_amount=real_amount,
+        fee=fee,
+        create_time=local_time.strftime("%Y-%m-%d %H:%M:%S"),
+        create_time_utc=local_time.replace(tzinfo=UTC),
+        # The test's local values are explicitly set below in the caller with
+        # their matching UTC timestamp to keep the business-day assertion easy
+        # to audit.
+        submit_time=(local_time.replace(minute=local_time.minute + 1)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+        update_time=(local_time.replace(minute=local_time.minute + 2)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+        audit_admin=audit_admin,
+        status=status,
+        status_label=status_label,
+        is_first="是",
+        channel="affiliate-a",
     )
 
-    assert request.statuses == ["3", "0"]
-    assert WithdrawOperatorSummaryRequest(source_id="rajwin", statuses=[]).statuses is None
-    with pytest.raises(ValidationError):
-        WithdrawOperatorSummaryRequest(
-            source_id="rajwin",
-            create_time_start="2026-07-30 10:00:00",
-        )
-    with pytest.raises(ValidationError):
-        WithdrawOperatorSummaryRequest(source_id="rajwin", statuses=[""])
-    with pytest.raises(ValidationError):
-        WithdrawOperatorSummaryRequest(
-            source_id="rajwin",
-            statuses=[str(index) for index in range(21)],
-        )
+
+def _india_snapshot(
+    remote_order_id: str,
+    *,
+    pay_channel: str,
+    pay_channel_name: str,
+    status: str,
+    status_label: str,
+    amount: str,
+    real_amount: str,
+    fee: str,
+    local_time: datetime,
+    audit_admin: str = "Operator A",
+) -> WithdrawOrderSnapshot:
+    snapshot = _snapshot(
+        remote_order_id,
+        pay_channel=pay_channel,
+        pay_channel_name=pay_channel_name,
+        status=status,
+        status_label=status_label,
+        amount=amount,
+        real_amount=real_amount,
+        fee=fee,
+        local_time=local_time,
+        audit_admin=audit_admin,
+    )
+    # Asia/Kolkata is UTC+05:30.  The service groups on this value, not the
+    # string displayed by the remote workbook.
+    snapshot.create_time_utc = local_time.replace(tzinfo=UTC) - timedelta(hours=5, minutes=30)
+    return snapshot
 
 
 @pytest.mark.asyncio
-async def test_withdraw_query_time_range_only_filters_local_cache_in_source_timezone() -> None:
-    settings = Settings(
-        secret_key="test-secret-key-that-is-longer-than-32-characters",
-        database_url="sqlite+aiosqlite:///:memory:",
-    )
-    engine = create_async_engine(settings.database_url)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
+async def test_withdraw_detail_uses_cached_export_fields_and_filters() -> None:
+    engine, factory = await _database()
+    now = datetime(2026, 7, 31, 6, 0, tzinfo=UTC)
     async with factory() as session:
         session.add_all(
             [
@@ -305,601 +218,253 @@ async def test_withdraw_query_time_range_only_filters_local_cache_in_source_time
                     business_timezone="Asia/Kolkata",
                     currency="INR",
                 ),
-                # At 06:00 UTC, the configured last-two-hours cache spans
-                # 09:30:00 through 11:30:00 in the source's Asia/Kolkata time.
                 SystemRetentionSetting(
                     id=1,
                     uploaded_file_retention_days=3,
                     result_retention_days=30,
                     remote_cache_retention_days=30,
-                    withdraw_order_refresh_interval_hours=1,
-                    withdraw_order_query_range="last_2_hours",
                 ),
-                WithdrawOrderSnapshot(
+                DataDictionaryEntry(
                     source_id="rajwin",
-                    remote_order_id="outside-cache-window",
-                    uid="100",
-                    amount="10.00",
-                    real_amount="10.00",
-                    create_time="2026-07-30 09:00:00",
-                    create_time_utc=datetime(2026, 7, 30, 3, 30, tzinfo=UTC),
-                    status="0",
+                    dictionary_type="withdraw_status",
+                    entry_code="success-code",
+                    entry_label="代付成功",
+                    active=True,
                 ),
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="included-start",
-                    uid="101",
-                    amount="20.00",
-                    real_amount="19.00",
-                    create_time="2026-07-30 10:00:00",
-                    create_time_utc=datetime(2026, 7, 30, 4, 30, tzinfo=UTC),
-                    status="0",
+                _india_snapshot(
+                    "detail",
+                    pay_channel="channel-a",
+                    pay_channel_name="Channel A",
+                    status="success-code",
+                    status_label="代付成功",
+                    amount="100.00",
+                    real_amount="97.00",
+                    fee="3.00",
+                    local_time=datetime(2026, 7, 30, 10, 0),
                 ),
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="included-end",
-                    uid="102",
-                    amount="30.00",
-                    real_amount="29.00",
-                    create_time="2026-07-30 11:00:00",
-                    create_time_utc=datetime(2026, 7, 30, 5, 30, tzinfo=UTC),
-                    status="3",
-                ),
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="outside-page-range",
-                    uid="103",
-                    amount="40.00",
-                    real_amount="39.00",
-                    create_time="2026-07-30 11:30:00",
-                    create_time_utc=datetime(2026, 7, 30, 6, 0, tzinfo=UTC),
-                    status="3",
+                _india_snapshot(
+                    "other",
+                    pay_channel="channel-b",
+                    pay_channel_name="Channel B",
+                    status="success-code",
+                    status_label="代付成功",
+                    amount="50.00",
+                    real_amount="48.00",
+                    fee="2.00",
+                    local_time=datetime(2026, 7, 30, 11, 0),
                 ),
             ]
         )
         await session.commit()
-
         result = await query_withdraw_orders(
             session,
             request=WithdrawOrderQueryRequest(
                 source_id="rajwin",
-                # This is 03:30–05:30 UTC, so the local query intersects it
-                # with the configured cache's 04:00–06:00 UTC window.
-                create_time_start="2026-07-30 09:00:00",
-                create_time_end="2026-07-30 11:00:00",
+                create_time_start="2026-07-30 00:00:00",
+                create_time_end="2026-07-30 23:59:59",
+                order_num="withdraw-detail",
+                out_trade_no="third-detail",
+                pay_channel="channel-a",
             ),
-            settings=settings,
-            now=datetime(2026, 7, 30, 6, 0, tzinfo=UTC),
+            settings=_settings(),
+            now=now,
         )
 
-    assert [item["id"] for item in result.items] == ["included-end", "included-start"]
-    assert result.total == 2
-    assert result.effective_create_time_end == "2026-07-30 11:00:00"
-    assert result.summary["order_count"] == 2
-    assert result.summary["amount"] == "50.00"
-    assert result.summary["real_amount"] == "48.00"
-    assert result.summary["status_distribution"] == [
-        {"status": "0", "count": 1, "amount": "20.00", "real_amount": "19.00"},
-        {"status": "3", "count": 1, "amount": "30.00", "real_amount": "29.00"},
-    ]
-    await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_withdraw_operator_summary_aggregates_local_cache_by_trimmed_operator() -> None:
-    settings = Settings(
-        secret_key="test-secret-key-that-is-longer-than-32-characters",
-        database_url="sqlite+aiosqlite:///:memory:",
-    )
-    engine = create_async_engine(settings.database_url)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    query_time = datetime(2026, 7, 30, 6, 0, tzinfo=UTC)
-    async with factory() as session:
-        session.add_all(
-            [
-                SourceConfig(
-                    source_id="rajwin",
-                    display_name="RajWin",
-                    enabled=True,
-                    business_timezone="Asia/Kolkata",
-                    currency="INR",
-                ),
-                SystemRetentionSetting(
-                    id=1,
-                    uploaded_file_retention_days=3,
-                    result_retention_days=30,
-                    remote_cache_retention_days=30,
-                    withdraw_order_refresh_interval_hours=1,
-                    withdraw_order_query_range="last_2_hours",
-                ),
-                DataDictionaryEntry(
-                    source_id="rajwin",
-                    dictionary_type="withdraw_status",
-                    entry_code="0",
-                    entry_label="待审核",
-                    active=True,
-                ),
-                DataDictionaryEntry(
-                    source_id="rajwin",
-                    dictionary_type="withdraw_status",
-                    entry_code="2",
-                    entry_label="处理中",
-                    active=True,
-                ),
-                DataDictionaryEntry(
-                    source_id="rajwin",
-                    dictionary_type="withdraw_status",
-                    entry_code="3",
-                    entry_label="已完成",
-                    active=False,
-                ),
-                DataDictionaryEntry(
-                    source_id="rajwin",
-                    dictionary_type="withdraw_status",
-                    entry_code="4",
-                    entry_label="待审查",
-                    active=True,
-                ),
-                DataDictionaryEntry(
-                    source_id="rajwin",
-                    dictionary_type="withdraw_status",
-                    entry_code="5",
-                    entry_label="提交中",
-                    active=True,
-                ),
-                # A source-specific code with the same review-state label is
-                # excluded too; the summary is not tied solely to 0 / 4.
-                DataDictionaryEntry(
-                    source_id="rajwin",
-                    dictionary_type="withdraw_status",
-                    entry_code="7",
-                    entry_label="待审核",
-                    active=True,
-                ),
-                # This row is outside the configured cache window and must
-                # never reach the local aggregation.
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="outside-cache-window",
-                    uid="100",
-                    create_time="2026-07-30 09:00:00",
-                    create_time_utc=datetime(2026, 7, 30, 3, 30, tzinfo=UTC),
-                    audit_admin="Alice",
-                    status="0",
-                ),
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="alice-pending",
-                    uid="101",
-                    create_time="2026-07-30 10:00:00",
-                    create_time_utc=datetime(2026, 7, 30, 4, 30, tzinfo=UTC),
-                    audit_admin=" Alice ",
-                    status="0",
-                    synced_at=datetime(2026, 7, 30, 5, 0, tzinfo=UTC),
-                ),
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="alice-complete",
-                    uid="102",
-                    create_time="2026-07-30 10:30:00",
-                    create_time_utc=datetime(2026, 7, 30, 5, 0, tzinfo=UTC),
-                    audit_admin="Alice",
-                    status="3",
-                    synced_at=datetime(2026, 7, 30, 5, 10, tzinfo=UTC),
-                ),
-                # Case differences remain separate groups; only whitespace is
-                # normalized for the displayed operator name.
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="lowercase-alice",
-                    uid="103",
-                    create_time="2026-07-30 11:00:00",
-                    create_time_utc=datetime(2026, 7, 30, 5, 30, tzinfo=UTC),
-                    audit_admin="alice",
-                    status="0",
-                    synced_at=datetime(2026, 7, 30, 5, 20, tzinfo=UTC),
-                ),
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="missing-null",
-                    uid="104",
-                    create_time="2026-07-30 10:45:00",
-                    create_time_utc=datetime(2026, 7, 30, 5, 15, tzinfo=UTC),
-                    audit_admin=None,
-                    status="3",
-                    synced_at=datetime(2026, 7, 30, 5, 25, tzinfo=UTC),
-                ),
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="missing-blank",
-                    uid="105",
-                    create_time="2026-07-30 10:50:00",
-                    create_time_utc=datetime(2026, 7, 30, 5, 20, tzinfo=UTC),
-                    audit_admin="  ",
-                    status="0",
-                    synced_at=datetime(2026, 7, 30, 5, 30, tzinfo=UTC),
-                ),
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="bob-processing",
-                    uid="106",
-                    create_time="2026-07-30 10:55:00",
-                    create_time_utc=datetime(2026, 7, 30, 5, 25, tzinfo=UTC),
-                    audit_admin=" Bob ",
-                    status="2",
-                    synced_at=datetime(2026, 7, 30, 5, 40, tzinfo=UTC),
-                ),
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="bob-review-pending",
-                    uid="108",
-                    create_time="2026-07-30 10:57:00",
-                    create_time_utc=datetime(2026, 7, 30, 5, 27, tzinfo=UTC),
-                    audit_admin="Bob",
-                    status="4",
-                    synced_at=datetime(2026, 7, 30, 5, 42, tzinfo=UTC),
-                ),
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="bob-submitting",
-                    uid="110",
-                    create_time="2026-07-30 10:58:00",
-                    create_time_utc=datetime(2026, 7, 30, 5, 28, tzinfo=UTC),
-                    audit_admin="Bob",
-                    status="5",
-                    synced_at=datetime(2026, 7, 30, 5, 43, tzinfo=UTC),
-                ),
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="alice-source-specific-review",
-                    uid="109",
-                    create_time="2026-07-30 10:59:00",
-                    create_time_utc=datetime(2026, 7, 30, 5, 29, tzinfo=UTC),
-                    audit_admin="Alice",
-                    status="7",
-                    synced_at=datetime(2026, 7, 30, 5, 43, tzinfo=UTC),
-                ),
-                # This is inside the configured cache window but outside the
-                # page-local time range below.
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="outside-page-range",
-                    uid="107",
-                    create_time="2026-07-30 11:30:00",
-                    create_time_utc=datetime(2026, 7, 30, 6, 0, tzinfo=UTC),
-                    audit_admin="Bob",
-                    status="0",
-                    synced_at=datetime(2026, 7, 30, 5, 55, tzinfo=UTC),
-                ),
-            ]
-        )
-        await session.commit()
-
-        result = await query_withdraw_operator_summary(
-            session,
-            request=WithdrawOperatorSummaryRequest(
-                source_id="rajwin",
-                create_time_start="2026-07-30 10:00:00",
-                create_time_end="2026-07-30 11:00:00",
-            ),
-            settings=settings,
-            now=query_time,
-        )
-        second_page = await query_withdraw_operator_summary(
-            session,
-            request=WithdrawOperatorSummaryRequest(
-                source_id="rajwin",
-                create_time_start="2026-07-30 10:00:00",
-                create_time_end="2026-07-30 11:00:00",
-                page=2,
-                page_size=2,
-            ),
-            settings=settings,
-            now=query_time,
-        )
-        filtered = await query_withdraw_operator_summary(
-            session,
-            request=WithdrawOperatorSummaryRequest(
-                source_id="rajwin",
-                create_time_start="2026-07-30 10:00:00",
-                create_time_end="2026-07-30 11:00:00",
-                statuses=["3", "0", "3"],
-                audit_admin="ali",
-            ),
-            settings=settings,
-            now=query_time,
-        )
-        excluded_only = await query_withdraw_operator_summary(
-            session,
-            request=WithdrawOperatorSummaryRequest(
-                source_id="rajwin",
-                create_time_start="2026-07-30 10:00:00",
-                create_time_end="2026-07-30 11:00:00",
-                statuses=["0", "4", "5"],
-            ),
-            settings=settings,
-            now=query_time,
-        )
-
-    items_by_operator = {item["audit_admin"]: item for item in result.items}
-    assert result.source_id == "rajwin"
-    assert result.source_display_name == "RajWin"
-    assert result.business_timezone == "Asia/Kolkata"
-    assert result.effective_create_time_end == "2026-07-30 11:00:00"
-    assert result.status_columns == ["2", "3"]
-    assert [(entry["code"], entry["label"]) for entry in result.status_dictionary] == [
-        ("2", "处理中"),
-        ("3", "已完成"),
-    ]
-    assert result.total == 3
-    assert result.selected_order_total == 3
-    assert set(items_by_operator) == {"Alice", "Bob", "系统"}
-    assert items_by_operator["Alice"] == {
-        "audit_admin": "Alice",
-        "audit_admin_missing": False,
-        "status_counts": [
-            {"status": "2", "count": 0},
-            {"status": "3", "count": 1},
-        ],
-        "selected_total": 1,
-    }
-    assert items_by_operator["系统"] == {
-        "audit_admin": "系统",
-        "audit_admin_missing": True,
-        "status_counts": [
-            {"status": "2", "count": 0},
-            {"status": "3", "count": 1},
-        ],
-        "selected_total": 1,
-    }
-    assert items_by_operator["Bob"]["status_counts"] == [
-        {"status": "2", "count": 1},
-        {"status": "3", "count": 0},
-    ]
-    assert second_page.total == 3
-    assert {item["audit_admin"] for item in second_page.items} == {"Bob"}
-    assert filtered.status_columns == ["3"]
-    assert filtered.selected_order_total == 1
-    assert filtered.total == 1
-    assert {item["audit_admin"] for item in filtered.items} == {"Alice"}
-    assert filtered.items[0]["status_counts"] == [
-        {"status": "3", "count": 1},
-    ]
-    assert excluded_only.status_columns == []
-    assert excluded_only.selected_order_total == 0
-    assert excluded_only.total == 0
-    assert excluded_only.items == []
-    await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_withdraw_query_survives_page_size_schema_fallback_session_rollback() -> None:
-    """A pre-0007 database must still serve the local withdrawal cache.
-
-    Loading the current retention ORM model against that schema fails because
-    the page-size column is absent.  The settings compatibility path rolls the
-    session back before loading a legacy projection, which expires the source
-    already read by ``query_withdraw_orders``.  Keep this end-to-end shape so
-    the query cannot regress into lazily reloading that source after rollback.
-    """
-
-    settings = Settings(
-        secret_key="test-secret-key-that-is-longer-than-32-characters",
-        database_url="sqlite+aiosqlite:///:memory:",
-    )
-    engine = create_async_engine(settings.database_url)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-
-    async with factory() as session:
-        session.add_all(
-            [
-                SourceConfig(
-                    source_id="rajwin",
-                    display_name="RajWin",
-                    enabled=True,
-                    business_timezone="Asia/Kolkata",
-                    currency="INR",
-                ),
-                SystemRetentionSetting(
-                    id=1,
-                    uploaded_file_retention_days=3,
-                    result_retention_days=30,
-                    remote_cache_retention_days=30,
-                    withdraw_order_refresh_interval_hours=1,
-                    withdraw_order_refresh_page_size=100,
-                    withdraw_order_query_range="today",
-                ),
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="cached-before-page-size-migration",
-                    uid="100",
-                    amount="50.00",
-                    real_amount="49.00",
-                    create_time="2026-07-30 10:30:00",
-                    create_time_utc=datetime(2026, 7, 30, 5, 0, tzinfo=UTC),
-                    status="3",
-                ),
-            ]
-        )
-        await session.commit()
-
-    # Reproduce production after migration 0006 but before 0007.  The ORM
-    # still selects the newer column, forcing the compatibility fallback and
-    # its session rollback.
-    async with engine.begin() as connection:
-        await connection.execute(
-            text(
-                "ALTER TABLE system_retention_settings "
-                "DROP COLUMN withdraw_order_refresh_page_size"
-            )
-        )
-
-    async with factory() as session:
-        result = await query_withdraw_orders(
-            session,
-            request=WithdrawOrderQueryRequest(source_id="rajwin"),
-            settings=settings,
-            now=datetime(2026, 7, 30, 6, 0, tzinfo=UTC),
-        )
-
-    assert result.source_display_name == "RajWin"
-    assert result.business_timezone == "Asia/Kolkata"
-    assert [item["id"] for item in result.items] == [
-        "cached-before-page-size-migration"
-    ]
-
-    async with factory() as session:
-        summary = await query_withdraw_operator_summary(
-            session,
-            request=WithdrawOperatorSummaryRequest(source_id="rajwin"),
-            settings=settings,
-            now=datetime(2026, 7, 30, 6, 0, tzinfo=UTC),
-        )
-
-    assert summary.source_display_name == "RajWin"
-    assert summary.business_timezone == "Asia/Kolkata"
-    assert summary.selected_order_total == 1
-    assert summary.items == [
+    assert result.total == 1
+    assert result.items == [
         {
-            "audit_admin": "系统",
-            "audit_admin_missing": True,
-            "status_counts": [{"status": "3", "count": 1}],
-            "selected_total": 1,
+            "id": "detail",
+            "uid": "10001",
+            "order_num": "withdraw-detail",
+            "out_trade_no": "third-detail",
+            "pay_channel_name": "Channel A",
+            "pay_channel": "channel-a",
+            "amount": "100.00",
+            "real_amount": "97.00",
+            "fee": "3.00",
+            "create_time": "2026-07-30 10:00:00",
+            "update_time": "2026-07-30 10:02:00",
+            "submit_time": "2026-07-30 10:01:00",
+            "audit_admin": "Operator A",
+            "status": "success-code",
+            "status_label": "代付成功",
+            "is_first": "是",
+            "channel": "affiliate-a",
         }
     ]
+    assert result.channel_dictionary == [
+        {"code": "channel-a", "label": "Channel A"},
+        {"code": "channel-b", "label": "Channel B"},
+    ]
     await engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_withdraw_query_reads_only_source_scoped_local_cache_and_dictionary() -> None:
-    settings = Settings(
-        secret_key="test-secret-key-that-is-longer-than-32-characters",
-        database_url="sqlite+aiosqlite:///:memory:",
-    )
-    engine = create_async_engine(settings.database_url)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
+async def test_channel_summary_uses_success_amount_fee_and_daily_denominators() -> None:
+    engine, factory = await _database()
+    now = datetime(2026, 8, 1, 6, 0, tzinfo=UTC)
     async with factory() as session:
-        rajwin = SourceConfig(
-            source_id="rajwin",
-            display_name="RajWin",
-            enabled=True,
-            business_timezone="Asia/Kolkata",
-            currency="INR",
-        )
         session.add_all(
             [
-                rajwin,
                 SourceConfig(
-                    source_id="rajluck",
-                    display_name="RajLuck",
+                    source_id="rajwin",
+                    display_name="RajWin",
+                    enabled=True,
                     business_timezone="Asia/Kolkata",
                     currency="INR",
                 ),
-                DataDictionaryEntry(
-                    source_id="rajwin",
-                    dictionary_type="withdraw_status",
-                    entry_code="0",
-                    entry_label="待审核",
-                    active=True,
+                SystemRetentionSetting(
+                    id=1,
+                    uploaded_file_retention_days=3,
+                    result_retention_days=30,
+                    remote_cache_retention_days=30,
                 ),
-                DataDictionaryEntry(
-                    source_id="rajwin",
-                    dictionary_type="withdraw_status",
-                    entry_code="3",
-                    entry_label="出款完成",
-                    active=False,
+                *[
+                    DataDictionaryEntry(
+                        source_id="rajwin",
+                        dictionary_type="withdraw_status",
+                        entry_code=code,
+                        entry_label=label,
+                        active=True,
+                    )
+                    for code, label in (
+                        ("status-success", "代付成功"),
+                        ("status-failed", "代付失败"),
+                        ("status-submitted", "已提交代付"),
+                        ("status-rejected", "审核拒绝"),
+                    )
+                ],
+                _india_snapshot(
+                    "a-success",
+                    pay_channel="channel-a",
+                    pay_channel_name="Channel A",
+                    status="status-success",
+                    status_label="代付成功",
+                    amount="105.00",
+                    real_amount="100.00",
+                    fee="5.00",
+                    local_time=datetime(2026, 7, 30, 10, 0),
                 ),
-                DataDictionaryEntry(
-                    source_id="rajluck",
-                    dictionary_type="withdraw_status",
-                    entry_code="0",
-                    entry_label="RajLuck 专用文案",
-                    active=True,
+                _india_snapshot(
+                    "a-submitted",
+                    pay_channel="channel-a",
+                    pay_channel_name="Channel A",
+                    status="status-submitted",
+                    status_label="已提交代付",
+                    amount="55.00",
+                    real_amount="0.00",
+                    fee="99.00",
+                    local_time=datetime(2026, 7, 30, 11, 0),
                 ),
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="one",
-                    uid="100",
-                    amount="50.00",
-                    real_amount="49.00",
-                    create_time="2026-07-30 10:00:00",
-                    create_time_utc=datetime(2026, 7, 30, 4, 30, tzinfo=UTC),
-                    status="0",
-                    synced_at=datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
+                _india_snapshot(
+                    "a-failed",
+                    pay_channel="channel-a",
+                    pay_channel_name="Channel A",
+                    status="status-failed",
+                    status_label="代付失败",
+                    amount="65.00",
+                    real_amount="0.00",
+                    fee="12.00",
+                    local_time=datetime(2026, 7, 30, 12, 0),
                 ),
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="two",
-                    uid="101",
-                    amount="100.00",
-                    real_amount="98.00",
-                    create_time="2026-07-30 11:00:00",
-                    create_time_utc=datetime(2026, 7, 30, 5, 30, tzinfo=UTC),
-                    status="3",
-                    synced_at=datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
+                _india_snapshot(
+                    "b-success",
+                    pay_channel="channel-b",
+                    pay_channel_name="Channel B",
+                    status="status-success",
+                    status_label="代付成功",
+                    amount="307.00",
+                    real_amount="300.00",
+                    fee="7.00",
+                    local_time=datetime(2026, 7, 30, 13, 0),
                 ),
-                # The page uses the current system refresh range, so this
-                # retained older row must not appear when the preset is today.
-                WithdrawOrderSnapshot(
-                    source_id="rajwin",
-                    remote_order_id="older",
-                    uid="999",
-                    amount="999.00",
-                    real_amount="999.00",
-                    create_time="2026-07-29 10:00:00",
-                    create_time_utc=datetime(2026, 7, 29, 4, 30, tzinfo=UTC),
-                    status="9",
-                    synced_at=datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
+                _india_snapshot(
+                    "b-rejected",
+                    pay_channel="channel-b",
+                    pay_channel_name="Channel B",
+                    status="status-rejected",
+                    status_label="审核拒绝",
+                    amount="88.00",
+                    real_amount="0.00",
+                    fee="88.00",
+                    local_time=datetime(2026, 7, 30, 14, 0),
                 ),
-                WithdrawOrderSnapshot(
-                    source_id="rajluck",
-                    remote_order_id="other-source",
-                    uid="200",
-                    amount="500.00",
-                    real_amount="500.00",
-                    create_time="2026-07-30 10:00:00",
-                    create_time_utc=datetime(2026, 7, 30, 4, 30, tzinfo=UTC),
-                    status="0",
-                    synced_at=datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
-                ),
-                WithdrawOrderRefreshState(
-                    source_id="rajwin",
-                    status="succeeded",
-                    last_remote_total=17,
-                    last_cached_total=2,
-                    last_fetched_pages=1,
-                    last_complete=True,
-                    last_succeeded_at=datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
+                _india_snapshot(
+                    "c-submitted-only",
+                    pay_channel="channel-c",
+                    pay_channel_name="Channel C",
+                    status="status-submitted",
+                    status_label="已提交代付",
+                    amount="20.00",
+                    real_amount="0.00",
+                    fee="20.00",
+                    local_time=datetime(2026, 7, 31, 10, 0),
                 ),
             ]
         )
         await session.commit()
-
-        result = await query_withdraw_orders(
+        result = await query_withdraw_channel_summary(
             session,
-            request=WithdrawOrderQueryRequest(
+            request=WithdrawChannelSummaryRequest(
                 source_id="rajwin",
+                create_time_start="2026-07-30 00:00:00",
+                create_time_end="2026-07-31 23:59:59",
+                page_size=100,
             ),
-            settings=settings,
-            now=datetime(2026, 7, 30, 18, 0, tzinfo=UTC),
+            settings=_settings(),
+            now=now,
+        )
+        filtered = await query_withdraw_channel_summary(
+            session,
+            request=WithdrawChannelSummaryRequest(
+                source_id="rajwin",
+                create_time_start="2026-07-30 00:00:00",
+                create_time_end="2026-07-31 23:59:59",
+                pay_channel="channel-a",
+                page_size=100,
+            ),
+            settings=_settings(),
+            now=now,
         )
 
-    assert result.summary["status_distribution"] == [
-        {"status": "0", "count": 1, "amount": "50.00", "real_amount": "49.00"},
-        {"status": "3", "count": 1, "amount": "100.00", "real_amount": "98.00"},
-    ]
-    assert result.status_dictionary == [
-        {"code": "0", "label": "待审核", "active": True},
-        {"code": "3", "label": "出款完成", "active": False},
-    ]
-    assert result.remote_total == 17
-    assert result.fetched_pages == 1
-    assert result.complete is True
-    assert [item["id"] for item in result.items] == ["two", "one"]
+    rows = {(item["date"], item["pay_channel"]): item for item in result.items}
+    assert rows[("2026-07-30", "channel-a")] == {
+        "date": "2026-07-30",
+        "pay_channel": "channel-a",
+        "pay_channel_name": "Channel A",
+        "order_count": 3,
+        "successful_order_count": 1,
+        "successful_amount": "100.00",
+        "successful_fee": "5.00",
+        "failed_order_count": 1,
+        "submitted_order_count": 1,
+        "rejected_order_count": 0,
+        "successful_order_share": "50.00",
+        "successful_amount_share": "25.00",
+        "stuck_rate": "33.33",
+        "success_rate": "33.33",
+    }
+    assert rows[("2026-07-30", "channel-b")] == {
+        "date": "2026-07-30",
+        "pay_channel": "channel-b",
+        "pay_channel_name": "Channel B",
+        "order_count": 2,
+        "successful_order_count": 1,
+        "successful_amount": "300.00",
+        "successful_fee": "7.00",
+        "failed_order_count": 0,
+        "submitted_order_count": 0,
+        "rejected_order_count": 1,
+        "successful_order_share": "50.00",
+        "successful_amount_share": "75.00",
+        "stuck_rate": "0.00",
+        "success_rate": "50.00",
+    }
+    assert rows[("2026-07-31", "channel-c")]["successful_order_share"] == "—"
+    assert rows[("2026-07-31", "channel-c")]["successful_amount_share"] == "—"
+    assert rows[("2026-07-31", "channel-c")]["stuck_rate"] == "100.00"
+    # Filtering a channel does not narrow the day-level denominator used for
+    # its success share.
+    assert filtered.total == 1
+    assert filtered.items[0]["successful_amount_share"] == "25.00"
     await engine.dispose()

@@ -6,8 +6,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 
 import { apiErrorMessage } from '../api/client'
 import { fetchEnabledSources } from '../api/sources'
-import { fetchRetentionSettings } from '../api/systemSettings'
 import {
+  queryWithdrawChannelSummary,
   queryWithdrawOperatorSummary,
   queryWithdrawOrders,
   startWithdrawOrderRefresh,
@@ -15,38 +15,42 @@ import {
 import ChartPanel from '../components/ChartPanel.vue'
 import type {
   SourceConfig,
+  WithdrawChannelSummaryResponse,
   WithdrawOperatorSummaryItem,
   WithdrawOperatorSummaryResponse,
   WithdrawOrder,
   WithdrawOrderQueryResponse,
+  WithdrawOrderRefreshRange,
   WithdrawOrderSummary,
   WithdrawStatusDictionaryEntry,
-  WithdrawOrderQueryRange,
 } from '../types'
-import { formatDateTime } from '../ui'
+import { businessFullDayRange, formatDateTime, yesterdayFullDayRange } from '../ui'
 
-type WithdrawTab = 'orders' | 'operators'
+type WithdrawTab = 'orders' | 'channels' | 'operators'
 
 const OPERATOR_SUMMARY_EXCLUDED_STATUS_CODES = new Set(['0', '4', '5'])
 const OPERATOR_SUMMARY_EXCLUDED_STATUS_LABELS = new Set(['待审核', '待审查', '提交中'])
 const OPERATOR_CHART_COLORS = ['#377eea', '#39b8b0', '#f5a623', '#8d6ee8', '#ec6b62', '#5d8fc5']
 const MANUAL_REFRESH_RANGE_OPTIONS: Array<{
-  value: WithdrawOrderQueryRange
+  value: WithdrawOrderRefreshRange
   label: string
   description: string
 }> = [
   {
+    value: 'day_before_yesterday',
+    label: '前天 00:00:00 至 23:59:59',
+    description: '按所选盘口的业务时区导出前天的完整自然日订单。',
+  },
+  {
+    value: 'yesterday',
+    label: '昨天 00:00:00 至 23:59:59',
+    description: '按所选盘口的业务时区导出昨天的完整自然日订单。',
+  },
+  {
     value: 'today',
     label: '今日 00:00:00 至 23:59:59',
-    description: '按所选盘口的业务时区读取当天订单；未来时间会自动截断。',
+    description: '按所选盘口的业务时区导出当天订单；未来时间会自动截断。',
   },
-  { value: 'last_1_hour', label: '最近 1 小时', description: '从后台实际执行时刻向前滚动 1 小时。' },
-  { value: 'last_2_hours', label: '最近 2 小时', description: '从后台实际执行时刻向前滚动 2 小时。' },
-  { value: 'last_3_hours', label: '最近 3 小时', description: '从后台实际执行时刻向前滚动 3 小时。' },
-  { value: 'last_6_hours', label: '最近 6 小时', description: '从后台实际执行时刻向前滚动 6 小时。' },
-  { value: 'last_12_hours', label: '最近 12 小时', description: '从后台实际执行时刻向前滚动 12 小时。' },
-  { value: 'last_24_hours', label: '最近 24 小时', description: '从后台实际执行时刻向前滚动 24 小时。' },
-  { value: 'last_48_hours', label: '最近 48 小时', description: '从后台实际执行时刻向前滚动 48 小时。' },
 ]
 
 const emptySummary: WithdrawOrderSummary = {
@@ -62,8 +66,7 @@ const activeTab = ref<WithdrawTab>('orders')
 const loading = ref(false)
 const refreshStarting = ref(false)
 const manualRefreshDialogVisible = ref(false)
-const manualRefreshSettingsLoading = ref(false)
-const manualRefreshQueryRange = ref<WithdrawOrderQueryRange>('today')
+const manualRefreshQueryRange = ref<WithdrawOrderRefreshRange>('yesterday')
 const sourcesLoading = ref(false)
 const sources = ref<SourceConfig[]>([])
 const response = ref<WithdrawOrderQueryResponse | null>(null)
@@ -79,6 +82,19 @@ const filters = reactive({
   uid: '',
   status: '',
   auditAdmin: '',
+  orderNum: '',
+  outTradeNo: '',
+  payChannel: '',
+})
+
+const channelSummaryLoading = ref(false)
+const channelSummaryResponse = ref<WithdrawChannelSummaryResponse | null>(null)
+const channelSummaryPage = ref(1)
+const channelSummaryPageSize = ref(50)
+const channelSummaryFilters = reactive({
+  sourceId: '',
+  createTimeRange: null as [string, string] | null,
+  payChannel: '',
 })
 
 const operatorSummaryLoading = ref(false)
@@ -94,6 +110,7 @@ const operatorSummaryFilters = reactive({
   auditAdmin: '',
 })
 let orderQueryRequestId = 0
+let channelSummaryRequestId = 0
 let operatorSummaryRequestId = 0
 
 const selectedOrderSource = computed(() =>
@@ -101,6 +118,9 @@ const selectedOrderSource = computed(() =>
 )
 const selectedOperatorSummarySource = computed(() =>
   sources.value.find((source) => source.sourceId === operatorSummaryFilters.sourceId),
+)
+const selectedChannelSummarySource = computed(() =>
+  sources.value.find((source) => source.sourceId === channelSummaryFilters.sourceId),
 )
 const summary = computed(() => response.value?.summary || emptySummary)
 const statusDictionary = computed(() => response.value?.statusDictionary || [])
@@ -145,8 +165,60 @@ const operatorSummaryStatusColumns = computed(
 const currency = computed(
   () => response.value?.currency || selectedOrderSource.value?.currency || 'INR',
 )
+const channelSummaryCurrency = computed(
+  () =>
+    channelSummaryResponse.value?.currency ||
+    selectedChannelSummarySource.value?.currency ||
+    response.value?.currency ||
+    'INR',
+)
+const channelSummaryRows = computed(() => channelSummaryResponse.value?.items || [])
+const channelOptions = computed(() => response.value?.channelDictionary || [])
+const channelSummaryOptions = computed(
+  () => {
+    if (channelSummaryResponse.value?.sourceId === channelSummaryFilters.sourceId) {
+      return channelSummaryResponse.value.channelDictionary
+    }
+    if (response.value?.sourceId === channelSummaryFilters.sourceId) {
+      return channelOptions.value
+    }
+    return []
+  },
+)
+function dateRangeShortcutsFor(source: SourceConfig | undefined) {
+  const timeZone = source?.businessTimezone || 'Asia/Kolkata'
+  return [
+    { text: '昨天', value: () => businessFullDayRange(timeZone, 1) },
+    { text: '前天', value: () => businessFullDayRange(timeZone, 2) },
+    { text: '今天', value: () => businessFullDayRange(timeZone, 0) },
+  ]
+}
+const orderDateRangeShortcuts = computed(() => dateRangeShortcutsFor(selectedOrderSource.value))
+const channelSummaryDateRangeShortcuts = computed(() =>
+  dateRangeShortcutsFor(selectedChannelSummarySource.value),
+)
+const operatorSummaryDateRangeShortcuts = computed(() =>
+  dateRangeShortcutsFor(selectedOperatorSummarySource.value),
+)
 const localUpdatedText = computed(() =>
   response.value ? formatDateTime(response.value.localUpdatedAt) : '尚未查询',
+)
+const channelSummaryLocalUpdatedText = computed(() =>
+  channelSummaryResponse.value
+    ? formatDateTime(channelSummaryResponse.value.localUpdatedAt)
+    : '尚未查询',
+)
+const channelSummarySourceName = computed(
+  () =>
+    channelSummaryResponse.value?.sourceDisplayName ||
+    selectedChannelSummarySource.value?.displayName ||
+    '所选盘口',
+)
+const channelSummaryTimezone = computed(
+  () =>
+    channelSummaryResponse.value?.businessTimezone ||
+    selectedChannelSummarySource.value?.businessTimezone ||
+    '盘口业务时区',
 )
 const operatorSummaryLocalUpdatedText = computed(() =>
   operatorSummaryResponse.value
@@ -172,15 +244,15 @@ const syncTimingText = computed(() => {
   if (response.value?.lastRefreshedAt) {
     if (refreshIsIncomplete.value) {
       return (
-        '上次同步 ' +
+        '上次导出 ' +
         formatDateTime(response.value.lastRefreshedAt) +
         ' · 结果不完整，已保留本地缓存'
       )
     }
-    return '上次成功 ' + formatDateTime(response.value.lastRefreshedAt)
+    return '上次成功导出 ' + formatDateTime(response.value.lastRefreshedAt)
   }
   if (queuedAt.value) return '请求于 ' + formatDateTime(queuedAt.value)
-  return '尚未成功同步'
+  return '尚未成功导出'
 })
 const normalizedRefreshStatus = computed(() => {
   const responseStatus = response.value?.refreshStatus
@@ -191,18 +263,18 @@ const normalizedRefreshStatus = computed(() => {
   return status.trim().toLowerCase()
 })
 const refreshStatusLabel = computed(() => {
-  if (refreshIsIncomplete.value) return '同步不完整'
+  if (refreshIsIncomplete.value) return '导出不完整'
   const labels: Record<string, string> = {
     not_started: '暂无同步记录',
-    idle: '等待下次同步',
+    idle: '等待下次导出',
     queued: '已排队',
     pending: '已排队',
-    running: '同步中',
-    refreshing: '同步中',
-    completed: '同步完成',
-    succeeded: '同步完成',
-    success: '同步完成',
-    failed: '同步失败',
+    running: '导出中',
+    refreshing: '导出中',
+    completed: '导出完成',
+    succeeded: '导出完成',
+    success: '导出完成',
+    failed: '导出失败',
   }
   return labels[normalizedRefreshStatus.value] || response.value?.refreshStatus || '暂无同步记录'
 })
@@ -246,17 +318,22 @@ const operatorSummaryStatusOptions = computed(() => {
   )
 })
 
-function amountText(value: string | null | undefined, maximumFractionDigits = 2): string {
+function amountText(
+  value: string | null | undefined,
+  maximumFractionDigits = 2,
+  currencyCode = currency.value,
+): string {
+  if (value === null || value === undefined || value === '') return '—'
   const amount = Number(value)
   if (!Number.isFinite(amount)) return '—'
   try {
     return new Intl.NumberFormat('en-IN', {
       style: 'currency',
-      currency: currency.value,
+      currency: currencyCode,
       maximumFractionDigits,
     }).format(amount)
   } catch {
-    return amount.toLocaleString('en-IN', { maximumFractionDigits }) + ' ' + currency.value
+    return amount.toLocaleString('en-IN', { maximumFractionDigits }) + ' ' + currencyCode
   }
 }
 
@@ -275,6 +352,23 @@ function statusText(
 
 function statusLabel(status: string): string {
   return statusText(status, statusEntryByCode.value)
+}
+
+function orderStatusLabel(row: WithdrawOrder): string {
+  return row.statusLabel?.trim() || statusLabel(row.status)
+}
+
+function ratioText(value: string | null | undefined): string {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? `${numeric.toFixed(2)}%` : '—'
+}
+
+function firstWithdrawText(value: string | null | undefined): string {
+  const normalized = (value || '').trim()
+  if (!normalized) return '—'
+  if (['1', 'true', 'yes', '是'].includes(normalized.toLowerCase())) return '是'
+  if (['0', 'false', 'no', '否'].includes(normalized.toLowerCase())) return '否'
+  return normalized
 }
 
 function operatorSummaryStatusLabel(status: string): string {
@@ -342,6 +436,9 @@ async function load(resetPage = false, quiet = false): Promise<void> {
       uid: filters.uid || undefined,
       status: filters.status || undefined,
       auditAdmin: filters.auditAdmin || undefined,
+      orderNum: filters.orderNum || undefined,
+      outTradeNo: filters.outTradeNo || undefined,
+      payChannel: filters.payChannel || undefined,
       page: page.value,
       pageSize: pageSize.value,
     })
@@ -356,6 +453,36 @@ async function load(resetPage = false, quiet = false): Promise<void> {
     }
   } finally {
     if (requestId === orderQueryRequestId) loading.value = false
+  }
+}
+
+async function loadChannelSummary(resetPage = false): Promise<void> {
+  if (!channelSummaryFilters.sourceId) {
+    ElMessage.warning('请先选择需要汇总的盘口。')
+    return
+  }
+  if (resetPage) channelSummaryPage.value = 1
+  const requestId = ++channelSummaryRequestId
+  channelSummaryLoading.value = true
+  try {
+    const [createTimeStart, createTimeEnd] = channelSummaryFilters.createTimeRange || []
+    const hasCreateTimeRange = Boolean(createTimeStart && createTimeEnd)
+    const result = await queryWithdrawChannelSummary({
+      sourceId: channelSummaryFilters.sourceId,
+      createTimeStart: hasCreateTimeRange ? createTimeStart : undefined,
+      createTimeEnd: hasCreateTimeRange ? createTimeEnd : undefined,
+      payChannel: channelSummaryFilters.payChannel || undefined,
+      page: channelSummaryPage.value,
+      pageSize: channelSummaryPageSize.value,
+    })
+    if (requestId !== channelSummaryRequestId) return
+    channelSummaryResponse.value = result
+  } catch (error) {
+    if (requestId === channelSummaryRequestId) {
+      ElMessage.error(apiErrorMessage(error, '支付渠道汇总加载失败。'))
+    }
+  } finally {
+    if (requestId === channelSummaryRequestId) channelSummaryLoading.value = false
   }
 }
 
@@ -389,18 +516,10 @@ async function loadOperatorSummary(resetPage = false): Promise<void> {
   }
 }
 
-async function openManualRefreshDialog(): Promise<void> {
+function openManualRefreshDialog(): void {
   if (!validateFilters() || refreshStarting.value) return
+  manualRefreshQueryRange.value = 'yesterday'
   manualRefreshDialogVisible.value = true
-  manualRefreshSettingsLoading.value = true
-  try {
-    const settings = await fetchRetentionSettings()
-    manualRefreshQueryRange.value = settings.withdrawOrderQueryRange
-  } catch {
-    ElMessage.warning('无法读取系统默认时间范围，请手动选择本次刷新范围。')
-  } finally {
-    manualRefreshSettingsLoading.value = false
-  }
 }
 
 async function startRefresh(): Promise<void> {
@@ -413,10 +532,10 @@ async function startRefresh(): Promise<void> {
     })
     queuedAt.value = result.requestedAt
     manualRefreshDialogVisible.value = false
-    ElMessage.success(result.message || '已提交后台同步任务。')
+    ElMessage.success(result.message || '已提交后台导出任务。')
     await load(false, true)
   } catch (error) {
-    ElMessage.error(apiErrorMessage(error, '提现订单后台同步启动失败。'))
+    ElMessage.error(apiErrorMessage(error, '提现订单后台导出启动失败。'))
   } finally {
     refreshStarting.value = false
   }
@@ -431,6 +550,11 @@ function resetLocalResult(): void {
   queuedAt.value = null
 }
 
+function resetChannelSummaryResult(): void {
+  channelSummaryRequestId += 1
+  channelSummaryResponse.value = null
+}
+
 function resetOperatorSummaryResult(): void {
   operatorSummaryRequestId += 1
   operatorSummaryResponse.value = null
@@ -440,15 +564,32 @@ function resetOperatorSummaryResult(): void {
 
 function handleSourceChange(): void {
   page.value = 1
-  filters.createTimeRange = null
+  filters.createTimeRange = yesterdayFullDayRange(
+    selectedOrderSource.value?.businessTimezone || 'Asia/Kolkata',
+  )
   filters.status = ''
+  filters.orderNum = ''
+  filters.outTradeNo = ''
+  filters.payChannel = ''
   resetLocalResult()
   void load(true)
 }
 
+function handleChannelSummarySourceChange(): void {
+  channelSummaryPage.value = 1
+  channelSummaryFilters.createTimeRange = yesterdayFullDayRange(
+    selectedChannelSummarySource.value?.businessTimezone || 'Asia/Kolkata',
+  )
+  channelSummaryFilters.payChannel = ''
+  resetChannelSummaryResult()
+  void loadChannelSummary(true)
+}
+
 function handleOperatorSummarySourceChange(): void {
   operatorSummaryPage.value = 1
-  operatorSummaryFilters.createTimeRange = null
+  operatorSummaryFilters.createTimeRange = yesterdayFullDayRange(
+    selectedOperatorSummarySource.value?.businessTimezone || 'Asia/Kolkata',
+  )
   operatorSummaryFilters.statuses = []
   operatorSummaryFilters.auditAdmin = ''
   resetOperatorSummaryResult()
@@ -465,6 +606,16 @@ function handlePageSizeChange(nextPageSize: number): void {
   void load(true)
 }
 
+function handleChannelSummaryPageChange(nextPage: number): void {
+  channelSummaryPage.value = nextPage
+  void loadChannelSummary(false)
+}
+
+function handleChannelSummaryPageSizeChange(nextPageSize: number): void {
+  channelSummaryPageSize.value = nextPageSize
+  void loadChannelSummary(true)
+}
+
 function handleOperatorSummaryPageChange(nextPage: number): void {
   operatorSummaryPage.value = nextPage
   void loadOperatorSummary(false)
@@ -476,6 +627,13 @@ function handleOperatorSummaryPageSizeChange(nextPageSize: number): void {
 }
 
 function handleTabChange(nextTab: string | number): void {
+  if (
+    nextTab === 'channels' &&
+    channelSummaryResponse.value?.sourceId !== channelSummaryFilters.sourceId &&
+    channelSummaryFilters.sourceId
+  ) {
+    void loadChannelSummary(true)
+  }
   if (
     nextTab === 'operators' &&
     operatorSummaryResponse.value?.sourceId !== operatorSummaryFilters.sourceId &&
@@ -592,9 +750,14 @@ onMounted(async () => {
   try {
     sources.value = await fetchEnabledSources()
     if (sources.value.length) {
-      const firstSourceId = sources.value[0]!.sourceId
+      const firstSource = sources.value[0]!
+      const firstSourceId = firstSource.sourceId
       filters.sourceId = firstSourceId
+      filters.createTimeRange = yesterdayFullDayRange(firstSource.businessTimezone)
+      channelSummaryFilters.sourceId = firstSourceId
+      channelSummaryFilters.createTimeRange = yesterdayFullDayRange(firstSource.businessTimezone)
       operatorSummaryFilters.sourceId = firstSourceId
+      operatorSummaryFilters.createTimeRange = yesterdayFullDayRange(firstSource.businessTimezone)
       await load(true)
     }
   } catch (error) {
@@ -611,23 +774,23 @@ onMounted(async () => {
       <div>
         <span class="page-eyebrow">WITHDRAWAL MONITOR</span>
         <h1>提现订单</h1>
-        <p>查询本地已同步的提现订单，或按操作人员汇总各状态订单数量。</p>
+        <p>从远端后台按日导出、解析并缓存提现订单；支持订单明细、支付渠道和操作人员汇总。</p>
       </div>
     </header>
 
     <el-tabs v-model="activeTab" class="withdraw-tabs" @tab-change="handleTabChange">
-      <el-tab-pane label="提现订单查询" name="orders">
+      <el-tab-pane label="提现订单明细" name="orders">
         <div class="tab-stack">
           <header class="tab-pane-header">
             <div>
-              <h2>提现订单查询</h2>
-              <p>仅查询本地已同步的提现订单；远端同步由系统配置的后台任务执行。</p>
+              <h2>提现订单明细</h2>
+              <p>仅查询本地已导出并缓存的提现订单；远端同步由后台工作进程按自然日执行。</p>
             </div>
             <div class="header-actions">
               <div class="refresh-state">
                 <span class="refresh-state__dot" :class="{ 'is-live': refreshInProgress }" />
                 <div>
-                  <strong>后台同步：{{ refreshStatusLabel }}</strong>
+                  <strong>后台导出：{{ refreshStatusLabel }}</strong>
                   <small>{{ syncTimingText }} · 本地更新 {{ localUpdatedText }}</small>
                 </div>
               </div>
@@ -665,6 +828,7 @@ onMounted(async () => {
                 <el-date-picker
                   v-model="filters.createTimeRange"
                   type="datetimerange"
+                  :shortcuts="orderDateRangeShortcuts"
                   value-format="YYYY-MM-DD HH:mm:ss"
                   format="YYYY-MM-DD HH:mm:ss"
                   range-separator="至"
@@ -678,6 +842,25 @@ onMounted(async () => {
               <label class="query-field">
                 <span>用户 UID</span>
                 <el-input v-model.trim="filters.uid" clearable placeholder="精确 UID" />
+              </label>
+              <label class="query-field">
+                <span>我方提现订单号</span>
+                <el-input v-model.trim="filters.orderNum" clearable placeholder="包含匹配" />
+              </label>
+              <label class="query-field">
+                <span>三方支付订单号</span>
+                <el-input v-model.trim="filters.outTradeNo" clearable placeholder="包含匹配" />
+              </label>
+              <label class="query-field">
+                <span>支付渠道</span>
+                <el-select v-model="filters.payChannel" clearable filterable placeholder="全部渠道">
+                  <el-option
+                    v-for="item in channelOptions"
+                    :key="item.code"
+                    :label="item.label"
+                    :value="item.code"
+                  />
+                </el-select>
               </label>
               <label class="query-field">
                 <span>状态</span>
@@ -696,7 +879,7 @@ onMounted(async () => {
               </label>
             </div>
             <div class="query-card__footer">
-              <span>筛选只作用于本地缓存；时间范围按盘口业务时区解释，不影响后台同步的时间范围与间隔。</span>
+              <span>筛选只作用于本地缓存；时间范围按盘口业务时区解释，不影响后台按日导出的范围。</span>
               <el-button type="primary" :icon="Search" :loading="loading" @click="load(true)">
                 查询本地订单
               </el-button>
@@ -739,20 +922,53 @@ onMounted(async () => {
             <el-table v-loading="loading" :data="rows" empty-text="当前本地数据中暂无提现订单">
               <el-table-column label="订单 ID" min-width="150" prop="id" fixed="left" />
               <el-table-column label="用户 UID" min-width="140" prop="uid" />
+              <el-table-column
+                label="我方提现订单号"
+                min-width="190"
+                prop="orderNum"
+                show-overflow-tooltip
+              />
+              <el-table-column
+                label="三方支付订单号"
+                min-width="190"
+                prop="outTradeNo"
+                show-overflow-tooltip
+              />
+              <el-table-column
+                label="支付渠道名称"
+                min-width="172"
+                prop="payChannelName"
+                show-overflow-tooltip
+              />
+              <el-table-column
+                label="支付渠道代码"
+                min-width="150"
+                prop="payChannel"
+                show-overflow-tooltip
+              />
               <el-table-column label="提现金额" min-width="140" align="right">
                 <template #default="{ row }">{{ amountText(row.amount) }}</template>
               </el-table-column>
               <el-table-column label="实际到账" min-width="140" align="right">
                 <template #default="{ row }">{{ amountText(row.realAmount) }}</template>
               </el-table-column>
+              <el-table-column label="提现手续费" min-width="140" align="right">
+                <template #default="{ row }">{{ amountText(row.fee) }}</template>
+              </el-table-column>
               <el-table-column label="创建时间" min-width="178">
                 <template #default="{ row }">{{ row.createTime || '—' }}</template>
               </el-table-column>
               <el-table-column label="提交时间" min-width="178">
-                <template #default="{ row }">{{ row.updateTime || '—' }}</template>
+                <template #default="{ row }">{{ row.submitTime || '—' }}</template>
               </el-table-column>
               <el-table-column label="完成时间" min-width="178">
-                <template #default="{ row }">{{ row.submitTime || '—' }}</template>
+                <template #default="{ row }">{{ row.updateTime || '—' }}</template>
+              </el-table-column>
+              <el-table-column label="是否首提" min-width="108">
+                <template #default="{ row }">{{ firstWithdrawText(row.isFirst) }}</template>
+              </el-table-column>
+              <el-table-column label="用户渠道" min-width="145" prop="channel" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.channel || '—' }}</template>
               </el-table-column>
               <el-table-column label="操作人员" min-width="140">
                 <template #default="{ row }">{{ row.auditAdmin || '—' }}</template>
@@ -760,7 +976,7 @@ onMounted(async () => {
               <el-table-column label="状态" min-width="130" fixed="right">
                 <template #default="{ row }">
                   <el-tag type="info" effect="light">
-                    {{ statusLabel(row.status) }}
+                    {{ orderStatusLabel(row) }}
                   </el-tag>
                 </template>
               </el-table-column>
@@ -775,6 +991,157 @@ onMounted(async () => {
                 :page-sizes="[20, 50, 100]"
                 @update:current-page="handlePageChange"
                 @update:page-size="handlePageSizeChange"
+              />
+            </div>
+          </section>
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="支付渠道汇总" name="channels">
+        <div class="tab-stack">
+          <header class="tab-pane-header">
+            <div>
+              <h2>支付渠道汇总</h2>
+              <p>按创建日期和支付渠道统计本地缓存数据；金额、手续费及占比均由服务端统一计算。</p>
+            </div>
+          </header>
+
+          <section class="query-card surface-card">
+            <div class="query-card__grid">
+              <label class="query-field">
+                <span>盘口</span>
+                <el-select
+                  v-model="channelSummaryFilters.sourceId"
+                  :loading="sourcesLoading"
+                  placeholder="选择已启用盘口"
+                  @change="handleChannelSummarySourceChange"
+                >
+                  <el-option
+                    v-for="source in sources"
+                    :key="source.sourceId"
+                    :label="source.displayName"
+                    :value="source.sourceId"
+                  />
+                </el-select>
+              </label>
+              <label class="query-field query-field--time-range">
+                <span>创建时间（{{ channelSummaryTimezone }}）</span>
+                <el-date-picker
+                  v-model="channelSummaryFilters.createTimeRange"
+                  type="datetimerange"
+                  :shortcuts="channelSummaryDateRangeShortcuts"
+                  value-format="YYYY-MM-DD HH:mm:ss"
+                  format="YYYY-MM-DD HH:mm:ss"
+                  range-separator="至"
+                  start-placeholder="开始时间"
+                  end-placeholder="结束时间"
+                  clearable
+                  :disabled="!channelSummaryFilters.sourceId"
+                  style="width: 100%"
+                />
+              </label>
+              <label class="query-field">
+                <span>支付渠道</span>
+                <el-select
+                  v-model="channelSummaryFilters.payChannel"
+                  clearable
+                  filterable
+                  placeholder="全部渠道"
+                >
+                  <el-option
+                    v-for="item in channelSummaryOptions"
+                    :key="item.code"
+                    :label="item.label"
+                    :value="item.code"
+                  />
+                </el-select>
+              </label>
+            </div>
+            <div class="query-card__footer">
+              <span>成功金额、成功手续费和比例仅按服务端定义的“代付成功”状态计算；分母为同一盘口、同一日期的全部渠道。</span>
+              <el-button
+                type="primary"
+                :icon="Search"
+                :loading="channelSummaryLoading"
+                @click="loadChannelSummary(true)"
+              >
+                查询汇总
+              </el-button>
+            </div>
+          </section>
+
+          <section class="surface-card table-card channel-summary-table-card">
+            <div class="section-heading">
+              <div>
+                <h2>支付渠道统计</h2>
+                <p>
+                  {{ channelSummarySourceName }} · 共
+                  {{ (channelSummaryResponse?.total || 0).toLocaleString() }} 条渠道日期记录 · 本地数据更新时间：
+                  {{ channelSummaryLocalUpdatedText }}。
+                </p>
+              </div>
+              <el-tag type="info" effect="plain">{{ channelSummaryTimezone }}</el-tag>
+            </div>
+            <el-table
+              v-loading="channelSummaryLoading"
+              :data="channelSummaryRows"
+              empty-text="当前本地筛选条件下暂无支付渠道统计"
+            >
+              <el-table-column label="日期" min-width="120" prop="date" fixed="left" />
+              <el-table-column label="支付渠道名称" min-width="170" fixed="left" show-overflow-tooltip>
+                <template #default="{ row }">
+                  {{ row.payChannelName || row.payChannel || '未配置渠道' }}
+                </template>
+              </el-table-column>
+              <el-table-column label="支付渠道代码" min-width="148" prop="payChannel" show-overflow-tooltip />
+              <el-table-column label="提现总订单数" min-width="140" align="right">
+                <template #default="{ row }">{{ row.orderCount.toLocaleString() }}</template>
+              </el-table-column>
+              <el-table-column label="代付成功订单数" min-width="150" align="right">
+                <template #default="{ row }">{{ row.successfulOrderCount.toLocaleString() }}</template>
+              </el-table-column>
+              <el-table-column label="代付成功金额" min-width="165" align="right">
+                <template #default="{ row }">
+                  {{ amountText(row.successfulAmount, 2, channelSummaryCurrency) }}
+                </template>
+              </el-table-column>
+              <el-table-column label="提现手续费（成功）" min-width="170" align="right">
+                <template #default="{ row }">
+                  {{ amountText(row.successfulFee, 2, channelSummaryCurrency) }}
+                </template>
+              </el-table-column>
+              <el-table-column label="代付失败数" min-width="130" align="right">
+                <template #default="{ row }">{{ row.failedOrderCount.toLocaleString() }}</template>
+              </el-table-column>
+              <el-table-column label="已提交代付数" min-width="145" align="right">
+                <template #default="{ row }">{{ row.submittedOrderCount.toLocaleString() }}</template>
+              </el-table-column>
+              <el-table-column label="审核拒绝数" min-width="132" align="right">
+                <template #default="{ row }">{{ (row.rejectedOrderCount || 0).toLocaleString() }}</template>
+              </el-table-column>
+              <el-table-column label="渠道成功订单占比" min-width="170" align="right">
+                <template #default="{ row }">{{ ratioText(row.successfulOrderShare) }}</template>
+              </el-table-column>
+              <el-table-column label="渠道成功金额占比" min-width="170" align="right">
+                <template #default="{ row }">{{ ratioText(row.successfulAmountShare) }}</template>
+              </el-table-column>
+              <el-table-column label="卡单率" min-width="112" align="right">
+                <template #default="{ row }">{{ ratioText(row.stuckRate) }}</template>
+              </el-table-column>
+              <el-table-column label="代付成功率" min-width="125" align="right" fixed="right">
+                <template #default="{ row }">{{ ratioText(row.successRate) }}</template>
+              </el-table-column>
+            </el-table>
+            <div class="table-pagination">
+              <el-pagination
+                background
+                layout="total, sizes, prev, pager, next, jumper"
+                :total="channelSummaryResponse?.total || 0"
+                :current-page="channelSummaryPage"
+                :page-size="channelSummaryPageSize"
+                :page-sizes="[20, 50, 100]"
+                @update:current-page="handleChannelSummaryPageChange"
+                @update:page-size="handleChannelSummaryPageSizeChange"
               />
             </div>
           </section>
@@ -813,6 +1180,7 @@ onMounted(async () => {
                 <el-date-picker
                   v-model="operatorSummaryFilters.createTimeRange"
                   type="datetimerange"
+                  :shortcuts="operatorSummaryDateRangeShortcuts"
                   value-format="YYYY-MM-DD HH:mm:ss"
                   format="YYYY-MM-DD HH:mm:ss"
                   range-separator="至"
@@ -945,19 +1313,17 @@ onMounted(async () => {
 
     <el-dialog
       v-model="manualRefreshDialogVisible"
-      title="选择本次刷新时间范围"
+      title="选择本次提现订单刷新条件"
       width="min(480px, calc(100vw - 32px))"
       :close-on-click-modal="false"
     >
       <p class="manual-refresh-dialog__intro">
-        将为 {{ selectedOrderSource?.displayName || '所选盘口' }} 提交一次后台同步任务。本次选择只影响这一次刷新，不修改系统配置的定时同步范围。
+        将为 {{ selectedOrderSource?.displayName || '所选盘口' }} 导出指定自然日的提现订单并更新本地缓存；本次选择不修改系统配置的定时导出日期。
       </p>
       <label class="manual-refresh-dialog__field">
-        <span>刷新时间范围</span>
+        <span>刷新日期范围</span>
         <el-select
           v-model="manualRefreshQueryRange"
-          :loading="manualRefreshSettingsLoading"
-          :disabled="manualRefreshSettingsLoading"
         >
           <el-option
             v-for="option in MANUAL_REFRESH_RANGE_OPTIONS"
@@ -969,7 +1335,7 @@ onMounted(async () => {
       </label>
       <p class="manual-refresh-dialog__help">{{ manualRefreshRangeDescription }}</p>
       <el-alert
-        title="任务由后台工作进程执行；若该盘口正在同步，本次选择会在当前任务结束后生效。"
+        title="任务由后台工作进程执行；若该盘口正在导出，本次选择会在当前任务结束后生效。"
         type="info"
         :closable="false"
         show-icon
@@ -979,7 +1345,6 @@ onMounted(async () => {
         <el-button
           type="primary"
           :loading="refreshStarting"
-          :disabled="manualRefreshSettingsLoading"
           @click="startRefresh"
         >
           确认并刷新

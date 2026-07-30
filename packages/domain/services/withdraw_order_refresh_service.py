@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -12,31 +12,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.common.security import decrypt_credentials
 from packages.common.settings import Settings, get_settings
-from packages.domain.models import (
-    SourceConfig,
-    WithdrawOrderRefreshState,
-    WithdrawOrderSnapshot,
-)
+from packages.domain.models import SourceConfig, WithdrawOrderRefreshState, WithdrawOrderSnapshot
 from packages.domain.services.auth_service import write_audit
+from packages.domain.services.data_dictionary_service import refresh_withdraw_status_cache
 from packages.domain.services.remote_withdraw_service import (
     RajAdminWithdrawClient,
     WithdrawFetchResult,
 )
 from packages.domain.services.source_service import get_source
 from packages.domain.services.system_setting_service import get_retention_settings
-from packages.domain.services.withdraw_order_service import (
-    WITHDRAW_ORDER_QUERY_RANGES,
-    WithdrawOrderCacheSchemaPendingError,
-    withdraw_order_query_window,
-)
+from packages.domain.services.withdraw_order_service import WithdrawOrderCacheSchemaPendingError
 
-REMOTE_TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.000Z"
 WALL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
-# A remote traversal may visit up to 200 pages.  The client renews this lease
-# after each successfully received page; 30 minutes leaves ample room for the
-# bounded authentication-retry path of one page while keeping a crashed worker
-# reclaimable promptly.
 REFRESH_LEASE_DURATION = timedelta(minutes=30)
+FAILED_EXPORT_RETRY_DELAY = timedelta(minutes=5)
+WITHDRAW_ORDER_MANUAL_REFRESH_RANGES = frozenset(
+    {"day_before_yesterday", "yesterday", "today"}
+)
+WITHDRAW_ORDER_EXPORT_TIME = time(0, 5, 1)
 
 
 class WithdrawOrderRefreshValidationError(ValueError):
@@ -44,7 +37,7 @@ class WithdrawOrderRefreshValidationError(ValueError):
 
 
 class WithdrawOrderRefreshClaimLostError(RuntimeError):
-    """A lease was superseded while a client was traversing remote pages."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,123 +58,158 @@ class WithdrawOrderRefreshRunResult:
 @dataclass(frozen=True, slots=True)
 class _RefreshClaim:
     source_id: str
-    source_display_name: str
     base_url: str
     encrypted_credentials: str
     credential_version: int
     business_timezone: str
-    page_size: int
-    query_range: str
     started_at: datetime
-    lease_expires_at: datetime
     window_start: datetime
     window_end: datetime
+    requested_query_range: str
 
 
 def _is_missing_refresh_schema(error: OperationalError | ProgrammingError) -> bool:
     message = str(error).lower()
-    return (
+    missing_table = (
         "withdraw_order_snapshots" in message
         or "withdraw_order_refresh_states" in message
     ) and ("does not exist" in message or "no such table" in message)
-
-
-def _coerce_now(value: datetime | None = None) -> datetime:
-    now = value or datetime.now(UTC)
-    return now if now.tzinfo else now.replace(tzinfo=UTC)
+    missing_export_metric = (
+        "last_export_row_count" in message
+        or "last_imported_count" in message
+        or "last_duplicate_count" in message
+    ) and ("does not exist" in message or "no such column" in message)
+    return missing_table or missing_export_metric
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
-    """Normalize SQLite's timezone-naive round trips for portable comparisons."""
-
     if value is None:
         return None
     return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
-def _parse_remote_wall_time(value: object, *, timezone_name: str) -> datetime | None:
+def _now(value: datetime | None = None) -> datetime:
+    candidate = value or datetime.now(UTC)
+    return candidate if candidate.tzinfo else candidate.replace(tzinfo=UTC)
+
+
+def _safe_text(value: object, *, limit: int) -> str | None:
+    normalized = str(value).strip() if value is not None else ""
+    return normalized[:limit] if normalized else None
+
+
+def _parse_wall_time(value: object, *, timezone_name: str) -> datetime | None:
     text = str(value or "").strip()
     if not text or text == "-":
         return None
     try:
-        return datetime.strptime(text, WALL_TIME_FORMAT).replace(
-            tzinfo=ZoneInfo(timezone_name)
-        ).astimezone(UTC)
+        return (
+            datetime.strptime(text, WALL_TIME_FORMAT)
+            .replace(tzinfo=ZoneInfo(timezone_name))
+            .astimezone(UTC)
+        )
     except ValueError:
         return None
 
 
-def _safe_text(value: object, *, limit: int) -> str | None:
-    text = str(value).strip() if value is not None else ""
-    return text[:limit] if text else None
-
-
-def _eligible_source(source: SourceConfig) -> bool:
+def _eligible(source: SourceConfig) -> bool:
     return bool(source.enabled and source.base_url and source.encrypted_credentials)
 
 
-def _state_is_due(
-    state: WithdrawOrderRefreshState,
-    *,
-    interval_hours: int,
-    now: datetime,
-) -> bool:
-    # An active lease belongs to a worker that is currently handling this
-    # source.  A later manual click remains recorded and will be picked up once
-    # that lease completes.
-    lease_expires_at = _as_utc(state.lease_expires_at)
-    last_started_at = _as_utc(state.last_started_at)
-    manual_request_at = _as_utc(state.manual_request_at)
-    if lease_expires_at is not None and lease_expires_at > now:
-        return False
-    if state.status == "running" and lease_expires_at is not None:
-        # A dead worker's expired lease is reclaimed immediately.
-        return True
-    if manual_request_at is not None and (
-        last_started_at is None or manual_request_at > last_started_at
-    ):
-        return True
-    # Failed initial refreshes must not cause a 30-second retry storm.  The
-    # interval is used as a backoff until an operator explicitly queues a run.
-    anchor = _as_utc(state.last_succeeded_at) or _as_utc(state.last_failed_at)
-    return anchor is None or now >= anchor + timedelta(hours=interval_hours)
-
-
-async def _get_or_create_refresh_state(
+async def _state(
     session: AsyncSession,
     *,
     source_id: str,
     now: datetime,
 ) -> WithdrawOrderRefreshState:
-    """Lock a refresh state, tolerating concurrent first use of a source."""
-
-    state = await session.get(
+    existing = await session.get(
         WithdrawOrderRefreshState,
         source_id,
         with_for_update=True,
         populate_existing=True,
     )
-    if state is not None:
-        return state
-
+    if existing is not None:
+        return existing
     created = WithdrawOrderRefreshState(source_id=source_id, updated_at=now)
     try:
-        # The savepoint keeps a unique-key collision from rolling back other
-        # queued sources or the audit row in the surrounding transaction.
         async with session.begin_nested():
             session.add(created)
             await session.flush()
     except IntegrityError:
-        state = await session.get(
+        existing = await session.get(
             WithdrawOrderRefreshState,
             source_id,
             with_for_update=True,
             populate_existing=True,
         )
-        if state is not None:
-            return state
+        if existing is not None:
+            return existing
         raise
     return created
+
+
+def _manual_request_is_pending(state: WithdrawOrderRefreshState) -> bool:
+    manual = _as_utc(state.manual_request_at)
+    started = _as_utc(state.last_started_at)
+    return manual is not None and (started is None or manual > started)
+
+
+def _calendar_day_window(*, day: date, timezone_name: str) -> tuple[datetime, datetime]:
+    timezone = ZoneInfo(timezone_name)
+    return (
+        datetime.combine(day, time.min, tzinfo=timezone).astimezone(UTC),
+        datetime.combine(day, time(23, 59, 59), tzinfo=timezone).astimezone(UTC),
+    )
+
+
+def _manual_export_day(*, query_range: str, timezone_name: str, now: datetime) -> date:
+    offsets = {"day_before_yesterday": 2, "yesterday": 1, "today": 0}
+    return now.astimezone(ZoneInfo(timezone_name)).date() - timedelta(
+        days=offsets[query_range]
+    )
+
+
+def _automatic_export_day(
+    *,
+    date_mode: str,
+    specific_date: date | None,
+    timezone_name: str,
+    now: datetime,
+) -> date:
+    if date_mode == "specific_date" and specific_date is not None:
+        return specific_date
+    return now.astimezone(ZoneInfo(timezone_name)).date() - timedelta(days=1)
+
+
+def _due(
+    state: WithdrawOrderRefreshState,
+    *,
+    now: datetime,
+    automatic_window_start: datetime,
+    timezone_name: str,
+) -> bool:
+    lease = _as_utc(state.lease_expires_at)
+    if lease is not None and lease > now:
+        return False
+    if state.status == "running" and lease is not None:
+        return True
+    if _manual_request_is_pending(state):
+        return True
+    if now.astimezone(ZoneInfo(timezone_name)).time() < WITHDRAW_ORDER_EXPORT_TIME:
+        return False
+    if (
+        state.status == "succeeded"
+        and _as_utc(state.last_window_start_utc) == automatic_window_start
+    ):
+        return False
+    if (
+        state.status == "failed"
+        and _as_utc(state.last_window_start_utc) == automatic_window_start
+        and (failed_at := _as_utc(state.last_failed_at)) is not None
+        and now < failed_at + FAILED_EXPORT_RETRY_DELAY
+    ):
+        return False
+    return True
 
 
 async def queue_withdraw_order_refreshes(
@@ -192,14 +220,14 @@ async def queue_withdraw_order_refreshes(
     actor_user_id: int | None,
     now: datetime | None = None,
 ) -> WithdrawOrderRefreshQueueResult:
-    """Persist a manual refresh request; never contact a remote source here."""
+    """Queue a full local-calendar-day Excel export without remote I/O."""
 
-    if query_range is not None and query_range not in WITHDRAW_ORDER_QUERY_RANGES:
+    requested_query_range = query_range or "yesterday"
+    if requested_query_range not in WITHDRAW_ORDER_MANUAL_REFRESH_RANGES:
         raise WithdrawOrderRefreshValidationError("不支持的提现订单刷新时间范围。")
-    requested_at = _coerce_now(now)
+    requested_at = _now(now)
     if source_id:
-        source = await get_source(session, source_id)
-        sources = [source]
+        sources = [await get_source(session, source_id)]
     else:
         sources = list(
             await session.scalars(
@@ -214,36 +242,29 @@ async def queue_withdraw_order_refreshes(
         )
     if not sources:
         raise WithdrawOrderRefreshValidationError("没有可同步的已启用盘口。")
-    if source_id and not _eligible_source(sources[0]):
+    if source_id and not _eligible(sources[0]):
         raise WithdrawOrderRefreshValidationError("所选盘口尚未启用或缺少远端读取凭据。")
 
-    queued_ids: list[str] = []
+    ids: list[str] = []
     try:
         for source in sources:
-            state = await _get_or_create_refresh_state(
-                session,
-                source_id=source.source_id,
-                now=requested_at,
-            )
+            state = await _state(session, source_id=source.source_id, now=requested_at)
             state.manual_request_at = requested_at
-            state.manual_query_range = query_range
-            # Do not overwrite an active lease.  The run completion keeps a
-            # newer request marker and the worker will immediately queue it.
+            state.manual_query_range = requested_query_range
             if not (
                 state.status == "running"
-                and _as_utc(state.lease_expires_at) is not None
-                and _as_utc(state.lease_expires_at) > requested_at
+                and (_as_utc(state.lease_expires_at) or requested_at) > requested_at
             ):
                 state.status = "queued"
             state.updated_at = requested_at
-            queued_ids.append(source.source_id)
+            ids.append(source.source_id)
         await write_audit(
             session,
             action="withdraw_order.refresh.queue",
             actor_user_id=actor_user_id,
             target_type="withdraw_order_refresh",
             target_id=source_id or "all",
-            metadata={"sourceIds": queued_ids, "queryRange": query_range},
+            metadata={"sourceIds": ids, "queryRange": requested_query_range},
         )
         await session.commit()
     except (OperationalError, ProgrammingError) as exc:
@@ -253,14 +274,10 @@ async def queue_withdraw_order_refreshes(
         raise WithdrawOrderCacheSchemaPendingError(
             "提现订单本地缓存正在初始化，请在数据库迁移完成后重试。"
         ) from exc
-    return WithdrawOrderRefreshQueueResult(
-        source_ids=queued_ids,
-        requested_at=requested_at,
-        query_range=query_range,
-    )
+    return WithdrawOrderRefreshQueueResult(ids, requested_at, requested_query_range)
 
 
-async def _claim_next_due_refresh(
+async def _claim_due(
     session: AsyncSession,
     *,
     now: datetime,
@@ -279,128 +296,63 @@ async def _claim_next_due_refresh(
         )
     )
     for source in sources:
-        state = await _get_or_create_refresh_state(
-            session,
-            source_id=source.source_id,
-            now=now,
-        )
-        if not _state_is_due(
-            state,
-            interval_hours=retention.withdraw_order_refresh_interval_hours,
-            now=now,
-        ):
-            continue
-        manual_request_at = _as_utc(state.manual_request_at)
-        last_started_at = _as_utc(state.last_started_at)
-        use_manual_range = manual_request_at is not None and (
-            last_started_at is None or manual_request_at > last_started_at
-        )
-        query_range = (
-            state.manual_query_range
-            if use_manual_range and state.manual_query_range
-            else retention.withdraw_order_query_range
-        )
-        window_start, window_end = withdraw_order_query_window(
-            query_range=query_range,
+        state = await _state(session, source_id=source.source_id, now=now)
+        automatic_day = _automatic_export_day(
+            date_mode=retention.withdraw_order_export_date_mode,
+            specific_date=retention.withdraw_order_export_specific_date,
             timezone_name=source.business_timezone,
             now=now,
         )
-        lease_expires_at = now + REFRESH_LEASE_DURATION
+        automatic_window_start, _ = _calendar_day_window(
+            day=automatic_day,
+            timezone_name=source.business_timezone,
+        )
+        if not _due(
+            state,
+            now=now,
+            automatic_window_start=automatic_window_start,
+            timezone_name=source.business_timezone,
+        ):
+            continue
+        manual_requested = _manual_request_is_pending(state)
+        requested_query_range = state.manual_query_range or "yesterday"
+        export_day = (
+            _manual_export_day(
+                query_range=requested_query_range,
+                timezone_name=source.business_timezone,
+                now=now,
+            )
+            if manual_requested
+            else automatic_day
+        )
+        window_start, window_end = _calendar_day_window(
+            day=export_day,
+            timezone_name=source.business_timezone,
+        )
         state.status = "running"
         state.last_started_at = now
         state.last_window_start_utc = window_start
         state.last_window_end_utc = window_end
-        state.lease_expires_at = lease_expires_at
+        state.lease_expires_at = now + REFRESH_LEASE_DURATION
         state.last_error = None
         state.updated_at = now
         await session.commit()
         return _RefreshClaim(
             source_id=source.source_id,
-            source_display_name=source.display_name,
             base_url=source.base_url or "",
             encrypted_credentials=source.encrypted_credentials or "",
             credential_version=source.credential_version,
             business_timezone=source.business_timezone,
-            page_size=retention.withdraw_order_refresh_page_size,
-            query_range=query_range,
             started_at=now,
-            lease_expires_at=lease_expires_at,
             window_start=window_start,
             window_end=window_end,
+            requested_query_range=requested_query_range,
         )
     await session.commit()
     return None
 
 
-async def _record_refresh_failure(
-    session: AsyncSession,
-    *,
-    claim: _RefreshClaim,
-    finished_at: datetime,
-) -> WithdrawOrderRefreshRunResult:
-    state = await session.get(
-        WithdrawOrderRefreshState,
-        claim.source_id,
-        with_for_update=True,
-        populate_existing=True,
-    )
-    if state is None:
-        return WithdrawOrderRefreshRunResult(source_id=claim.source_id, status="failed")
-    # Do not clobber a newer worker claim after this lease expired.
-    if _as_utc(state.last_started_at) != claim.started_at:
-        return WithdrawOrderRefreshRunResult(source_id=claim.source_id, status=state.status)
-    state.status = "failed"
-    state.last_failed_at = finished_at
-    state.last_error = "远端提现订单读取失败，请稍后重试。"
-    state.lease_expires_at = None
-    if (
-        _as_utc(state.manual_request_at) is not None
-        and _as_utc(state.manual_request_at) <= claim.started_at
-    ):
-        state.manual_request_at = None
-        state.manual_query_range = None
-    state.updated_at = finished_at
-    await session.commit()
-    return WithdrawOrderRefreshRunResult(source_id=claim.source_id, status="failed")
-
-
-async def _requeue_cancelled_refresh(
-    session: AsyncSession,
-    *,
-    claim: _RefreshClaim,
-    cancelled_at: datetime,
-) -> None:
-    """Release a local cancellation promptly so a restarted worker resumes it."""
-
-    state = await session.get(
-        WithdrawOrderRefreshState,
-        claim.source_id,
-        with_for_update=True,
-        populate_existing=True,
-    )
-    if state is None or _as_utc(state.last_started_at) != claim.started_at:
-        return
-    state.status = "queued"
-    state.lease_expires_at = None
-    state.last_error = "后台同步在工作进程停止前中断，已重新排队。"
-    if (
-        _as_utc(state.manual_request_at) is None
-        or _as_utc(state.manual_request_at) <= claim.started_at
-    ):
-        state.manual_request_at = cancelled_at
-        state.manual_query_range = claim.query_range
-    state.updated_at = cancelled_at
-    await session.commit()
-
-
-async def _renew_refresh_lease(
-    session: AsyncSession,
-    *,
-    claim: _RefreshClaim,
-) -> None:
-    """Extend an active claim after a bounded remote-page request completes."""
-
-    renewed_at = datetime.now(UTC)
+async def _renew(session: AsyncSession, *, claim: _RefreshClaim) -> None:
     state = await session.get(
         WithdrawOrderRefreshState,
         claim.source_id,
@@ -413,29 +365,25 @@ async def _renew_refresh_lease(
         or _as_utc(state.last_started_at) != claim.started_at
     ):
         raise WithdrawOrderRefreshClaimLostError("提现订单同步租约已失效。")
+    renewed_at = datetime.now(UTC)
     state.lease_expires_at = renewed_at + REFRESH_LEASE_DURATION
     state.updated_at = renewed_at
     await session.commit()
 
 
-async def _snapshot_rows_by_remote_id(
+async def _rows_by_id(
     session: AsyncSession,
     *,
     source_id: str,
     remote_ids: list[str],
 ) -> dict[str, WithdrawOrderSnapshot]:
     existing: dict[str, WithdrawOrderSnapshot] = {}
-    # Keep each IN predicate comfortably below SQLite and Postgres parameter
-    # limits while retaining portable SQLAlchemy behavior.
     for offset in range(0, len(remote_ids), 500):
-        chunk = remote_ids[offset : offset + 500]
-        if not chunk:
-            continue
         rows = list(
             await session.scalars(
                 select(WithdrawOrderSnapshot).where(
                     WithdrawOrderSnapshot.source_id == source_id,
-                    WithdrawOrderSnapshot.remote_order_id.in_(chunk),
+                    WithdrawOrderSnapshot.remote_order_id.in_(remote_ids[offset : offset + 500]),
                 )
             )
         )
@@ -443,36 +391,87 @@ async def _snapshot_rows_by_remote_id(
     return existing
 
 
-def _apply_snapshot_values(
+def _apply(
     snapshot: WithdrawOrderSnapshot,
     *,
     order: dict[str, Any],
-    timezone_name: str,
-    synced_at: datetime,
+    claim: _RefreshClaim,
+    now: datetime,
 ) -> None:
-    """Copy only approved, normalized fields from the remote client result."""
+    """Persist only the approved Excel white-list projection."""
 
     snapshot.uid = _safe_text(order.get("uid"), limit=64) or ""
+    snapshot.order_num = _safe_text(order.get("order_num"), limit=160)
+    snapshot.out_trade_no = _safe_text(order.get("out_trade_no"), limit=160)
+    snapshot.pay_channel_name = _safe_text(order.get("pay_channel_name"), limit=160)
+    snapshot.pay_channel = _safe_text(order.get("pay_channel"), limit=120)
     snapshot.amount = _safe_text(order.get("amount"), limit=64)
+    snapshot.fee = _safe_text(order.get("fee"), limit=64)
     snapshot.real_amount = _safe_text(order.get("real_amount"), limit=64)
     snapshot.create_time = _safe_text(order.get("create_time"), limit=32)
-    snapshot.create_time_utc = _parse_remote_wall_time(
+    snapshot.create_time_utc = _parse_wall_time(
         snapshot.create_time,
-        timezone_name=timezone_name,
+        timezone_name=claim.business_timezone,
     )
-    snapshot.update_time = _safe_text(order.get("update_time"), limit=32)
     snapshot.submit_time = _safe_text(order.get("submit_time"), limit=32)
-    snapshot.audit_admin = _safe_text(order.get("audit_admin"), limit=160)
+    snapshot.update_time = _safe_text(order.get("update_time"), limit=32)
+    snapshot.audit_admin = _safe_text(order.get("audit_person"), limit=160)
     snapshot.status = _safe_text(order.get("status"), limit=40) or ""
-    snapshot.last_seen_at = synced_at
-    snapshot.synced_at = synced_at
+    snapshot.status_label = _safe_text(order.get("status_label"), limit=120)
+    snapshot.is_first = _safe_text(order.get("is_first"), limit=40)
+    snapshot.channel = _safe_text(order.get("channel"), limit=120)
+    snapshot.last_seen_at = now
+    snapshot.synced_at = now
 
 
-async def _persist_refresh_success(
+def _apply_status_dictionary(
+    orders: list[dict[str, Any]],
+    statuses: list[dict[str, str]],
+) -> None:
+    """Map export labels through the source's actual status dictionary.
+
+    The spreadsheet retains the source-provided label in ``status_label``.  A
+    normalized code is separately stored for stable filtering and aggregation.
+    Duplicate labels are rejected because choosing one code would be unsafe.
+    """
+
+    label_to_code: dict[str, str] = {}
+    code_to_label: dict[str, str] = {}
+    for entry in statuses:
+        code = _safe_text(entry.get("code"), limit=40)
+        label = _safe_text(entry.get("label"), limit=120)
+        if not code or not label:
+            raise WithdrawOrderRefreshValidationError("远端提现状态字典不完整。")
+        previous = label_to_code.get(label)
+        if previous is not None and previous != code:
+            raise WithdrawOrderRefreshValidationError("远端提现状态字典存在重复状态文案。")
+        label_to_code[label] = code
+        code_to_label[code] = label
+    if not label_to_code:
+        raise WithdrawOrderRefreshValidationError("远端提现状态字典为空。")
+    for order in orders:
+        raw_status = _safe_text(order.get("status_label"), limit=120)
+        if not raw_status:
+            raise WithdrawOrderRefreshValidationError("提现订单导出表格包含空状态。")
+        if raw_status in code_to_label:
+            order["status"] = raw_status
+            # Some export variants contain the status code instead of its
+            # Chinese label.  Preserve a display label from the source
+            # dictionary so the detail page and summaries remain consistent.
+            order["status_label"] = code_to_label[raw_status]
+            continue
+        mapped = label_to_code.get(raw_status)
+        if mapped is None:
+            raise WithdrawOrderRefreshValidationError("提现订单导出表格包含未映射的订单状态。")
+        order["status"] = mapped
+
+
+async def _persist_success(
     session: AsyncSession,
     *,
     claim: _RefreshClaim,
     fetched: WithdrawFetchResult,
+    remote_statuses: list[dict[str, str]],
     finished_at: datetime,
 ) -> WithdrawOrderRefreshRunResult:
     state = await session.get(
@@ -482,44 +481,36 @@ async def _persist_refresh_success(
         populate_existing=True,
     )
     if state is None or _as_utc(state.last_started_at) != claim.started_at:
-        return WithdrawOrderRefreshRunResult(source_id=claim.source_id, status="superseded")
+        return WithdrawOrderRefreshRunResult(claim.source_id, "superseded")
 
-    normalized_by_id: dict[str, dict[str, Any]] = {}
-    for item in fetched.orders:
-        remote_order_id = _safe_text(item.get("id"), limit=120)
-        if remote_order_id:
-            normalized_by_id[remote_order_id] = item
-    remote_ids = list(normalized_by_id)
-    existing = await _snapshot_rows_by_remote_id(
+    await refresh_withdraw_status_cache(
         session,
         source_id=claim.source_id,
-        remote_ids=remote_ids,
+        statuses=remote_statuses,
+        now=finished_at,
     )
-    for remote_order_id, order in normalized_by_id.items():
-        snapshot = existing.get(remote_order_id)
+    by_id = {
+        remote_id: order
+        for order in fetched.orders
+        if (remote_id := _safe_text(order.get("remote_order_id"), limit=120))
+    }
+    existing = await _rows_by_id(session, source_id=claim.source_id, remote_ids=list(by_id))
+    for remote_id, order in by_id.items():
+        snapshot = existing.get(remote_id)
         if snapshot is None:
             snapshot = WithdrawOrderSnapshot(
                 source_id=claim.source_id,
-                remote_order_id=remote_order_id,
+                remote_order_id=remote_id,
                 first_seen_at=finished_at,
                 last_seen_at=finished_at,
                 synced_at=finished_at,
             )
             session.add(snapshot)
-        _apply_snapshot_values(
-            snapshot,
-            order=order,
-            timezone_name=claim.business_timezone,
-            synced_at=finished_at,
-        )
+        _apply(snapshot, order=order, claim=claim, now=finished_at)
     await session.flush()
 
-    # A complete remote page traversal is authoritative for its requested
-    # window.  Remove cache rows no longer returned there; never delete on a
-    # partial fetch because that would turn a remote pagination issue into data
-    # loss in the local view.
     if fetched.complete:
-        in_window = list(
+        rows = list(
             await session.scalars(
                 select(WithdrawOrderSnapshot).where(
                     WithdrawOrderSnapshot.source_id == claim.source_id,
@@ -529,12 +520,9 @@ async def _persist_refresh_success(
                 )
             )
         )
-        stale_rows = [row for row in in_window if row.remote_order_id not in normalized_by_id]
-        for stale in stale_rows:
-            await session.delete(stale)
-        if stale_rows:
-            await session.flush()
-
+        for row in rows:
+            if row.remote_order_id not in by_id:
+                await session.delete(row)
     cached_total = int(
         await session.scalar(
             select(func.count())
@@ -554,6 +542,9 @@ async def _persist_refresh_success(
     state.last_cached_total = cached_total
     state.last_fetched_pages = fetched.fetched_pages
     state.last_complete = fetched.complete
+    state.last_export_row_count = fetched.export_row_count
+    state.last_imported_count = len(by_id)
+    state.last_duplicate_count = fetched.duplicate_count
     state.last_error = None
     state.lease_expires_at = None
     if (
@@ -565,14 +556,70 @@ async def _persist_refresh_success(
     state.updated_at = finished_at
     await session.commit()
     return WithdrawOrderRefreshRunResult(
-        source_id=claim.source_id,
-        status="succeeded",
-        remote_total=fetched.remote_total,
-        cached_total=cached_total,
+        claim.source_id,
+        "succeeded",
+        fetched.remote_total,
+        cached_total,
     )
 
 
-async def _execute_refresh_claim(
+async def _failure(
+    session: AsyncSession,
+    *,
+    claim: _RefreshClaim,
+    finished_at: datetime,
+) -> WithdrawOrderRefreshRunResult:
+    state = await session.get(
+        WithdrawOrderRefreshState,
+        claim.source_id,
+        with_for_update=True,
+        populate_existing=True,
+    )
+    if state is None or _as_utc(state.last_started_at) != claim.started_at:
+        return WithdrawOrderRefreshRunResult(claim.source_id, state.status if state else "failed")
+    state.status = "failed"
+    state.last_failed_at = finished_at
+    state.last_error = "远端提现订单 Excel 导出或校验失败，请稍后重试。"
+    state.lease_expires_at = None
+    if (
+        _as_utc(state.manual_request_at) is not None
+        and _as_utc(state.manual_request_at) <= claim.started_at
+    ):
+        state.manual_request_at = None
+        state.manual_query_range = None
+    state.updated_at = finished_at
+    await session.commit()
+    return WithdrawOrderRefreshRunResult(claim.source_id, "failed")
+
+
+async def _requeue_cancelled(
+    session: AsyncSession,
+    *,
+    claim: _RefreshClaim,
+    cancelled_at: datetime,
+) -> None:
+    state = await session.get(
+        WithdrawOrderRefreshState,
+        claim.source_id,
+        with_for_update=True,
+        populate_existing=True,
+    )
+    if state is None or _as_utc(state.last_started_at) != claim.started_at:
+        return
+    state.status = "queued"
+    state.lease_expires_at = None
+    state.last_error = "后台同步在工作进程停止前中断，已重新排队。"
+    if (
+        _as_utc(state.manual_request_at) is None
+        or _as_utc(state.manual_request_at) <= claim.started_at
+    ):
+        state.manual_request_at = cancelled_at
+        state.manual_query_range = claim.requested_query_range
+    state.updated_at = cancelled_at
+    await session.commit()
+
+
+async def _execute(
     session: AsyncSession,
     *,
     claim: _RefreshClaim,
@@ -585,31 +632,29 @@ async def _execute_refresh_claim(
             credential_version=claim.credential_version,
             settings=settings,
         )
-        username = credentials["username"]
-        password = credentials["password"]
-        totp_secret = credentials["totp_secret"]
         async with RajAdminWithdrawClient(
             base_url=claim.base_url,
-            username=username,
-            password=password,
-            totp_secret=totp_secret,
-            page_size=claim.page_size,
+            username=credentials["username"],
+            password=credentials["password"],
+            totp_secret=credentials["totp_secret"],
         ) as client:
-            async def renew_lease() -> None:
-                await _renew_refresh_lease(session, claim=claim)
-
-            fetched = await client.fetch_all_withdraw_orders(
-                create_start=claim.window_start.strftime(REMOTE_TIME_FORMAT),
-                create_end=claim.window_end.strftime(REMOTE_TIME_FORMAT),
-                on_page_fetched=renew_lease,
+            await _renew(session, claim=claim)
+            remote_statuses = await client.fetch_withdraw_statuses()
+            await _renew(session, claim=claim)
+            fetched = await client.export_withdraw_orders(
+                create_start=claim.window_start.astimezone(
+                    ZoneInfo(claim.business_timezone)
+                ).strftime(WALL_TIME_FORMAT),
+                create_end=claim.window_end.astimezone(
+                    ZoneInfo(claim.business_timezone)
+                ).strftime(WALL_TIME_FORMAT),
             )
+            _apply_status_dictionary(fetched.orders, remote_statuses)
+            await _renew(session, claim=claim)
     except asyncio.CancelledError:
-        # ``CancelledError`` is not an Exception on supported Python versions.
-        # Releasing the durable lease lets the next worker run resume promptly
-        # after an intentional process restart.
         try:
             await session.rollback()
-            await _requeue_cancelled_refresh(
+            await _requeue_cancelled(
                 session,
                 claim=claim,
                 cancelled_at=datetime.now(UTC),
@@ -618,18 +663,13 @@ async def _execute_refresh_claim(
             await session.rollback()
         raise
     except Exception:
-        # Remote errors and credential problems are deliberately collapsed to a
-        # fixed state message.  Raw upstream bodies and credential context must
-        # never be persisted or exposed to the page.
-        return await _record_refresh_failure(
-            session,
-            claim=claim,
-            finished_at=datetime.now(UTC),
-        )
-    return await _persist_refresh_success(
+        await session.rollback()
+        return await _failure(session, claim=claim, finished_at=datetime.now(UTC))
+    return await _persist_success(
         session,
         claim=claim,
         fetched=fetched,
+        remote_statuses=remote_statuses,
         finished_at=datetime.now(UTC),
     )
 
@@ -640,18 +680,12 @@ async def run_due_withdraw_order_refreshes(
     now: datetime | None = None,
     settings: Settings | None = None,
 ) -> list[WithdrawOrderRefreshRunResult]:
-    """Run due source refreshes sequentially without holding DB locks remotely."""
-
     current_settings = settings or get_settings()
-    run_now = _coerce_now(now)
+    run_at = _now(now)
     results: list[WithdrawOrderRefreshRunResult] = []
     while True:
         try:
-            claim = await _claim_next_due_refresh(
-                session,
-                now=run_now,
-                settings=current_settings,
-            )
+            claim = await _claim_due(session, now=run_at, settings=current_settings)
         except (OperationalError, ProgrammingError) as exc:
             if not _is_missing_refresh_schema(exc):
                 raise
@@ -659,17 +693,9 @@ async def run_due_withdraw_order_refreshes(
             return results
         if claim is None:
             return results
-        try:
-            results.append(
-                await _execute_refresh_claim(
-                    session,
-                    claim=claim,
-                    settings=current_settings,
-                )
-            )
-        except (OperationalError, ProgrammingError):
-            await session.rollback()
-            raise
-        # The next claim uses a fresh timestamp so a long remote call does not
-        # cause the following source's schedule to appear prematurely due.
-        run_now = datetime.now(UTC)
+        results.append(await _execute(session, claim=claim, settings=current_settings))
+        # Keep an explicitly supplied clock stable.  Besides making callers
+        # deterministic, this prevents a failed historic due run from being
+        # claimed twice in the same scheduler pass merely because its retry
+        # timestamp is based on the real clock.
+        run_at = datetime.now(UTC) if now is None else run_at

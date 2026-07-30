@@ -30,12 +30,14 @@ def _is_missing_refresh_policy_column(
         or "charge_order_refresh_interval_hours" in message
         or "charge_order_export_date_mode" in message
         or "charge_order_export_specific_date" in message
+        or "withdraw_order_export_date_mode" in message
+        or "withdraw_order_export_specific_date" in message
     ) and ("does not exist" in message or "no such column" in message)
 
 
 async def _load_legacy_retention_row(
     session: AsyncSession,
-) -> tuple[object | None, bool, bool, bool, bool]:
+) -> tuple[object | None, bool, bool, bool, bool, bool]:
     """Read a settings row while refresh-policy migrations are pending.
 
     The ORM cannot select a model with a column that has not been migrated yet.
@@ -53,7 +55,9 @@ async def _load_legacy_retention_row(
             "withdraw_order_query_range, withdraw_order_refresh_page_size, "
             "charge_order_refresh_interval_hours, charge_order_refresh_page_size, "
             "charge_order_query_range, charge_order_export_date_mode, "
-            "charge_order_export_specific_date, ",
+            "charge_order_export_specific_date, withdraw_order_export_date_mode, "
+            "withdraw_order_export_specific_date, ",
+            True,
             True,
             True,
             True,
@@ -67,6 +71,7 @@ async def _load_legacy_retention_row(
             True,
             True,
             False,
+            False,
         ),
         (
             "withdraw_order_query_range, withdraw_order_refresh_page_size, ",
@@ -74,9 +79,10 @@ async def _load_legacy_retention_row(
             True,
             False,
             False,
+            False,
         ),
-        ("withdraw_order_query_range, ", True, False, False, False),
-        ("", False, False, False, False),
+        ("withdraw_order_query_range, ", True, False, False, False, False),
+        ("", False, False, False, False, False),
     )
     for (
         extra_columns,
@@ -84,6 +90,7 @@ async def _load_legacy_retention_row(
         has_page_size,
         has_charge_policy,
         has_charge_export_policy,
+        has_withdraw_export_policy,
     ) in projections:
         try:
             result = await session.execute(
@@ -106,8 +113,9 @@ async def _load_legacy_retention_row(
             has_page_size,
             has_charge_policy,
             has_charge_export_policy,
+            has_withdraw_export_policy,
         )
-    return None, False, False, False, False
+    return None, False, False, False, False, False
 
 
 async def _load_retention_settings(
@@ -137,6 +145,7 @@ async def _load_retention_settings(
             has_page_size,
             has_charge_policy,
             has_charge_export_policy,
+            has_withdraw_export_policy,
         ) = await _load_legacy_retention_row(session)
         if legacy is None:
             raise SystemSettingsSchemaPendingError(
@@ -154,12 +163,22 @@ async def _load_retention_settings(
                 withdraw_order_refresh_page_size=(
                     int(legacy["withdraw_order_refresh_page_size"])
                     if has_page_size
-                    else current_defaults.withdraw_order_refresh_page_size
+                    else 100
                 ),
                 withdraw_order_query_range=(
                     str(legacy["withdraw_order_query_range"])
                     if has_query_range
-                    else current_defaults.withdraw_order_query_range
+                    else "today"
+                ),
+                withdraw_order_export_date_mode=(
+                    str(legacy["withdraw_order_export_date_mode"])
+                    if has_withdraw_export_policy
+                    else current_defaults.withdraw_order_export_date_mode
+                ),
+                withdraw_order_export_specific_date=(
+                    legacy["withdraw_order_export_specific_date"]
+                    if has_withdraw_export_policy
+                    else current_defaults.withdraw_order_export_specific_date
                 ),
                 charge_order_refresh_interval_hours=(
                     int(legacy["charge_order_refresh_interval_hours"])
@@ -201,11 +220,13 @@ async def _load_retention_settings(
         uploaded_file_retention_days=current_defaults.uploaded_file_retention_days,
         result_retention_days=current_defaults.result_retention_days,
         remote_cache_retention_days=current_defaults.remote_cache_retention_days,
-        withdraw_order_refresh_interval_hours=(
-            current_defaults.withdraw_order_refresh_interval_hours
-        ),
-        withdraw_order_refresh_page_size=current_defaults.withdraw_order_refresh_page_size,
-        withdraw_order_query_range=current_defaults.withdraw_order_query_range,
+        # Legacy pagination-policy columns remain in the schema for a safe
+        # rollout but are no longer used by withdrawal export refreshes.
+        withdraw_order_refresh_interval_hours=1,
+        withdraw_order_refresh_page_size=100,
+        withdraw_order_query_range="today",
+        withdraw_order_export_date_mode=current_defaults.withdraw_order_export_date_mode,
+        withdraw_order_export_specific_date=current_defaults.withdraw_order_export_specific_date,
         charge_order_refresh_interval_hours=(current_defaults.charge_order_refresh_interval_hours),
         charge_order_refresh_page_size=current_defaults.charge_order_refresh_page_size,
         charge_order_query_range=current_defaults.charge_order_query_range,
@@ -249,6 +270,12 @@ async def update_retention_settings(
         "withdrawOrderRefreshIntervalHours": row.withdraw_order_refresh_interval_hours,
         "withdrawOrderRefreshPageSize": row.withdraw_order_refresh_page_size,
         "withdrawOrderQueryRange": row.withdraw_order_query_range,
+        "withdrawOrderExportDateMode": row.withdraw_order_export_date_mode,
+        "withdrawOrderExportSpecificDate": (
+            row.withdraw_order_export_specific_date.isoformat()
+            if row.withdraw_order_export_specific_date is not None
+            else None
+        ),
         "chargeOrderRefreshIntervalHours": row.charge_order_refresh_interval_hours,
         "chargeOrderRefreshPageSize": row.charge_order_refresh_page_size,
         "chargeOrderQueryRange": row.charge_order_query_range,
@@ -269,6 +296,13 @@ async def update_retention_settings(
         row.withdraw_order_refresh_page_size = payload.withdraw_order_refresh_page_size
     if payload.withdraw_order_query_range is not None:
         row.withdraw_order_query_range = payload.withdraw_order_query_range
+    if payload.withdraw_order_export_date_mode is not None:
+        row.withdraw_order_export_date_mode = payload.withdraw_order_export_date_mode
+        row.withdraw_order_export_specific_date = (
+            payload.withdraw_order_export_specific_date
+            if payload.withdraw_order_export_date_mode == "specific_date"
+            else None
+        )
     if payload.charge_order_refresh_interval_hours is not None:
         row.charge_order_refresh_interval_hours = payload.charge_order_refresh_interval_hours
     if payload.charge_order_refresh_page_size is not None:
@@ -306,6 +340,12 @@ async def update_retention_settings(
                     ),
                     "withdrawOrderRefreshPageSize": row.withdraw_order_refresh_page_size,
                     "withdrawOrderQueryRange": row.withdraw_order_query_range,
+                    "withdrawOrderExportDateMode": row.withdraw_order_export_date_mode,
+                    "withdrawOrderExportSpecificDate": (
+                        row.withdraw_order_export_specific_date.isoformat()
+                        if row.withdraw_order_export_specific_date is not None
+                        else None
+                    ),
                     "chargeOrderRefreshIntervalHours": row.charge_order_refresh_interval_hours,
                     "chargeOrderRefreshPageSize": row.charge_order_refresh_page_size,
                     "chargeOrderQueryRange": row.charge_order_query_range,

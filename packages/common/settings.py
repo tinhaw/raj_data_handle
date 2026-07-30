@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -7,8 +8,11 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-WITHDRAW_ORDER_REFRESH_PAGE_SIZES = frozenset({10, 20, 30, 50, 100})
-CHARGE_ORDER_REFRESH_PAGE_SIZES = WITHDRAW_ORDER_REFRESH_PAGE_SIZES
+CHARGE_ORDER_REFRESH_PAGE_SIZES = frozenset({10, 20, 30, 50, 100})
+# Deprecated compatibility values for existing environment files and staged
+# rollouts.  Withdrawal refreshes no longer read them; their real policy is
+# the daily Excel-export date mode below.
+WITHDRAW_ORDER_REFRESH_PAGE_SIZES = CHARGE_ORDER_REFRESH_PAGE_SIZES
 
 
 class Settings(BaseSettings):
@@ -52,13 +56,7 @@ class Settings(BaseSettings):
     uploaded_file_retention_days: int = 3
     result_retention_days: int = 30
     remote_cache_retention_days: int = 30
-    # The persisted system setting takes precedence once its migration has
-    # been applied. This fallback is used only when the singleton setting row
-    # is first initialized.
     withdraw_order_refresh_interval_hours: int = Field(default=1, ge=1, le=24)
-    # Keep this aligned with the page-size choices exposed by the remote
-    # withdrawal-order management page.  The database-backed system setting
-    # takes precedence after its migration is applied.
     withdraw_order_refresh_page_size: int = Field(default=100)
     withdraw_order_query_range: Literal[
         "today",
@@ -70,6 +68,11 @@ class Settings(BaseSettings):
         "last_24_hours",
         "last_48_hours",
     ] = "today"
+    # The persisted system setting takes precedence once its migration has
+    # been applied. This fallback is used only when the singleton setting row
+    # is first initialized.
+    withdraw_order_export_date_mode: Literal["previous_day", "specific_date"] = "previous_day"
+    withdraw_order_export_specific_date: date | None = None
     charge_order_refresh_interval_hours: int = Field(default=1, ge=1, le=24)
     charge_order_refresh_page_size: int = Field(default=100)
     charge_order_query_range: Literal[
@@ -103,18 +106,18 @@ class Settings(BaseSettings):
             raise ValueError("session_cookie_samesite must be lax, strict, or none")
         return normalized
 
-    @field_validator("withdraw_order_refresh_page_size")
-    @classmethod
-    def validate_withdraw_order_refresh_page_size(cls, value: int) -> int:
-        if value not in WITHDRAW_ORDER_REFRESH_PAGE_SIZES:
-            raise ValueError("withdraw_order_refresh_page_size must be 10, 20, 30, 50, or 100")
-        return value
-
     @field_validator("charge_order_refresh_page_size")
     @classmethod
     def validate_charge_order_refresh_page_size(cls, value: int) -> int:
         if value not in CHARGE_ORDER_REFRESH_PAGE_SIZES:
             raise ValueError("charge_order_refresh_page_size must be 10, 20, 30, 50, or 100")
+        return value
+
+    @field_validator("withdraw_order_refresh_page_size")
+    @classmethod
+    def validate_withdraw_order_refresh_page_size(cls, value: int) -> int:
+        if value not in WITHDRAW_ORDER_REFRESH_PAGE_SIZES:
+            raise ValueError("withdraw_order_refresh_page_size must be 10, 20, 30, 50, or 100")
         return value
 
     @property

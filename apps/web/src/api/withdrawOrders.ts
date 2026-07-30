@@ -1,9 +1,10 @@
 import { api } from './client'
 import type {
+  WithdrawChannelSummaryResponse,
   WithdrawOperatorSummaryResponse,
   WithdrawOrderQueryResponse,
   WithdrawOrderRefreshResult,
-  WithdrawOrderQueryRange,
+  WithdrawOrderRefreshRange,
 } from '../types'
 
 export interface WithdrawOrderQuery {
@@ -13,6 +14,9 @@ export interface WithdrawOrderQuery {
   uid?: string
   status?: string
   auditAdmin?: string
+  orderNum?: string
+  outTradeNo?: string
+  payChannel?: string
   page: number
   pageSize: number
 }
@@ -39,9 +43,24 @@ export async function queryWithdrawOperatorSummary(
   return (await api.post<WithdrawOperatorSummaryResponse>('/withdraw-orders/operator-summary', payload)).data
 }
 
+export interface WithdrawChannelSummaryQuery {
+  sourceId: string
+  createTimeStart?: string
+  createTimeEnd?: string
+  payChannel?: string
+  page?: number
+  pageSize?: number
+}
+
+export async function queryWithdrawChannelSummary(
+  payload: WithdrawChannelSummaryQuery,
+): Promise<WithdrawChannelSummaryResponse> {
+  return (await api.post<WithdrawChannelSummaryResponse>('/withdraw-orders/channel-summary', payload)).data
+}
+
 export async function startWithdrawOrderRefresh(payload: {
   sourceId?: string
-  queryRange?: WithdrawOrderQueryRange
+  queryRange?: WithdrawOrderRefreshRange
 } = {}): Promise<WithdrawOrderRefreshResult> {
   return (await api.post<WithdrawOrderRefreshResult>('/withdraw-orders/refresh', payload)).data
 }

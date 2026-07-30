@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.dependencies import get_auth_context
 from packages.common.database import get_db_session
 from packages.domain.schemas.withdraw_order import (
+    WithdrawChannelSummaryRequest,
+    WithdrawChannelSummaryResponse,
     WithdrawOperatorSummaryRequest,
     WithdrawOperatorSummaryResponse,
     WithdrawOrderQueryRequest,
@@ -23,6 +25,7 @@ from packages.domain.services.withdraw_order_refresh_service import (
 from packages.domain.services.withdraw_order_service import (
     WithdrawOrderCacheSchemaPendingError,
     WithdrawOrderValidationError,
+    query_withdraw_channel_summary,
     query_withdraw_operator_summary,
     query_withdraw_orders,
 )
@@ -65,7 +68,41 @@ async def withdraw_order_query(
         last_refreshed_at=result.last_refreshed_at,
         refresh_status=result.refresh_status,
         status_dictionary=result.status_dictionary,
+        channel_dictionary=result.channel_dictionary,
         summary=result.summary,
+    )
+
+
+@router.post("/channel-summary", response_model=WithdrawChannelSummaryResponse)
+async def withdraw_channel_summary(
+    payload: WithdrawChannelSummaryRequest,
+    _: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_db_session),
+) -> WithdrawChannelSummaryResponse:
+    try:
+        result = await query_withdraw_channel_summary(session, request=payload)
+    except SourceNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except WithdrawOrderValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except (WithdrawOrderCacheSchemaPendingError, SystemSettingsSchemaPendingError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    return WithdrawChannelSummaryResponse(
+        items=result.items,
+        total=result.total,
+        page=payload.page,
+        page_size=payload.page_size,
+        source_id=result.source_id,
+        source_display_name=result.source_display_name,
+        business_timezone=result.business_timezone,
+        currency=result.currency,
+        effective_create_time_end=result.effective_create_time_end,
+        fetched_at=result.fetched_at,
+        local_updated_at=result.local_updated_at,
+        channel_dictionary=result.channel_dictionary,
     )
 
 
