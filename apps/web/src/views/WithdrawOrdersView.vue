@@ -25,6 +25,9 @@ import { formatDateTime } from '../ui'
 
 type WithdrawTab = 'orders' | 'operators'
 
+const OPERATOR_SUMMARY_EXCLUDED_STATUS_CODES = new Set(['0', '4'])
+const OPERATOR_SUMMARY_EXCLUDED_STATUS_LABELS = new Set(['待审核', '待审查'])
+
 const emptySummary: WithdrawOrderSummary = {
   orderCount: 0,
   amount: '0.00',
@@ -89,11 +92,31 @@ const operatorSummaryDictionary = computed(() => {
   }
   return []
 })
+function isOperatorSummaryExcludedStatus(entry: WithdrawStatusDictionaryEntry): boolean {
+  return (
+    OPERATOR_SUMMARY_EXCLUDED_STATUS_CODES.has(entry.code.trim()) ||
+    OPERATOR_SUMMARY_EXCLUDED_STATUS_LABELS.has(entry.label.trim())
+  )
+}
+const operatorSummaryExcludedStatusCodes = computed(
+  () =>
+    new Set(
+      [
+        ...OPERATOR_SUMMARY_EXCLUDED_STATUS_CODES,
+        ...operatorSummaryDictionary.value
+          .filter(isOperatorSummaryExcludedStatus)
+          .map((entry) => entry.code.trim()),
+      ],
+    ),
+)
 const operatorSummaryStatusEntryByCode = computed(
   () => new Map(operatorSummaryDictionary.value.map((entry) => [entry.code, entry])),
 )
 const operatorSummaryStatusColumns = computed(
-  () => operatorSummaryResponse.value?.statusColumns || [],
+  () =>
+    (operatorSummaryResponse.value?.statusColumns || []).filter(
+      (status) => !operatorSummaryExcludedStatusCodes.value.has(status.trim()),
+    ),
 )
 const currency = computed(
   () => response.value?.currency || selectedOrderSource.value?.currency || 'INR',
@@ -174,14 +197,17 @@ const refreshInProgress = computed(() =>
 const operatorSummaryStatusOptions = computed(() => {
   const options = new Map<string, WithdrawStatusDictionaryEntry>()
   for (const entry of operatorSummaryDictionary.value) {
+    if (isOperatorSummaryExcludedStatus(entry)) continue
     options.set(entry.code, entry)
   }
   for (const status of operatorSummaryStatusColumns.value) {
+    if (operatorSummaryExcludedStatusCodes.value.has(status.trim())) continue
     if (!options.has(status)) {
       options.set(status, { code: status, label: '', active: true })
     }
   }
   for (const status of operatorSummaryFilters.statuses) {
+    if (operatorSummaryExcludedStatusCodes.value.has(status.trim())) continue
     if (!options.has(status)) {
       options.set(status, { code: status, label: '', active: false })
     }
@@ -757,7 +783,7 @@ onMounted(async () => {
                   collapse-tags
                   collapse-tags-tooltip
                   clearable
-                  placeholder="默认统计全部状态（最多 20 项）"
+                  placeholder="默认统计其余状态（最多 20 项）"
                 >
                   <el-option
                     v-for="item in operatorSummaryStatusOptions"
@@ -769,7 +795,7 @@ onMounted(async () => {
               </label>
             </div>
             <div class="query-card__footer">
-              <span>仅统计本地缓存；未选择状态时统计当前时间范围内的全部状态。空操作人员会单列为“未填写操作人员”。</span>
+              <span>仅统计本地缓存；待审核、待审查不参与统计或展示。空操作人员会单列为“未填写操作人员”。</span>
               <el-button
                 type="primary"
                 :icon="Search"

@@ -435,6 +435,22 @@ async def test_withdraw_operator_summary_aggregates_local_cache_by_trimmed_opera
                     entry_label="已完成",
                     active=False,
                 ),
+                DataDictionaryEntry(
+                    source_id="rajwin",
+                    dictionary_type="withdraw_status",
+                    entry_code="4",
+                    entry_label="待审查",
+                    active=True,
+                ),
+                # A source-specific code with the same review-state label is
+                # excluded too; the summary is not tied solely to 0 / 4.
+                DataDictionaryEntry(
+                    source_id="rajwin",
+                    dictionary_type="withdraw_status",
+                    entry_code="7",
+                    entry_label="待审核",
+                    active=True,
+                ),
                 # This row is outside the configured cache window and must
                 # never reach the local aggregation.
                 WithdrawOrderSnapshot(
@@ -508,6 +524,26 @@ async def test_withdraw_operator_summary_aggregates_local_cache_by_trimmed_opera
                     status="2",
                     synced_at=datetime(2026, 7, 30, 5, 40, tzinfo=UTC),
                 ),
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="bob-review-pending",
+                    uid="108",
+                    create_time="2026-07-30 10:57:00",
+                    create_time_utc=datetime(2026, 7, 30, 5, 27, tzinfo=UTC),
+                    audit_admin="Bob",
+                    status="4",
+                    synced_at=datetime(2026, 7, 30, 5, 42, tzinfo=UTC),
+                ),
+                WithdrawOrderSnapshot(
+                    source_id="rajwin",
+                    remote_order_id="alice-source-specific-review",
+                    uid="109",
+                    create_time="2026-07-30 10:59:00",
+                    create_time_utc=datetime(2026, 7, 30, 5, 29, tzinfo=UTC),
+                    audit_admin="Alice",
+                    status="7",
+                    synced_at=datetime(2026, 7, 30, 5, 43, tzinfo=UTC),
+                ),
                 # This is inside the configured cache window but outside the
                 # page-local time range below.
                 WithdrawOrderSnapshot(
@@ -558,52 +594,66 @@ async def test_withdraw_operator_summary_aggregates_local_cache_by_trimmed_opera
             settings=settings,
             now=query_time,
         )
+        excluded_only = await query_withdraw_operator_summary(
+            session,
+            request=WithdrawOperatorSummaryRequest(
+                source_id="rajwin",
+                create_time_start="2026-07-30 10:00:00",
+                create_time_end="2026-07-30 11:00:00",
+                statuses=["0", "4"],
+            ),
+            settings=settings,
+            now=query_time,
+        )
 
     items_by_operator = {item["audit_admin"]: item for item in result.items}
     assert result.source_id == "rajwin"
     assert result.source_display_name == "RajWin"
     assert result.business_timezone == "Asia/Kolkata"
     assert result.effective_create_time_end == "2026-07-30 11:00:00"
-    assert result.status_columns == ["0", "2", "3"]
-    assert result.total == 4
-    assert result.selected_order_total == 6
-    assert set(items_by_operator) == {"Alice", "alice", "Bob", "未填写操作人员"}
+    assert result.status_columns == ["2", "3"]
+    assert [(entry["code"], entry["label"]) for entry in result.status_dictionary] == [
+        ("2", "处理中"),
+        ("3", "已完成"),
+    ]
+    assert result.total == 3
+    assert result.selected_order_total == 3
+    assert set(items_by_operator) == {"Alice", "Bob", "未填写操作人员"}
     assert items_by_operator["Alice"] == {
         "audit_admin": "Alice",
         "audit_admin_missing": False,
         "status_counts": [
-            {"status": "0", "count": 1},
             {"status": "2", "count": 0},
             {"status": "3", "count": 1},
         ],
-        "selected_total": 2,
+        "selected_total": 1,
     }
-    assert items_by_operator["alice"]["selected_total"] == 1
     assert items_by_operator["未填写操作人员"] == {
         "audit_admin": "未填写操作人员",
         "audit_admin_missing": True,
         "status_counts": [
-            {"status": "0", "count": 1},
             {"status": "2", "count": 0},
             {"status": "3", "count": 1},
         ],
-        "selected_total": 2,
+        "selected_total": 1,
     }
     assert items_by_operator["Bob"]["status_counts"] == [
-        {"status": "0", "count": 0},
         {"status": "2", "count": 1},
         {"status": "3", "count": 0},
     ]
-    assert second_page.total == 4
-    assert {item["audit_admin"] for item in second_page.items} == {"Bob", "alice"}
-    assert filtered.status_columns == ["3", "0"]
-    assert filtered.selected_order_total == 3
-    assert filtered.total == 2
-    assert {item["audit_admin"] for item in filtered.items} == {"Alice", "alice"}
+    assert second_page.total == 3
+    assert {item["audit_admin"] for item in second_page.items} == {"Bob"}
+    assert filtered.status_columns == ["3"]
+    assert filtered.selected_order_total == 1
+    assert filtered.total == 1
+    assert {item["audit_admin"] for item in filtered.items} == {"Alice"}
     assert filtered.items[0]["status_counts"] == [
         {"status": "3", "count": 1},
-        {"status": "0", "count": 1},
     ]
+    assert excluded_only.status_columns == []
+    assert excluded_only.selected_order_total == 0
+    assert excluded_only.total == 0
+    assert excluded_only.items == []
     await engine.dispose()
 
 

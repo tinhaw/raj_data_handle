@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import case, desc, func, select
+from sqlalchemy import case, desc, false, func, select
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,6 +41,8 @@ WITHDRAW_ORDER_ROLLING_RANGE_HOURS = {
     "last_24_hours": 24,
     "last_48_hours": 48,
 }
+OPERATOR_SUMMARY_EXCLUDED_STATUS_CODES = frozenset({"0", "4"})
+OPERATOR_SUMMARY_EXCLUDED_STATUS_LABELS = frozenset({"待审核", "待审查"})
 WithdrawOrderQueryRange = Literal[
     "today",
     "last_1_hour",
@@ -111,6 +113,15 @@ def _as_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
     return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def _is_operator_summary_excluded_status(entry: dict[str, object]) -> bool:
+    """Keep in-progress review states out of personnel performance totals."""
+
+    return (
+        str(entry.get("code") or "").strip() in OPERATOR_SUMMARY_EXCLUDED_STATUS_CODES
+        or str(entry.get("label") or "").strip() in OPERATOR_SUMMARY_EXCLUDED_STATUS_LABELS
+    )
 
 
 def normalize_withdraw_order_query_range(value: str | None) -> WithdrawOrderQueryRange:
@@ -439,10 +450,6 @@ async def query_withdraw_operator_summary(
         base_conditions.append(
             func.lower(WithdrawOrderSnapshot.audit_admin).contains(request.audit_admin.casefold())
         )
-    selected_conditions = [*base_conditions]
-    if request.statuses:
-        selected_conditions.append(WithdrawOrderSnapshot.status.in_(request.statuses))
-
     normalized_audit_admin = func.trim(func.coalesce(WithdrawOrderSnapshot.audit_admin, ""))
     audit_admin_missing = case(
         (normalized_audit_admin == "", True),
@@ -455,15 +462,42 @@ async def query_withdraw_operator_summary(
     selected_total_expression = func.count(WithdrawOrderSnapshot.id).label("selected_total")
 
     try:
-        status_dictionary = await withdraw_status_dictionary(session, source_id=source_id)
-        if request.statuses:
-            status_columns = list(request.statuses)
+        raw_status_dictionary = await withdraw_status_dictionary(session, source_id=source_id)
+        excluded_statuses = {
+            str(entry["code"]).strip()
+            for entry in raw_status_dictionary
+            if _is_operator_summary_excluded_status(entry)
+        }
+        status_dictionary = [
+            entry
+            for entry in raw_status_dictionary
+            if not _is_operator_summary_excluded_status(entry)
+        ]
+        selected_conditions = [*base_conditions]
+        selected_statuses = (
+            [status for status in request.statuses if status not in excluded_statuses]
+            if request.statuses is not None
+            else None
+        )
+        if selected_statuses is not None:
+            if selected_statuses:
+                selected_conditions.append(WithdrawOrderSnapshot.status.in_(selected_statuses))
+            else:
+                # An API caller may submit only excluded review states.  Treat
+                # that as an empty selection rather than widening it to every
+                # eligible status.
+                selected_conditions.append(false())
+        elif excluded_statuses:
+            selected_conditions.append(WithdrawOrderSnapshot.status.not_in(excluded_statuses))
+
+        if selected_statuses is not None:
+            status_columns = list(selected_statuses)
         else:
             observed_statuses = [
                 str(status)
                 for status in await session.scalars(
                     select(WithdrawOrderSnapshot.status)
-                    .where(*base_conditions)
+                    .where(*selected_conditions)
                     .distinct()
                     .order_by(WithdrawOrderSnapshot.status)
                 )
