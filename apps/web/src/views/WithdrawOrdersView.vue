@@ -27,6 +27,7 @@ type WithdrawTab = 'orders' | 'operators'
 
 const OPERATOR_SUMMARY_EXCLUDED_STATUS_CODES = new Set(['0', '4'])
 const OPERATOR_SUMMARY_EXCLUDED_STATUS_LABELS = new Set(['待审核', '待审查'])
+const OPERATOR_CHART_COLORS = ['#377eea', '#39b8b0', '#f5a623', '#8d6ee8', '#ec6b62', '#5d8fc5']
 
 const emptySummary: WithdrawOrderSummary = {
   orderCount: 0,
@@ -245,7 +246,7 @@ function statusLabel(status: string): string {
 }
 
 function operatorSummaryStatusLabel(status: string): string {
-  return statusText(status, operatorSummaryStatusEntryByCode.value)
+  return operatorSummaryStatusEntryByCode.value.get(status.trim())?.label?.trim() || '未配置状态'
 }
 
 function statusOptionsLabel(entry: WithdrawStatusDictionaryEntry): string {
@@ -436,7 +437,7 @@ function handleTabChange(nextTab: string | number): void {
 
 function operatorDisplayName(item: WithdrawOperatorSummaryItem): string {
   return item.auditAdminMissing || !item.auditAdmin.trim()
-    ? '未填写操作人员'
+    ? '系统'
     : item.auditAdmin
 }
 
@@ -448,12 +449,11 @@ const operatorChartData = computed(() => {
   const item = selectedOperatorSummaryItem.value
   if (!item) return []
   return operatorSummaryStatusColumns.value
-    .map((status) => {
-      const label = operatorSummaryStatusLabel(status)
-      const code = status.trim()
+    .map((status, index) => {
       return {
-        name: label === code || !code ? label : label + '（' + code + '）',
+        name: operatorSummaryStatusLabel(status),
         value: operatorStatusCount(item, status),
+        color: OPERATOR_CHART_COLORS[index % OPERATOR_CHART_COLORS.length]!,
       }
     })
     .filter((item) => item.value > 0)
@@ -463,63 +463,70 @@ const operatorChartTitle = computed(() => {
   const item = selectedOperatorSummaryItem.value
   return item ? operatorDisplayName(item) + ' · 状态订单占比' : '状态订单占比'
 })
+function operatorChartPercentage(value: number): string {
+  const total = selectedOperatorSummaryItem.value?.selectedTotal || 0
+  if (!total) return '0%'
+  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 }).format((value / total) * 100) + '%'
+}
+
 const operatorChartOption = computed<EChartsOption>(() => {
   const selectedTotal = selectedOperatorSummaryItem.value?.selectedTotal || 0
   return {
-    color: ['#2f80ed', '#40b7b2', '#ffb020', '#78c043', '#ef5350', '#8b64d8', '#5d8fc5'],
     tooltip: {
       trigger: 'item',
-      valueFormatter: (value) => String(value) + ' 单',
+      formatter: '{b}<br/><strong>{c}</strong> 单 · {d}%',
+      backgroundColor: 'rgba(18, 44, 70, 0.94)',
+      borderWidth: 0,
+      padding: [9, 12],
+      textStyle: { color: '#ffffff', fontSize: 12 },
     },
     title: {
-      text: '总订单数\n' + selectedTotal.toLocaleString(),
-      subtext: '单',
-      left: '31%',
-      top: '40%',
+      text: '订单合计',
+      subtext: selectedTotal.toLocaleString() + ' 单',
+      left: '50%',
+      top: '42%',
       textAlign: 'center',
       textStyle: {
-        color: '#17324d',
-        fontSize: 24,
-        fontWeight: 800,
-        lineHeight: 30,
+        color: '#7a91a8',
+        fontSize: 11,
+        fontWeight: 700,
       },
       subtextStyle: {
-        color: '#627c96',
-        fontSize: 12,
-      },
-    },
-    legend: {
-      type: 'scroll',
-      orient: 'vertical',
-      right: 14,
-      top: 'middle',
-      itemWidth: 10,
-      itemHeight: 10,
-      itemGap: 14,
-      textStyle: { color: '#52677b', fontSize: 12 },
-      formatter: (name: string) => {
-        const item = operatorChartData.value.find((entry) => entry.name === name)
-        const count = item?.value || 0
-        const percentage = selectedTotal ? Math.round((count / selectedTotal) * 100) : 0
-        return name + '  ' + count.toLocaleString() + '（' + percentage + '%）'
+        color: '#17324d',
+        fontSize: 20,
+        fontWeight: 800,
+        lineHeight: 28,
       },
     },
     series: [
       {
         type: 'pie',
-        radius: ['45%', '70%'],
-        center: ['31%', '50%'],
+        radius: ['54%', '72%'],
+        center: ['50%', '50%'],
+        startAngle: 90,
         avoidLabelOverlap: true,
+        itemStyle: {
+          borderColor: '#ffffff',
+          borderWidth: 4,
+          borderRadius: 8,
+        },
+        emphasis: {
+          scale: true,
+          scaleSize: 7,
+          itemStyle: {
+            shadowBlur: 14,
+            shadowColor: 'rgba(31, 61, 90, 0.18)',
+          },
+        },
         label: {
-          show: true,
-          position: 'inside',
-          formatter: '{d}%',
-          color: '#ffffff',
-          fontSize: 12,
-          fontWeight: 700,
+          show: false,
         },
         labelLine: { show: false },
-        data: operatorChartData.value,
+        data: operatorChartData.value.map((item) => ({
+          name: item.name,
+          value: item.value,
+          itemStyle: { color: item.color },
+        })),
       },
     ],
   }
@@ -795,7 +802,7 @@ onMounted(async () => {
               </label>
             </div>
             <div class="query-card__footer">
-              <span>仅统计本地缓存；待审核、待审查不参与统计或展示。空操作人员会单列为“未填写操作人员”。</span>
+              <span>仅统计本地缓存；待审核、待审查不参与统计或展示。空操作人员归为“系统”。</span>
               <el-button
                 type="primary"
                 :icon="Search"
@@ -829,9 +836,8 @@ onMounted(async () => {
             >
               <el-table-column label="操作人员" min-width="200" fixed="left">
                 <template #default="{ row }">
-                  <div class="operator-name-cell" :class="{ 'is-missing': row.auditAdminMissing }">
+                  <div class="operator-name-cell">
                     <strong>{{ operatorDisplayName(row) }}</strong>
-                    <small v-if="row.auditAdminMissing">原始 audit_admin 为空</small>
                   </div>
                 </template>
               </el-table-column>
@@ -844,9 +850,6 @@ onMounted(async () => {
                 <template #header>
                   <span class="status-column-heading">
                     <strong>{{ operatorSummaryStatusLabel(status) }}</strong>
-                    <small v-if="status.trim() && operatorSummaryStatusLabel(status) !== status.trim()">
-                      {{ status }}
-                    </small>
                   </span>
                 </template>
                 <template #default="{ row }">
@@ -899,17 +902,27 @@ onMounted(async () => {
       <p class="operator-chart-summary">
         已选状态合计
         <strong>{{ selectedOperatorSummaryItem?.selectedTotal.toLocaleString() || 0 }}</strong>
-        单；占比仅按当前选中的状态计算。
+        单，占比仅按当前选中的状态计算。
       </p>
-      <ChartPanel
-        title="状态订单占比"
-        :option="operatorChartOption"
-        :empty="operatorChartEmpty"
-        :height="300"
-        :active="operatorSummaryChartVisible"
-        plain
-        :show-title="false"
-      />
+      <div class="operator-chart-layout">
+        <ChartPanel
+          title="状态订单占比"
+          :option="operatorChartOption"
+          :empty="operatorChartEmpty"
+          :height="258"
+          :active="operatorSummaryChartVisible"
+          plain
+          :show-title="false"
+        />
+        <aside v-if="!operatorChartEmpty" class="operator-chart-legend" aria-label="状态占比图例">
+          <div v-for="entry in operatorChartData" :key="entry.name" class="operator-chart-legend__item">
+            <span class="operator-chart-legend__dot" :style="{ backgroundColor: entry.color }" />
+            <span class="operator-chart-legend__label">{{ entry.name }}</span>
+            <strong>{{ entry.value.toLocaleString() }} 单</strong>
+            <small>{{ operatorChartPercentage(entry.value) }}</small>
+          </div>
+        </aside>
+      </div>
       <template #footer>
         <el-button @click="operatorSummaryChartVisible = false">关闭</el-button>
       </template>
@@ -1128,10 +1141,6 @@ onMounted(async () => {
   font-weight: 500;
 }
 
-.operator-name-cell.is-missing strong {
-  color: #8b5a19;
-}
-
 .operator-status-count {
   color: var(--ink);
   font-variant-numeric: tabular-nums;
@@ -1142,14 +1151,72 @@ onMounted(async () => {
 }
 
 .operator-chart-summary {
-  margin: 0 0 16px;
-  color: var(--ink-muted);
+  margin: 0 0 14px;
+  color: #647e99;
   font-size: 13px;
 }
 
 .operator-chart-summary strong {
-  margin: 0 3px;
-  color: var(--ink-strong);
+  margin: 0 4px;
+  color: #244867;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.operator-chart-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.9fr) minmax(0, 1.1fr);
+  align-items: center;
+  gap: 18px;
+  min-height: 258px;
+}
+
+.operator-chart-legend {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+}
+
+.operator-chart-legend__item {
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 8px;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid #e6eef5;
+  border-radius: 10px;
+  background: #f8fbfd;
+}
+
+.operator-chart-legend__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.operator-chart-legend__label {
+  overflow: hidden;
+  color: #38546f;
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operator-chart-legend__item strong {
+  color: #23425f;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.operator-chart-legend__item small {
+  min-width: 39px;
+  color: #7890a6;
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 @media (max-width: 1100px) {
@@ -1206,6 +1273,10 @@ onMounted(async () => {
   .table-pagination {
     justify-content: flex-start;
     overflow-x: auto;
+  }
+
+  .operator-chart-layout {
+    grid-template-columns: 1fr;
   }
 }
 </style>

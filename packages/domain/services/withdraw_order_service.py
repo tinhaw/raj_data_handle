@@ -456,7 +456,7 @@ async def query_withdraw_operator_summary(
         else_=False,
     ).label("audit_admin_missing")
     displayed_audit_admin = case(
-        (normalized_audit_admin == "", "未填写操作人员"),
+        (normalized_audit_admin == "", "系统"),
         else_=normalized_audit_admin,
     ).label("audit_admin")
     selected_total_expression = func.count(WithdrawOrderSnapshot.id).label("selected_total")

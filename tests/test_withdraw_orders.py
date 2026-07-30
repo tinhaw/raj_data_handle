@@ -618,7 +618,7 @@ async def test_withdraw_operator_summary_aggregates_local_cache_by_trimmed_opera
     ]
     assert result.total == 3
     assert result.selected_order_total == 3
-    assert set(items_by_operator) == {"Alice", "Bob", "未填写操作人员"}
+    assert set(items_by_operator) == {"Alice", "Bob", "系统"}
     assert items_by_operator["Alice"] == {
         "audit_admin": "Alice",
         "audit_admin_missing": False,
@@ -628,8 +628,8 @@ async def test_withdraw_operator_summary_aggregates_local_cache_by_trimmed_opera
         ],
         "selected_total": 1,
     }
-    assert items_by_operator["未填写操作人员"] == {
-        "audit_admin": "未填写操作人员",
+    assert items_by_operator["系统"] == {
+        "audit_admin": "系统",
         "audit_admin_missing": True,
         "status_counts": [
             {"status": "2", "count": 0},
@@ -748,7 +748,7 @@ async def test_withdraw_query_survives_page_size_schema_fallback_session_rollbac
     assert summary.selected_order_total == 1
     assert summary.items == [
         {
-            "audit_admin": "未填写操作人员",
+            "audit_admin": "系统",
             "audit_admin_missing": True,
             "status_counts": [{"status": "3", "count": 1}],
             "selected_total": 1,
