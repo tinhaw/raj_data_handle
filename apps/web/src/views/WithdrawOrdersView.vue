@@ -1094,6 +1094,18 @@ onMounted(async () => {
                 </template>
               </el-table-column>
               <el-table-column label="支付渠道代码" min-width="148" prop="payChannel" show-overflow-tooltip />
+              <el-table-column label="渠道成功订单占比" min-width="170" align="right">
+                <template #default="{ row }">{{ ratioText(row.successfulOrderShare) }}</template>
+              </el-table-column>
+              <el-table-column label="渠道成功金额占比" min-width="170" align="right">
+                <template #default="{ row }">{{ ratioText(row.successfulAmountShare) }}</template>
+              </el-table-column>
+              <el-table-column label="卡单率" min-width="112" align="right">
+                <template #default="{ row }">{{ ratioText(row.stuckRate) }}</template>
+              </el-table-column>
+              <el-table-column label="代付成功率" min-width="125" align="right">
+                <template #default="{ row }">{{ ratioText(row.successRate) }}</template>
+              </el-table-column>
               <el-table-column label="提现总订单数" min-width="140" align="right">
                 <template #default="{ row }">{{ row.orderCount.toLocaleString() }}</template>
               </el-table-column>
@@ -1118,18 +1130,6 @@ onMounted(async () => {
               </el-table-column>
               <el-table-column label="审核拒绝数" min-width="132" align="right">
                 <template #default="{ row }">{{ (row.rejectedOrderCount || 0).toLocaleString() }}</template>
-              </el-table-column>
-              <el-table-column label="渠道成功订单占比" min-width="170" align="right">
-                <template #default="{ row }">{{ ratioText(row.successfulOrderShare) }}</template>
-              </el-table-column>
-              <el-table-column label="渠道成功金额占比" min-width="170" align="right">
-                <template #default="{ row }">{{ ratioText(row.successfulAmountShare) }}</template>
-              </el-table-column>
-              <el-table-column label="卡单率" min-width="112" align="right">
-                <template #default="{ row }">{{ ratioText(row.stuckRate) }}</template>
-              </el-table-column>
-              <el-table-column label="代付成功率" min-width="125" align="right" fixed="right">
-                <template #default="{ row }">{{ ratioText(row.successRate) }}</template>
               </el-table-column>
             </el-table>
             <div class="table-pagination">
