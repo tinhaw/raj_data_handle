@@ -36,8 +36,19 @@ SPIN_AUTOMATIC_QUERY_RANGES = frozenset(
         "last_completed_slot",
         "business_day_to_completed_slot",
         "previous_business_day_to_completed_slot",
+        "last_2_hours",
+        "last_3_hours",
+        "last_6_hours",
+        "last_12_hours",
+        "previous_day",
     }
 )
+SPIN_RECENT_HOUR_RANGES = {
+    "last_2_hours": 2,
+    "last_3_hours": 3,
+    "last_6_hours": 6,
+    "last_12_hours": 12,
+}
 AUTOMATIC_SLOT_GRACE = timedelta(minutes=5)
 
 
@@ -173,8 +184,9 @@ def _automatic_window(
     """Return the configured completed-slot review window.
 
     The end is always the last second before the currently running slot, so a
-    refresh never reads orders whose state is still changing.  The selected
-    range controls how far back the cache is reconciled.
+    refresh never reads orders whose state is still changing. The selected
+    range controls how far back the cache is reconciled, while keeping a
+    stable scheduling key for the whole current slot.
     """
 
     if query_range not in SPIN_AUTOMATIC_QUERY_RANGES:
@@ -187,7 +199,23 @@ def _automatic_window(
     )
     completed_start_local = current_slot_start - timedelta(hours=interval_hours)
     completed_end_local = current_slot_start - timedelta(seconds=1)
-    if query_range == "last_completed_slot":
+    if query_range in SPIN_RECENT_HOUR_RANGES:
+        review_start_local = current_slot_start - timedelta(
+            hours=SPIN_RECENT_HOUR_RANGES[query_range]
+        )
+    elif query_range == "previous_day":
+        review_start_local = (local_now - timedelta(days=1)).replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        completed_end_local = review_start_local.replace(
+            hour=23,
+            minute=59,
+            second=59,
+        )
+    elif query_range == "last_completed_slot":
         review_start_local = completed_start_local
     elif query_range == "business_day_to_completed_slot":
         review_start_local = completed_end_local.replace(

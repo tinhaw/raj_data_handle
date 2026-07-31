@@ -155,6 +155,11 @@ onMounted(load)
             <el-form-item label="自动查询时间范围">
               <el-select v-model="form.spinOrderQueryRange" :disabled="!isAdmin">
                 <el-option label="仅上一完整时段" value="last_completed_slot" />
+                <el-option label="最近 2 小时" value="last_2_hours" />
+                <el-option label="最近 3 小时" value="last_3_hours" />
+                <el-option label="最近 6 小时" value="last_6_hours" />
+                <el-option label="最近 12 小时" value="last_12_hours" />
+                <el-option label="前一天" value="previous_day" />
                 <el-option
                   label="本业务日 00:00 至上一完整时段"
                   value="business_day_to_completed_slot"
@@ -164,7 +169,7 @@ onMounted(load)
                   value="previous_business_day_to_completed_slot"
                 />
               </el-select>
-              <span class="field-help">按各盘口业务时区计算；回查范围越长，越能覆盖延迟审核状态。</span>
+              <span class="field-help">按各盘口业务时区计算；最近 N 小时截至上一完整时段，回查范围越长越能覆盖延迟审核状态。</span>
             </el-form-item>
             <el-form-item label="远端分页大小">
               <el-select v-model="form.spinOrderRefreshPageSize" :disabled="!isAdmin">

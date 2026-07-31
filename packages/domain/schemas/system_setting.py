@@ -27,6 +27,11 @@ SpinOrderQueryRange = Literal[
     "last_completed_slot",
     "business_day_to_completed_slot",
     "previous_business_day_to_completed_slot",
+    "last_2_hours",
+    "last_3_hours",
+    "last_6_hours",
+    "last_12_hours",
+    "previous_day",
 ]
 
 

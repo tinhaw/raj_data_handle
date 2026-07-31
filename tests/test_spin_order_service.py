@@ -183,6 +183,28 @@ def test_configured_spin_automatic_window_uses_interval_and_query_range() -> Non
     )
 
 
+def test_spin_automatic_window_supports_recent_hours_and_previous_day() -> None:
+    # 10:05 India time; completed-slot endpoint is 09:59:59.
+    now = datetime(2026, 7, 30, 4, 35, tzinfo=UTC)
+    recent_start, recent_end = _automatic_window(
+        timezone_name="Asia/Kolkata",
+        now=now,
+        interval_hours=2,
+        query_range="last_3_hours",
+    )
+    previous_day_start, previous_day_end = _automatic_window(
+        timezone_name="Asia/Kolkata",
+        now=now,
+        interval_hours=2,
+        query_range="previous_day",
+    )
+
+    assert recent_start == datetime(2026, 7, 30, 1, 30, tzinfo=UTC)
+    assert recent_end == datetime(2026, 7, 30, 4, 29, 59, tzinfo=UTC)
+    assert previous_day_start == datetime(2026, 7, 28, 18, 30, tzinfo=UTC)
+    assert previous_day_end == datetime(2026, 7, 29, 18, 29, 59, tzinfo=UTC)
+
+
 @pytest.mark.asyncio
 async def test_source_channel_dictionary_skips_remote_aggregate_option() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
