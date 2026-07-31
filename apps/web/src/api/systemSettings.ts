@@ -10,6 +10,9 @@ export type RetentionSettingsUpdate = Pick<
   | 'withdrawOrderExportSpecificDate'
   | 'chargeOrderExportDateMode'
   | 'chargeOrderExportSpecificDate'
+  | 'spinOrderRefreshIntervalHours'
+  | 'spinOrderRefreshPageSize'
+  | 'spinOrderQueryRange'
   | 'sessionTtlDays'
 >
 

@@ -56,6 +56,12 @@ export type ChargeOrderRefreshPageSize = WithdrawOrderRefreshPageSize
 export type ChargeOrderRefreshRange = 'day_before_yesterday' | 'yesterday' | 'today'
 export type ChargeOrderExportDateMode = 'previous_day' | 'specific_date'
 export type WithdrawOrderExportDateMode = 'previous_day' | 'specific_date'
+export type SpinOrderRefreshIntervalHours = 1 | 2 | 3 | 4 | 6 | 8 | 12 | 24
+export type SpinOrderRefreshPageSize = WithdrawOrderRefreshPageSize
+export type SpinOrderQueryRange =
+  | 'last_completed_slot'
+  | 'business_day_to_completed_slot'
+  | 'previous_business_day_to_completed_slot'
 
 export interface RetentionSettings {
   uploadedFileRetentionDays: number
@@ -71,6 +77,9 @@ export interface RetentionSettings {
   chargeOrderQueryRange: ChargeOrderQueryRange
   chargeOrderExportDateMode: ChargeOrderExportDateMode
   chargeOrderExportSpecificDate: string | null
+  spinOrderRefreshIntervalHours: SpinOrderRefreshIntervalHours
+  spinOrderRefreshPageSize: SpinOrderRefreshPageSize
+  spinOrderQueryRange: SpinOrderQueryRange
   sessionTtlDays: number
   configVersion: number
   updatedBy: number | null

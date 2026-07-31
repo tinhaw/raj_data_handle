@@ -12,6 +12,9 @@ import { isAdmin } from '../stores/auth'
 import type {
   ChargeOrderExportDateMode,
   RetentionSettings,
+  SpinOrderQueryRange,
+  SpinOrderRefreshIntervalHours,
+  SpinOrderRefreshPageSize,
   WithdrawOrderExportDateMode,
 } from '../types'
 import { formatDateTime } from '../ui'
@@ -27,6 +30,9 @@ const form = reactive({
   withdrawOrderExportSpecificDate: null as string | null,
   chargeOrderExportDateMode: 'previous_day' as ChargeOrderExportDateMode,
   chargeOrderExportSpecificDate: null as string | null,
+  spinOrderRefreshIntervalHours: 2 as SpinOrderRefreshIntervalHours,
+  spinOrderRefreshPageSize: 100 as SpinOrderRefreshPageSize,
+  spinOrderQueryRange: 'previous_business_day_to_completed_slot' as SpinOrderQueryRange,
   sessionTtlDays: 30,
 })
 
@@ -39,6 +45,9 @@ function applySettings(settings: RetentionSettings): void {
   form.withdrawOrderExportSpecificDate = settings.withdrawOrderExportSpecificDate
   form.chargeOrderExportDateMode = settings.chargeOrderExportDateMode
   form.chargeOrderExportSpecificDate = settings.chargeOrderExportSpecificDate
+  form.spinOrderRefreshIntervalHours = settings.spinOrderRefreshIntervalHours
+  form.spinOrderRefreshPageSize = settings.spinOrderRefreshPageSize
+  form.spinOrderQueryRange = settings.spinOrderQueryRange
   form.sessionTtlDays = settings.sessionTtlDays
 }
 
@@ -57,7 +66,7 @@ async function save(): Promise<void> {
   saving.value = true
   try {
     applySettings(await updateRetentionSettings({ ...form }))
-    ElMessage.success('系统配置已更新；订单导出同步会在下一个周期使用新的规则。')
+    ElMessage.success('系统配置已更新；订单同步会在下一个周期使用新的规则。')
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '保留策略保存失败。'))
   } finally {
@@ -81,7 +90,7 @@ onMounted(load)
 
     <el-alert
       title="保留策略的生效范围"
-      description="修改文件、批次及订单级结果的默认值不会追溯改变已有数据；充值和提现订单本地缓存按当前缓存保留天数清理。"
+      description="修改文件、批次及订单级结果的默认值不会追溯改变已有数据；充值、提现和转盘订单本地缓存按当前缓存保留天数清理。"
       type="info"
       show-icon
       :closable="false"
@@ -99,7 +108,7 @@ onMounted(load)
       <div class="settings-heading">
         <div>
           <h2>全局配置</h2>
-          <p>登录、充值订单、提现订单与数据保留策略集中维护。</p>
+          <p>登录、充值订单、提现订单、转盘订单与数据保留策略集中维护。</p>
         </div>
         <el-tag v-if="current" type="info">配置版本 V{{ current.configVersion }}</el-tag>
       </div>
@@ -120,6 +129,53 @@ onMounted(load)
                 :disabled="!isAdmin"
               />
               <span class="field-help">默认 30 天；到期后需重新登录。</span>
+            </el-form-item>
+          </div>
+        </el-form>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-heading">
+          <h2>转盘订单远端同步</h2>
+          <p>自动同步只读取远端数据，转盘订单页展示本地缓存。</p>
+        </div>
+        <el-form label-position="top">
+          <div class="form-grid">
+            <el-form-item label="自动刷新间隔（小时）">
+              <el-select v-model="form.spinOrderRefreshIntervalHours" :disabled="!isAdmin">
+                <el-option
+                  v-for="hours in [1, 2, 3, 4, 6, 8, 12, 24]"
+                  :key="hours"
+                  :label="`每 ${hours} 小时`"
+                  :value="hours"
+                />
+              </el-select>
+              <span class="field-help">默认每 2 小时；每个时段开始 5 分钟后读取已完成时段的数据。</span>
+            </el-form-item>
+            <el-form-item label="自动查询时间范围">
+              <el-select v-model="form.spinOrderQueryRange" :disabled="!isAdmin">
+                <el-option label="仅上一完整时段" value="last_completed_slot" />
+                <el-option
+                  label="本业务日 00:00 至上一完整时段"
+                  value="business_day_to_completed_slot"
+                />
+                <el-option
+                  label="前一业务日 00:00 至上一完整时段（默认）"
+                  value="previous_business_day_to_completed_slot"
+                />
+              </el-select>
+              <span class="field-help">按各盘口业务时区计算；回查范围越长，越能覆盖延迟审核状态。</span>
+            </el-form-item>
+            <el-form-item label="远端分页大小">
+              <el-select v-model="form.spinOrderRefreshPageSize" :disabled="!isAdmin">
+                <el-option
+                  v-for="size in [10, 20, 30, 50, 100]"
+                  :key="size"
+                  :label="`${size} 条 / 页`"
+                  :value="size"
+                />
+              </el-select>
+              <span class="field-help">默认 100 条 / 页；数值越小，远端请求次数越多。</span>
             </el-form-item>
           </div>
         </el-form>

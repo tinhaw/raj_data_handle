@@ -41,6 +41,11 @@ def _response(
         chargeOrderQueryRange=retention.charge_order_query_range or "today",
         chargeOrderExportDateMode=retention.charge_order_export_date_mode or "previous_day",
         chargeOrderExportSpecificDate=retention.charge_order_export_specific_date,
+        spinOrderRefreshIntervalHours=retention.spin_order_refresh_interval_hours or 2,
+        spinOrderRefreshPageSize=retention.spin_order_refresh_page_size or 100,
+        spinOrderQueryRange=(
+            retention.spin_order_query_range or "previous_business_day_to_completed_slot"
+        ),
         sessionTtlDays=session_ttl_days,
         configVersion=retention.config_version,
         updatedBy=retention.updated_by,

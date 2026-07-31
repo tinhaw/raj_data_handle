@@ -139,6 +139,21 @@ class SystemRetentionSetting(Base):
         default="previous_day",
     )
     charge_order_export_specific_date: Mapped[date | None] = mapped_column(Date)
+    spin_order_refresh_interval_hours: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=2,
+    )
+    spin_order_refresh_page_size: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=100,
+    )
+    spin_order_query_range: Mapped[str] = mapped_column(
+        String(48),
+        nullable=False,
+        default="previous_business_day_to_completed_slot",
+    )
     config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
     updated_at: Mapped[datetime] = mapped_column(

@@ -33,6 +33,14 @@ def test_withdraw_export_settings_default_to_previous_business_day() -> None:
     assert settings.withdraw_order_export_specific_date is None
 
 
+def test_spin_refresh_settings_use_safe_backfill_defaults() -> None:
+    settings = _settings()
+
+    assert settings.spin_order_refresh_interval_hours == 2
+    assert settings.spin_order_refresh_page_size == 100
+    assert settings.spin_order_query_range == "previous_business_day_to_completed_slot"
+
+
 def test_withdraw_export_settings_accept_a_specific_date() -> None:
     settings = _settings(
         withdraw_order_export_date_mode="specific_date",
@@ -97,6 +105,9 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
                 withdrawOrderExportSpecificDate="2026-07-29",
                 chargeOrderExportDateMode="specific_date",
                 chargeOrderExportSpecificDate="2026-07-28",
+                spinOrderRefreshIntervalHours=4,
+                spinOrderRefreshPageSize=50,
+                spinOrderQueryRange="business_day_to_completed_slot",
                 sessionTtlDays=45,
             ),
             actor_user_id=1,
@@ -113,12 +124,17 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
     assert updated.withdraw_order_export_specific_date == date(2026, 7, 29)
     assert updated.charge_order_export_date_mode == "specific_date"
     assert updated.charge_order_export_specific_date == date(2026, 7, 28)
+    assert updated.spin_order_refresh_interval_hours == 4
+    assert updated.spin_order_refresh_page_size == 50
+    assert updated.spin_order_query_range == "business_day_to_completed_slot"
     assert updated_session_settings.session_ttl_days == 45
     assert audit is not None
     assert audit.metadata_json["previous"]["withdrawOrderExportDateMode"] == "previous_day"
     assert audit.metadata_json["previous"]["withdrawOrderExportSpecificDate"] is None
     assert audit.metadata_json["current"]["withdrawOrderExportDateMode"] == "specific_date"
     assert audit.metadata_json["current"]["withdrawOrderExportSpecificDate"] == "2026-07-29"
+    assert audit.metadata_json["previous"]["spinOrderRefreshIntervalHours"] == 2
+    assert audit.metadata_json["current"]["spinOrderRefreshIntervalHours"] == 4
     await engine.dispose()
 
 
@@ -142,3 +158,6 @@ def test_system_settings_response_exposes_withdraw_export_policy_in_camel_case()
     assert payload["withdrawOrderExportSpecificDate"] == date(2026, 7, 29)
     assert payload["chargeOrderExportDateMode"] == "previous_day"
     assert payload["chargeOrderExportSpecificDate"] is None
+    assert payload["spinOrderRefreshIntervalHours"] == 2
+    assert payload["spinOrderRefreshPageSize"] == 100
+    assert payload["spinOrderQueryRange"] == "previous_business_day_to_completed_slot"

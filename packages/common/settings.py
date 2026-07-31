@@ -9,6 +9,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 CHARGE_ORDER_REFRESH_PAGE_SIZES = frozenset({10, 20, 30, 50, 100})
+SPIN_ORDER_REFRESH_INTERVAL_HOURS = frozenset({1, 2, 3, 4, 6, 8, 12, 24})
 # Deprecated compatibility values for existing environment files and staged
 # rollouts.  Withdrawal refreshes no longer read them; their real policy is
 # the daily Excel-export date mode below.
@@ -85,6 +86,15 @@ class Settings(BaseSettings):
         "last_24_hours",
         "last_48_hours",
     ] = "today"
+    # The turntable cache is refreshed in completed time slots.  Database-backed
+    # system settings replace these bootstrap values after migration.
+    spin_order_refresh_interval_hours: int = Field(default=2)
+    spin_order_refresh_page_size: int = Field(default=100)
+    spin_order_query_range: Literal[
+        "last_completed_slot",
+        "business_day_to_completed_slot",
+        "previous_business_day_to_completed_slot",
+    ] = "previous_business_day_to_completed_slot"
 
     @field_validator("environment")
     @classmethod
@@ -118,6 +128,22 @@ class Settings(BaseSettings):
     def validate_withdraw_order_refresh_page_size(cls, value: int) -> int:
         if value not in WITHDRAW_ORDER_REFRESH_PAGE_SIZES:
             raise ValueError("withdraw_order_refresh_page_size must be 10, 20, 30, 50, or 100")
+        return value
+
+    @field_validator("spin_order_refresh_interval_hours")
+    @classmethod
+    def validate_spin_order_refresh_interval_hours(cls, value: int) -> int:
+        if value not in SPIN_ORDER_REFRESH_INTERVAL_HOURS:
+            raise ValueError(
+                "spin_order_refresh_interval_hours must be 1, 2, 3, 4, 6, 8, 12, or 24"
+            )
+        return value
+
+    @field_validator("spin_order_refresh_page_size")
+    @classmethod
+    def validate_spin_order_refresh_page_size(cls, value: int) -> int:
+        if value not in CHARGE_ORDER_REFRESH_PAGE_SIZES:
+            raise ValueError("spin_order_refresh_page_size must be 10, 20, 30, 50, or 100")
         return value
 
     @property

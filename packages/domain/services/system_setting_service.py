@@ -32,12 +32,15 @@ def _is_missing_refresh_policy_column(
         or "charge_order_export_specific_date" in message
         or "withdraw_order_export_date_mode" in message
         or "withdraw_order_export_specific_date" in message
+        or "spin_order_refresh_interval_hours" in message
+        or "spin_order_refresh_page_size" in message
+        or "spin_order_query_range" in message
     ) and ("does not exist" in message or "no such column" in message)
 
 
 async def _load_legacy_retention_row(
     session: AsyncSession,
-) -> tuple[object | None, bool, bool, bool, bool, bool]:
+) -> tuple[object | None, bool, bool, bool, bool, bool, bool]:
     """Read a settings row while refresh-policy migrations are pending.
 
     The ORM cannot select a model with a column that has not been migrated yet.
@@ -56,12 +59,27 @@ async def _load_legacy_retention_row(
             "charge_order_refresh_interval_hours, charge_order_refresh_page_size, "
             "charge_order_query_range, charge_order_export_date_mode, "
             "charge_order_export_specific_date, withdraw_order_export_date_mode, "
+            "withdraw_order_export_specific_date, spin_order_refresh_interval_hours, "
+            "spin_order_refresh_page_size, spin_order_query_range, ",
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+        ),
+        (
+            "withdraw_order_query_range, withdraw_order_refresh_page_size, "
+            "charge_order_refresh_interval_hours, charge_order_refresh_page_size, "
+            "charge_order_query_range, charge_order_export_date_mode, "
+            "charge_order_export_specific_date, withdraw_order_export_date_mode, "
             "withdraw_order_export_specific_date, ",
             True,
             True,
             True,
             True,
             True,
+            False,
         ),
         (
             "withdraw_order_query_range, withdraw_order_refresh_page_size, "
@@ -72,6 +90,7 @@ async def _load_legacy_retention_row(
             True,
             False,
             False,
+            False,
         ),
         (
             "withdraw_order_query_range, withdraw_order_refresh_page_size, ",
@@ -80,9 +99,10 @@ async def _load_legacy_retention_row(
             False,
             False,
             False,
+            False,
         ),
-        ("withdraw_order_query_range, ", True, False, False, False, False),
-        ("", False, False, False, False, False),
+        ("withdraw_order_query_range, ", True, False, False, False, False, False),
+        ("", False, False, False, False, False, False),
     )
     for (
         extra_columns,
@@ -91,6 +111,7 @@ async def _load_legacy_retention_row(
         has_charge_policy,
         has_charge_export_policy,
         has_withdraw_export_policy,
+        has_spin_policy,
     ) in projections:
         try:
             result = await session.execute(
@@ -114,8 +135,9 @@ async def _load_legacy_retention_row(
             has_charge_policy,
             has_charge_export_policy,
             has_withdraw_export_policy,
+            has_spin_policy,
         )
-    return None, False, False, False, False, False
+    return None, False, False, False, False, False, False
 
 
 async def _load_retention_settings(
@@ -146,6 +168,7 @@ async def _load_retention_settings(
             has_charge_policy,
             has_charge_export_policy,
             has_withdraw_export_policy,
+            has_spin_policy,
         ) = await _load_legacy_retention_row(session)
         if legacy is None:
             raise SystemSettingsSchemaPendingError(
@@ -205,6 +228,21 @@ async def _load_retention_settings(
                     if has_charge_export_policy
                     else None
                 ),
+                spin_order_refresh_interval_hours=(
+                    int(legacy["spin_order_refresh_interval_hours"])
+                    if has_spin_policy
+                    else current_defaults.spin_order_refresh_interval_hours
+                ),
+                spin_order_refresh_page_size=(
+                    int(legacy["spin_order_refresh_page_size"])
+                    if has_spin_policy
+                    else current_defaults.spin_order_refresh_page_size
+                ),
+                spin_order_query_range=(
+                    str(legacy["spin_order_query_range"])
+                    if has_spin_policy
+                    else current_defaults.spin_order_query_range
+                ),
                 config_version=int(legacy["config_version"]),
                 updated_by=legacy["updated_by"],
                 updated_at=legacy["updated_at"],
@@ -232,6 +270,9 @@ async def _load_retention_settings(
         charge_order_query_range=current_defaults.charge_order_query_range,
         charge_order_export_date_mode="previous_day",
         charge_order_export_specific_date=None,
+        spin_order_refresh_interval_hours=current_defaults.spin_order_refresh_interval_hours,
+        spin_order_refresh_page_size=current_defaults.spin_order_refresh_page_size,
+        spin_order_query_range=current_defaults.spin_order_query_range,
     )
     session.add(row)
     await session.commit()
@@ -285,6 +326,9 @@ async def update_retention_settings(
             if row.charge_order_export_specific_date is not None
             else None
         ),
+        "spinOrderRefreshIntervalHours": row.spin_order_refresh_interval_hours,
+        "spinOrderRefreshPageSize": row.spin_order_refresh_page_size,
+        "spinOrderQueryRange": row.spin_order_query_range,
         "sessionTtlDays": session_settings.session_ttl_days,
     }
     row.uploaded_file_retention_days = payload.uploaded_file_retention_days
@@ -316,6 +360,12 @@ async def update_retention_settings(
             if payload.charge_order_export_date_mode == "specific_date"
             else None
         )
+    if payload.spin_order_refresh_interval_hours is not None:
+        row.spin_order_refresh_interval_hours = payload.spin_order_refresh_interval_hours
+    if payload.spin_order_refresh_page_size is not None:
+        row.spin_order_refresh_page_size = payload.spin_order_refresh_page_size
+    if payload.spin_order_query_range is not None:
+        row.spin_order_query_range = payload.spin_order_query_range
     row.config_version += 1
     row.updated_by = actor_user_id
     row.updated_at = datetime.now(UTC)
@@ -355,6 +405,9 @@ async def update_retention_settings(
                         if row.charge_order_export_specific_date is not None
                         else None
                     ),
+                    "spinOrderRefreshIntervalHours": row.spin_order_refresh_interval_hours,
+                    "spinOrderRefreshPageSize": row.spin_order_refresh_page_size,
+                    "spinOrderQueryRange": row.spin_order_query_range,
                     "sessionTtlDays": session_settings.session_ttl_days,
                 },
                 "configVersion": row.config_version,

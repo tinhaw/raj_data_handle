@@ -23,6 +23,7 @@ from packages.domain.services.data_dictionary_service import ensure_spin_order_s
 from packages.domain.services.remote_spin_service import RajAdminSpinClient, SpinFetchResult
 from packages.domain.services.source_service import get_source
 from packages.domain.services.spin_order_service import SPIN_CONFIG_LABELS
+from packages.domain.services.system_setting_service import get_retention_settings
 
 WALL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 REFRESH_LEASE_DURATION = timedelta(minutes=45)
@@ -30,6 +31,13 @@ FAILED_REFRESH_RETRY_DELAY = timedelta(minutes=5)
 CHANNEL_RETRY_DELAY = timedelta(minutes=30)
 CHANNEL_LOOKUP_CONCURRENCY = 8
 SPIN_MANUAL_REFRESH_RANGES = frozenset({"day_before_yesterday", "yesterday", "today"})
+SPIN_AUTOMATIC_QUERY_RANGES = frozenset(
+    {
+        "last_completed_slot",
+        "business_day_to_completed_slot",
+        "previous_business_day_to_completed_slot",
+    }
+)
 AUTOMATIC_SLOT_GRACE = timedelta(minutes=5)
 
 
@@ -63,6 +71,7 @@ class _Claim:
     window_start: datetime
     window_end: datetime
     query_range: str | None
+    page_size: int
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -145,35 +154,67 @@ def _day_window(*, day: date, timezone_name: str) -> tuple[datetime, datetime]:
     )
 
 
-def _automatic_window(*, timezone_name: str, now: datetime) -> tuple[datetime, datetime]:
-    """Return a completed two-hour slot and a one-day review lookback window."""
-
-    local_now = now.astimezone(ZoneInfo(timezone_name))
-    current_slot_start = local_now.replace(
-        hour=(local_now.hour // 2) * 2,
+def _automatic_slot_start(*, local_now: datetime, interval_hours: int) -> datetime:
+    return local_now.replace(
+        hour=(local_now.hour // interval_hours) * interval_hours,
         minute=0,
         second=0,
         microsecond=0,
     )
-    # At 08:05 the 06:00–07:59 slot is complete.  Looking back one day
-    # re-reads recently audited applications without ever querying a future
-    # interval.
-    completed_end_local = current_slot_start - timedelta(seconds=1)
-    review_start_local = (completed_end_local - timedelta(days=1)).replace(
-        hour=0, minute=0, second=0, microsecond=0
+
+
+def _automatic_window(
+    *,
+    timezone_name: str,
+    now: datetime,
+    interval_hours: int,
+    query_range: str,
+) -> tuple[datetime, datetime]:
+    """Return the configured completed-slot review window.
+
+    The end is always the last second before the currently running slot, so a
+    refresh never reads orders whose state is still changing.  The selected
+    range controls how far back the cache is reconciled.
+    """
+
+    if query_range not in SPIN_AUTOMATIC_QUERY_RANGES:
+        raise SpinOrderRefreshValidationError("不支持的转盘订单自动查询范围。")
+
+    local_now = now.astimezone(ZoneInfo(timezone_name))
+    current_slot_start = _automatic_slot_start(
+        local_now=local_now,
+        interval_hours=interval_hours,
     )
+    completed_start_local = current_slot_start - timedelta(hours=interval_hours)
+    completed_end_local = current_slot_start - timedelta(seconds=1)
+    if query_range == "last_completed_slot":
+        review_start_local = completed_start_local
+    elif query_range == "business_day_to_completed_slot":
+        review_start_local = completed_end_local.replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+    else:
+        review_start_local = (completed_end_local - timedelta(days=1)).replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
     return review_start_local.astimezone(UTC), completed_end_local.astimezone(UTC)
 
 
-def _automatic_slot_is_ready(*, timezone_name: str, now: datetime) -> bool:
-    """Wait briefly after each two-hour boundary before starting its refresh."""
+def _automatic_slot_is_ready(
+    *, timezone_name: str, now: datetime, interval_hours: int
+) -> bool:
+    """Wait briefly after a configured time-slot boundary before refreshing."""
 
     local_now = now.astimezone(ZoneInfo(timezone_name))
-    current_slot_start = local_now.replace(
-        hour=(local_now.hour // 2) * 2,
-        minute=0,
-        second=0,
-        microsecond=0,
+    current_slot_start = _automatic_slot_start(
+        local_now=local_now,
+        interval_hours=interval_hours,
     )
     return local_now >= current_slot_start + AUTOMATIC_SLOT_GRACE
 
@@ -271,7 +312,13 @@ async def queue_spin_order_refreshes(
     return SpinOrderRefreshQueueResult(source_ids, requested_at, query_range)
 
 
-async def _claim_due(session: AsyncSession, *, now: datetime) -> _Claim | None:
+async def _claim_due(
+    session: AsyncSession,
+    *,
+    now: datetime,
+    settings: Settings,
+) -> _Claim | None:
+    retention = await get_retention_settings(session, defaults=settings)
     sources = list(
         await session.scalars(
             select(SourceConfig)
@@ -289,10 +336,14 @@ async def _claim_due(session: AsyncSession, *, now: datetime) -> _Claim | None:
         if not manual and not _automatic_slot_is_ready(
             timezone_name=source.business_timezone,
             now=now,
+            interval_hours=retention.spin_order_refresh_interval_hours,
         ):
             continue
         automatic_start, automatic_end = _automatic_window(
-            timezone_name=source.business_timezone, now=now
+            timezone_name=source.business_timezone,
+            now=now,
+            interval_hours=retention.spin_order_refresh_interval_hours,
+            query_range=retention.spin_order_query_range,
         )
         if not _due(state, now=now, window_end=automatic_end):
             continue
@@ -324,6 +375,7 @@ async def _claim_due(session: AsyncSession, *, now: datetime) -> _Claim | None:
             window_start=window_start,
             window_end=window_end,
             query_range=query_range,
+            page_size=retention.spin_order_refresh_page_size,
         )
     await session.commit()
     return None
@@ -589,6 +641,7 @@ async def _execute(
             username=credentials["username"],
             password=credentials["password"],
             totp_secret=credentials["totp_secret"],
+            page_size=claim.page_size,
         ) as client:
             await _renew(session, claim=claim)
             fetched = await client.fetch_spin_orders(
@@ -638,7 +691,7 @@ async def run_due_spin_order_refreshes(
     results: list[SpinOrderRefreshRunResult] = []
     while True:
         try:
-            claim = await _claim_due(session, now=run_at)
+            claim = await _claim_due(session, now=run_at, settings=current_settings)
         except (OperationalError, ProgrammingError) as exc:
             if not _missing_schema(exc):
                 raise

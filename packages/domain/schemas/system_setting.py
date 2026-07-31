@@ -21,6 +21,13 @@ WithdrawOrderExportDateMode = Literal["previous_day", "specific_date"]
 ChargeOrderQueryRange = WithdrawOrderQueryRange
 ChargeOrderRefreshPageSize = WithdrawOrderRefreshPageSize
 ChargeOrderExportDateMode = Literal["previous_day", "specific_date"]
+SpinOrderRefreshIntervalHours = Literal[1, 2, 3, 4, 6, 8, 12, 24]
+SpinOrderRefreshPageSize = WithdrawOrderRefreshPageSize
+SpinOrderQueryRange = Literal[
+    "last_completed_slot",
+    "business_day_to_completed_slot",
+    "previous_business_day_to_completed_slot",
+]
 
 
 class RetentionSettingsResponse(BaseModel):
@@ -63,6 +70,13 @@ class RetentionSettingsResponse(BaseModel):
     charge_order_export_specific_date: date | None = Field(
         alias="chargeOrderExportSpecificDate",
     )
+    spin_order_refresh_interval_hours: SpinOrderRefreshIntervalHours = Field(
+        alias="spinOrderRefreshIntervalHours",
+    )
+    spin_order_refresh_page_size: SpinOrderRefreshPageSize = Field(
+        alias="spinOrderRefreshPageSize",
+    )
+    spin_order_query_range: SpinOrderQueryRange = Field(alias="spinOrderQueryRange")
     session_ttl_days: int = Field(alias="sessionTtlDays")
     config_version: int = Field(alias="configVersion")
     updated_by: int | None = Field(alias="updatedBy")
@@ -124,6 +138,18 @@ class RetentionSettingsUpdateRequest(BaseModel):
     charge_order_export_specific_date: date | None = Field(
         default=None,
         alias="chargeOrderExportSpecificDate",
+    )
+    spin_order_refresh_interval_hours: SpinOrderRefreshIntervalHours | None = Field(
+        default=None,
+        alias="spinOrderRefreshIntervalHours",
+    )
+    spin_order_refresh_page_size: SpinOrderRefreshPageSize | None = Field(
+        default=None,
+        alias="spinOrderRefreshPageSize",
+    )
+    spin_order_query_range: SpinOrderQueryRange | None = Field(
+        default=None,
+        alias="spinOrderQueryRange",
     )
     session_ttl_days: int = Field(ge=1, le=365, alias="sessionTtlDays")
 

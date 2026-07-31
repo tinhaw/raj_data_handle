@@ -27,7 +27,11 @@ from packages.domain.services.remote_spin_service import (
     SpinFetchResult,
     normalize_spin_order,
 )
-from packages.domain.services.spin_order_refresh_service import run_due_spin_order_refreshes
+from packages.domain.services.spin_order_refresh_service import (
+    _automatic_slot_is_ready,
+    _automatic_window,
+    run_due_spin_order_refreshes,
+)
 from packages.domain.services.spin_order_service import (
     query_spin_channel_summary,
     query_spin_orders,
@@ -38,8 +42,9 @@ from packages.domain.services.spin_order_service import (
 class FakeSpinClient:
     calls: list[dict[str, object]] = []
 
-    def __init__(self, *, base_url: str, **_: object) -> None:
+    def __init__(self, *, base_url: str, page_size: int = 100, **_: object) -> None:
         self.base_url = base_url
+        self.page_size = page_size
 
     async def __aenter__(self) -> FakeSpinClient:
         return self
@@ -51,7 +56,9 @@ class FakeSpinClient:
         return "test-token"
 
     async def fetch_spin_orders(self, **kwargs: object) -> SpinFetchResult:
-        FakeSpinClient.calls.append({"base_url": self.base_url, **kwargs})
+        FakeSpinClient.calls.append(
+            {"base_url": self.base_url, "page_size": self.page_size, **kwargs}
+        )
         return SpinFetchResult(
             orders=[
                 {
@@ -157,6 +164,23 @@ def test_spin_order_normalizer_and_summary_keep_only_approved_reporting_fields()
     assert summary["winner_count"] == 4
     assert summary["passed_winner_count"] == 2
     assert summary["person_approval_rate"] == "50.00"
+
+
+def test_configured_spin_automatic_window_uses_interval_and_query_range() -> None:
+    # 10:05 India time: for a four-hour cadence, 04:00–07:59 is complete.
+    now = datetime(2026, 7, 30, 4, 35, tzinfo=UTC)
+    start, end = _automatic_window(
+        timezone_name="Asia/Kolkata",
+        now=now,
+        interval_hours=4,
+        query_range="business_day_to_completed_slot",
+    )
+
+    assert start == datetime(2026, 7, 29, 18, 30, tzinfo=UTC)
+    assert end == datetime(2026, 7, 30, 2, 29, 59, tzinfo=UTC)
+    assert _automatic_slot_is_ready(
+        timezone_name="Asia/Kolkata", now=now, interval_hours=4
+    )
 
 
 @pytest.mark.asyncio
@@ -357,4 +381,35 @@ async def test_two_hour_worker_refreshes_all_orders_and_minimal_uid_channel_cach
         "source-a",
         "resolved",
     )
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_worker_uses_configured_spin_page_size_and_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    engine = create_async_engine(settings.database_url)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr(
+        "packages.domain.services.spin_order_refresh_service.RajAdminSpinClient",
+        FakeSpinClient,
+    )
+    FakeSpinClient.calls = []
+    run_at = datetime(2026, 7, 30, 4, 35, tzinfo=UTC)
+    async with factory() as session:
+        retention = _retention()
+        retention.spin_order_refresh_interval_hours = 4
+        retention.spin_order_refresh_page_size = 50
+        retention.spin_order_query_range = "business_day_to_completed_slot"
+        session.add_all([_source(settings), retention])
+        await session.commit()
+        outcomes = await run_due_spin_order_refreshes(session, now=run_at, settings=settings)
+
+    assert [outcome.status for outcome in outcomes] == ["succeeded"]
+    assert FakeSpinClient.calls[0]["page_size"] == 50
+    assert FakeSpinClient.calls[0]["create_start"] == "2026-07-30 00:00:00"
+    assert FakeSpinClient.calls[0]["create_end"] == "2026-07-30 07:59:59"
     await engine.dispose()

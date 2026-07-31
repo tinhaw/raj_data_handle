@@ -2,7 +2,7 @@
 import { Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import type { EChartsOption } from 'echarts'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 
 import { apiErrorMessage } from '../api/client'
 import { fetchEnabledSources } from '../api/sources'
@@ -23,6 +23,8 @@ import type {
 import { businessFullDayRange, formatDateTime } from '../ui'
 
 type SpinTab = 'orders' | 'channels'
+
+const LOCAL_CACHE_POLL_INTERVAL_MS = 5_000
 
 const SPIN_CONFIG_OPTIONS = [
   { value: '10001', label: '10001（200转盘）' },
@@ -82,6 +84,7 @@ const channelSummaryPageSize = ref(50)
 const queuedAt = ref<string | null>(null)
 let ordersRequestId = 0
 let channelSummaryRequestId = 0
+let localCachePollTimer: number | undefined
 
 const filters = reactive({
   sourceId: '',
@@ -193,10 +196,27 @@ function queryPayload() {
   }
 }
 
+function clearLocalCachePoll(): void {
+  if (localCachePollTimer === undefined) return
+  window.clearTimeout(localCachePollTimer)
+  localCachePollTimer = undefined
+}
+
+function scheduleLocalCachePoll(): void {
+  clearLocalCachePoll()
+  if (!refreshInProgress.value) return
+  localCachePollTimer = window.setTimeout(() => {
+    localCachePollTimer = undefined
+    void loadOrders()
+  }, LOCAL_CACHE_POLL_INTERVAL_MS)
+}
+
 async function loadOrders(resetPage = false): Promise<void> {
   if (!filters.sourceId) return
+  clearLocalCachePoll()
   if (resetPage) page.value = 1
   const requestId = ++ordersRequestId
+  let loaded = false
   loading.value = true
   try {
     const next = await querySpinOrders(queryPayload())
@@ -204,12 +224,16 @@ async function loadOrders(resetPage = false): Promise<void> {
     response.value = next
     rows.value = next.items
     total.value = next.total
+    loaded = true
   } catch (error) {
     if (requestId === ordersRequestId) {
       ElMessage.error(apiErrorMessage(error, '本地转盘订单加载失败。'))
     }
   } finally {
-    if (requestId === ordersRequestId) loading.value = false
+    if (requestId === ordersRequestId) {
+      loading.value = false
+      if (loaded) scheduleLocalCachePoll()
+    }
   }
 }
 
@@ -318,6 +342,8 @@ onMounted(async () => {
     sourcesLoading.value = false
   }
 })
+
+onBeforeUnmount(clearLocalCachePoll)
 </script>
 
 <template>
