@@ -14,6 +14,7 @@ from packages.domain.models import (
     SourceConfig,
     SystemRetentionSetting,
     WithdrawOrderSnapshot,
+    WithdrawScoringSnapshot,
 )
 from packages.domain.schemas.withdraw_order import (
     WithdrawChannelSummaryRequest,
@@ -204,6 +205,30 @@ def _india_snapshot(
     return snapshot
 
 
+def _scoring_snapshot(
+    withdraw_order_id: str,
+    *,
+    source_id: str = "rajwin",
+) -> WithdrawScoringSnapshot:
+    return WithdrawScoringSnapshot(
+        source_id=source_id,
+        withdraw_order_id=withdraw_order_id,
+        global_hard_condition="通过",
+        scenario_review="通过",
+        score_review="-35",
+        decision_stage="评分审核",
+        final_review_suggestion="建议拒绝",
+        operation_result="已拒绝",
+        review_summary="仅来自评分审核导出表的补充摘要",
+        current_status="已完成",
+        review_completed_at=datetime(2026, 7, 30, 11, 30, tzinfo=UTC),
+        review_duration="00:05:00",
+        queue_duration="00:01:00",
+        entered_queue_at=datetime(2026, 7, 30, 11, 20, tzinfo=UTC),
+        exited_queue_at=datetime(2026, 7, 30, 11, 25, tzinfo=UTC),
+    )
+
+
 @pytest.mark.asyncio
 async def test_withdraw_detail_uses_cached_export_fields_and_filters() -> None:
     engine, factory = await _database()
@@ -290,12 +315,179 @@ async def test_withdraw_detail_uses_cached_export_fields_and_filters() -> None:
             "status_label": "代付成功",
             "is_first": "是",
             "channel": "affiliate-a",
+            "scoring_record_imported": False,
+            "scoring_global_gate": None,
+            "scoring_scene_review": None,
+            "scoring_score": None,
+            "scoring_decision_stage": None,
+            "scoring_final_suggestion": None,
+            "scoring_operation_result": None,
+            "scoring_summary": None,
+            "scoring_current_status": None,
+            "scoring_reviewed_at": None,
+            "scoring_review_elapsed": None,
+            "scoring_queue_elapsed": None,
+            "scoring_queue_entered_at": None,
+            "scoring_queue_exited_at": None,
         }
     ]
     assert result.channel_dictionary == [
         {"code": "channel-a", "label": "Channel A"},
         {"code": "channel-b", "label": "Channel B"},
     ]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_withdraw_detail_left_joins_scoring_fields_without_score_only_orders() -> None:
+    """Score rows enrich matching master rows and cannot drive the result set."""
+
+    engine, factory = await _database()
+    now = datetime(2026, 7, 31, 6, 0, tzinfo=UTC)
+    async with factory() as session:
+        session.add_all(
+            [
+                SourceConfig(
+                    source_id="rajwin",
+                    display_name="RajWin",
+                    enabled=True,
+                    business_timezone="Asia/Kolkata",
+                    currency="INR",
+                ),
+                SystemRetentionSetting(
+                    id=1,
+                    uploaded_file_retention_days=3,
+                    result_retention_days=30,
+                    remote_cache_retention_days=30,
+                ),
+                _india_snapshot(
+                    "matched",
+                    pay_channel="master-channel",
+                    pay_channel_name="Master Channel",
+                    status="master-status",
+                    status_label="代付成功",
+                    amount="100.00",
+                    real_amount="97.00",
+                    fee="3.00",
+                    local_time=datetime(2026, 7, 30, 10, 0),
+                ),
+                _india_snapshot(
+                    "unscored",
+                    pay_channel="other-channel",
+                    pay_channel_name="Other Channel",
+                    status="master-status",
+                    status_label="代付成功",
+                    amount="50.00",
+                    real_amount="48.00",
+                    fee="2.00",
+                    local_time=datetime(2026, 7, 30, 11, 0),
+                ),
+                _scoring_snapshot("matched"),
+                # SQLite tests do not enable foreign-key enforcement.  This
+                # synthetic orphan proves the read path starts from master
+                # withdrawal snapshots even if an invalid score row existed;
+                # production additionally rejects it through the composite FK.
+                _scoring_snapshot("score-only"),
+            ]
+        )
+        await session.commit()
+        result = await query_withdraw_orders(
+            session,
+            request=WithdrawOrderQueryRequest(
+                source_id="rajwin",
+                create_time_start="2026-07-30 00:00:00",
+                create_time_end="2026-07-30 23:59:59",
+            ),
+            settings=_settings(),
+            now=now,
+        )
+
+    assert result.total == 2
+    assert {item["id"] for item in result.items} == {"matched", "unscored"}
+    assert "score-only" not in {item["id"] for item in result.items}
+
+    matched = next(item for item in result.items if item["id"] == "matched")
+    # These values remain master-owned even when a score supplement exists.
+    assert matched["scoring_record_imported"] is True
+    assert {
+        key: matched[key]
+        for key in (
+            "uid",
+            "order_num",
+            "pay_channel",
+            "pay_channel_name",
+            "amount",
+            "real_amount",
+            "fee",
+            "create_time",
+            "status",
+            "status_label",
+        )
+    } == {
+        "uid": "10001",
+        "order_num": "withdraw-matched",
+        "pay_channel": "master-channel",
+        "pay_channel_name": "Master Channel",
+        "amount": "100.00",
+        "real_amount": "97.00",
+        "fee": "3.00",
+        "create_time": "2026-07-30 10:00:00",
+        "status": "master-status",
+        "status_label": "代付成功",
+    }
+    assert {
+        key: matched[key]
+        for key in (
+            "scoring_global_gate",
+            "scoring_scene_review",
+            "scoring_score",
+            "scoring_decision_stage",
+            "scoring_final_suggestion",
+            "scoring_operation_result",
+            "scoring_summary",
+            "scoring_current_status",
+            "scoring_reviewed_at",
+            "scoring_review_elapsed",
+            "scoring_queue_elapsed",
+            "scoring_queue_entered_at",
+            "scoring_queue_exited_at",
+        )
+    } == {
+        "scoring_global_gate": "通过",
+        "scoring_scene_review": "通过",
+        "scoring_score": "-35",
+        "scoring_decision_stage": "评分审核",
+        "scoring_final_suggestion": "建议拒绝",
+        "scoring_operation_result": "已拒绝",
+        "scoring_summary": "仅来自评分审核导出表的补充摘要",
+        "scoring_current_status": "已完成",
+        "scoring_reviewed_at": "2026-07-30 17:00:00",
+        "scoring_review_elapsed": "00:05:00",
+        "scoring_queue_elapsed": "00:01:00",
+        "scoring_queue_entered_at": "2026-07-30 16:50:00",
+        "scoring_queue_exited_at": "2026-07-30 16:55:00",
+    }
+
+    unscored = next(item for item in result.items if item["id"] == "unscored")
+    assert unscored["scoring_record_imported"] is False
+    assert all(
+        unscored[key] is None
+        for key in (
+            "scoring_global_gate",
+            "scoring_scene_review",
+            "scoring_score",
+            "scoring_decision_stage",
+            "scoring_final_suggestion",
+            "scoring_operation_result",
+            "scoring_summary",
+            "scoring_current_status",
+            "scoring_reviewed_at",
+            "scoring_review_elapsed",
+            "scoring_queue_elapsed",
+            "scoring_queue_entered_at",
+            "scoring_queue_exited_at",
+        )
+    )
     await engine.dispose()
 
 

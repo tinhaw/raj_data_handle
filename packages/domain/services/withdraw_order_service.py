@@ -12,7 +12,11 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.common.settings import Settings, get_settings
-from packages.domain.models import WithdrawOrderRefreshState, WithdrawOrderSnapshot
+from packages.domain.models import (
+    WithdrawOrderRefreshState,
+    WithdrawOrderSnapshot,
+    WithdrawScoringSnapshot,
+)
 from packages.domain.schemas.withdraw_order import (
     WithdrawChannelSummaryRequest,
     WithdrawOperatorSummaryRequest,
@@ -275,8 +279,93 @@ def summarize_withdraw_orders(
     }
 
 
-def snapshot_to_withdraw_order(snapshot: WithdrawOrderSnapshot) -> dict[str, Any]:
-    """Project a local cache row to approved detail fields only."""
+def _format_scoring_timestamp(
+    value: datetime | None,
+    *,
+    timezone_name: str | None,
+) -> str | None:
+    """Format a cached scoring timestamp in the selected source's business time.
+
+    Scoring exports are supplemental, but their timestamps still need to be
+    understandable alongside the authoritative withdrawal export.  Cache
+    persistence uses timezone-aware datetimes; older SQLite test rows may be
+    naive, so ``_as_utc`` keeps the projection stable in both environments.
+    """
+
+    if value is None:
+        return None
+    localized = _as_utc(value)
+    if localized is None:
+        return None
+    if timezone_name:
+        localized = localized.astimezone(ZoneInfo(timezone_name))
+    return localized.strftime(WALL_TIME_FORMAT)
+
+
+def _scoring_fields(
+    snapshot: WithdrawScoringSnapshot | None,
+    *,
+    timezone_name: str | None,
+) -> dict[str, str | bool | None]:
+    """Map one optional scoring snapshot without touching master fields."""
+
+    if snapshot is None:
+        return {
+            "scoring_record_imported": False,
+            "scoring_global_gate": None,
+            "scoring_scene_review": None,
+            "scoring_score": None,
+            "scoring_decision_stage": None,
+            "scoring_final_suggestion": None,
+            "scoring_operation_result": None,
+            "scoring_summary": None,
+            "scoring_current_status": None,
+            "scoring_reviewed_at": None,
+            "scoring_review_elapsed": None,
+            "scoring_queue_elapsed": None,
+            "scoring_queue_entered_at": None,
+            "scoring_queue_exited_at": None,
+        }
+    return {
+        "scoring_record_imported": True,
+        "scoring_global_gate": snapshot.global_hard_condition,
+        "scoring_scene_review": snapshot.scenario_review,
+        "scoring_score": snapshot.score_review,
+        "scoring_decision_stage": snapshot.decision_stage,
+        "scoring_final_suggestion": snapshot.final_review_suggestion,
+        "scoring_operation_result": snapshot.operation_result,
+        "scoring_summary": snapshot.review_summary,
+        "scoring_current_status": snapshot.current_status,
+        "scoring_reviewed_at": _format_scoring_timestamp(
+            snapshot.review_completed_at,
+            timezone_name=timezone_name,
+        ),
+        "scoring_review_elapsed": snapshot.review_duration,
+        "scoring_queue_elapsed": snapshot.queue_duration,
+        "scoring_queue_entered_at": _format_scoring_timestamp(
+            snapshot.entered_queue_at,
+            timezone_name=timezone_name,
+        ),
+        "scoring_queue_exited_at": _format_scoring_timestamp(
+            snapshot.exited_queue_at,
+            timezone_name=timezone_name,
+        ),
+    }
+
+
+def snapshot_to_withdraw_order(
+    snapshot: WithdrawOrderSnapshot,
+    *,
+    scoring_snapshot: WithdrawScoringSnapshot | None = None,
+    timezone_name: str | None = None,
+) -> dict[str, Any]:
+    """Project one master withdrawal row with optional score-only supplements.
+
+    The caller must always start from :class:`WithdrawOrderSnapshot`.  This is
+    deliberately an application-level left join: a scoring workbook row can
+    enrich the matching ``(source_id, remote_order_id)`` only and can never
+    create a visible withdrawal order by itself.
+    """
 
     return {
         "id": snapshot.remote_order_id,
@@ -296,6 +385,7 @@ def snapshot_to_withdraw_order(snapshot: WithdrawOrderSnapshot) -> dict[str, Any
         "status_label": snapshot.status_label,
         "is_first": snapshot.is_first,
         "channel": snapshot.channel,
+        **_scoring_fields(scoring_snapshot, timezone_name=timezone_name),
     }
 
 
@@ -304,6 +394,7 @@ def _is_missing_withdraw_cache_schema(error: OperationalError | ProgrammingError
     missing_table = (
         "withdraw_order_snapshots" in message
         or "withdraw_order_refresh_states" in message
+        or "withdraw_scoring_snapshots" in message
     ) and ("does not exist" in message or "no such table" in message)
     missing_export_columns = any(
         column in message
@@ -434,6 +525,43 @@ async def _filtered_snapshots(
         ) from exc
 
 
+async def _scoring_snapshots_by_withdraw_order_id(
+    session: AsyncSession,
+    *,
+    source_id: str,
+    withdraw_order_ids: list[str],
+) -> dict[str, WithdrawScoringSnapshot]:
+    """Return score rows only for an already-selected master-order page set.
+
+    Starting with master withdrawal IDs is intentionally stronger than merely
+    filtering a scoring table by source: score-only workbook rows cannot leak
+    into detail results even during a staged cache refresh.  Chunking keeps
+    the lookup compatible with both PostgreSQL and SQLite parameter limits.
+    """
+
+    if not withdraw_order_ids:
+        return {}
+    rows: dict[str, WithdrawScoringSnapshot] = {}
+    try:
+        for offset in range(0, len(withdraw_order_ids), 500):
+            statement = select(WithdrawScoringSnapshot).where(
+                WithdrawScoringSnapshot.source_id == source_id,
+                WithdrawScoringSnapshot.withdraw_order_id.in_(
+                    withdraw_order_ids[offset : offset + 500]
+                ),
+            )
+            for scoring_snapshot in await session.scalars(statement):
+                rows[scoring_snapshot.withdraw_order_id] = scoring_snapshot
+    except (OperationalError, ProgrammingError) as exc:
+        if not _is_missing_withdraw_cache_schema(exc):
+            raise
+        await session.rollback()
+        raise WithdrawOrderCacheSchemaPendingError(
+            "提现订单评分缓存正在初始化，请在数据库迁移完成后重试。"
+        ) from exc
+    return rows
+
+
 async def _status_dictionary(
     session: AsyncSession,
     *,
@@ -536,10 +664,27 @@ async def query_withdraw_orders(
         out_trade_no=request.out_trade_no,
         pay_channel=request.pay_channel,
     )
-    orders = [snapshot_to_withdraw_order(snapshot) for snapshot in snapshots]
     offset = (request.page - 1) * request.page_size
+    page_snapshots = snapshots[offset : offset + request.page_size]
+    scoring_by_withdraw_order_id = await _scoring_snapshots_by_withdraw_order_id(
+        session,
+        source_id=source_id,
+        withdraw_order_ids=[snapshot.remote_order_id for snapshot in page_snapshots],
+    )
+    # Keep every aggregate based on the authoritative withdrawal cache.  Score
+    # fields only enrich the page's master detail rows and do not affect
+    # withdrawal totals, statuses, channels, or pagination.
+    orders = [snapshot_to_withdraw_order(snapshot) for snapshot in snapshots]
+    page_orders = [
+        snapshot_to_withdraw_order(
+            snapshot,
+            scoring_snapshot=scoring_by_withdraw_order_id.get(snapshot.remote_order_id),
+            timezone_name=timezone_name,
+        )
+        for snapshot in page_snapshots
+    ]
     return WithdrawOrderQueryResult(
-        items=orders[offset : offset + request.page_size],
+        items=page_orders,
         total=len(orders),
         remote_total=refresh_state.last_remote_total if refresh_state else len(orders),
         fetched_pages=refresh_state.last_fetched_pages if refresh_state else 0,
@@ -552,7 +697,13 @@ async def query_withdraw_orders(
             WALL_TIME_FORMAT
         ),
         fetched_at=query_at,
-        local_updated_at=max((_as_utc(row.synced_at) for row in snapshots), default=None),
+        local_updated_at=max(
+            (
+                *(_as_utc(row.synced_at) for row in snapshots),
+                *(_as_utc(row.synced_at) for row in scoring_by_withdraw_order_id.values()),
+            ),
+            default=None,
+        ),
         last_refreshed_at=_as_utc(refresh_state.last_succeeded_at) if refresh_state else None,
         refresh_status=refresh_state.status if refresh_state else "not_started",
         status_dictionary=await _status_dictionary(

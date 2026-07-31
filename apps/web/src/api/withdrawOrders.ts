@@ -5,6 +5,8 @@ import type {
   WithdrawOrderQueryResponse,
   WithdrawOrderRefreshResult,
   WithdrawOrderRefreshRange,
+  ScoringReviewOperatorSummaryResponse,
+  WithdrawScoringImportResult,
 } from '../types'
 
 export interface WithdrawOrderQuery {
@@ -56,6 +58,38 @@ export async function queryWithdrawChannelSummary(
   payload: WithdrawChannelSummaryQuery,
 ): Promise<WithdrawChannelSummaryResponse> {
   return (await api.post<WithdrawChannelSummaryResponse>('/withdraw-orders/channel-summary', payload)).data
+}
+
+export interface ScoringReviewOperatorSummaryQuery {
+  sourceId: string
+  createTimeStart: string
+  createTimeEnd: string
+}
+
+export async function queryScoringReviewOperatorSummary(
+  payload: ScoringReviewOperatorSummaryQuery,
+): Promise<ScoringReviewOperatorSummaryResponse> {
+  return (await api.post<ScoringReviewOperatorSummaryResponse>(
+    '/withdraw-orders/scoring-review-summary',
+    payload,
+  )).data
+}
+
+/**
+ * Import one source's scoring-review workbook into the local supplemental
+ * cache.  The service only joins existing withdrawal orders by case number;
+ * it never creates a withdrawal order from a score row.
+ */
+export async function importScoringReviewedCases(
+  sourceId: string,
+  file: File,
+): Promise<WithdrawScoringImportResult> {
+  const form = new FormData()
+  form.set('sourceId', sourceId)
+  form.set('upload', file)
+  return (
+    await api.post<WithdrawScoringImportResult>('/withdraw-orders/scoring-review/import', form)
+  ).data
 }
 
 export async function startWithdrawOrderRefresh(payload: {

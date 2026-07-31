@@ -14,6 +14,7 @@ from packages.domain.models import (
     StoredFileObject,
     StoredFileReference,
     WithdrawOrderSnapshot,
+    WithdrawScoringSnapshot,
 )
 from packages.domain.services.system_setting_service import get_retention_settings
 from packages.storage.local import LocalFileStorage
@@ -25,6 +26,7 @@ def _is_missing_order_snapshot_table(error: OperationalError | ProgrammingError)
         "withdraw_order_snapshots" in message
         or "charge_order_snapshots" in message
         or "spin_order_snapshots" in message
+        or "withdraw_scoring_snapshots" in message
     ) and (
         "does not exist" in message or "no such table" in message
     )
@@ -47,6 +49,33 @@ async def _cleanup_expired_withdraw_snapshots(
     try:
         result = await session.execute(
             delete(WithdrawOrderSnapshot).where(WithdrawOrderSnapshot.synced_at < cutoff)
+        )
+        return int(result.rowcount or 0)
+    except (OperationalError, ProgrammingError) as exc:
+        if not _is_missing_order_snapshot_table(exc):
+            raise
+        await session.rollback()
+        return 0
+
+
+async def _cleanup_expired_withdraw_scoring_snapshots(
+    session: AsyncSession,
+    *,
+    now: datetime,
+) -> int:
+    """Remove expired scoring supplements without touching primary orders.
+
+    The score cache shares the remote-cache retention policy, but is cleaned
+    independently before master withdrawal snapshots.  This lets a current
+    withdrawal row lose an older score supplement without removing the
+    authoritative order itself.
+    """
+
+    retention = await get_retention_settings(session)
+    cutoff = now - timedelta(days=retention.remote_cache_retention_days)
+    try:
+        result = await session.execute(
+            delete(WithdrawScoringSnapshot).where(WithdrawScoringSnapshot.synced_at < cutoff)
         )
         return int(result.rowcount or 0)
     except (OperationalError, ProgrammingError) as exc:
@@ -101,6 +130,10 @@ async def cleanup_expired_data(
     now: datetime | None = None,
 ) -> dict[str, int]:
     cleanup_time = now or datetime.now(UTC)
+    deleted_withdraw_scoring_snapshots = await _cleanup_expired_withdraw_scoring_snapshots(
+        session,
+        now=cleanup_time,
+    )
     deleted_withdraw_order_snapshots = await _cleanup_expired_withdraw_snapshots(
         session,
         now=cleanup_time,
@@ -156,6 +189,7 @@ async def cleanup_expired_data(
         "expiredFileReferences": len(expired_references),
         "deletedFileObjects": deleted_files,
         "deletedBatches": len(expired_batch_ids),
+        "deletedWithdrawScoringSnapshots": deleted_withdraw_scoring_snapshots,
         "deletedWithdrawOrderSnapshots": deleted_withdraw_order_snapshots,
         "deletedChargeOrderSnapshots": deleted_charge_order_snapshots,
         "deletedSpinOrderSnapshots": deleted_spin_order_snapshots,

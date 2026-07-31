@@ -23,6 +23,7 @@ from packages.domain.models.entities import (
     UserNotification,
     WithdrawOrderRefreshState,
     WithdrawOrderSnapshot,
+    WithdrawScoringSnapshot,
 )
 
 __all__ = [
@@ -49,5 +50,6 @@ __all__ = [
     "UserNotification",
     "UserChannelCache",
     "WithdrawOrderRefreshState",
+    "WithdrawScoringSnapshot",
     "WithdrawOrderSnapshot",
 ]

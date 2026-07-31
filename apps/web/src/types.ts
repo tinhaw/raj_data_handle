@@ -289,6 +289,24 @@ export interface WithdrawOrder {
   statusLabel: string | null
   isFirst: string | null
   channel: string | null
+  /**
+   * Optional score-review supplements, joined from the scoring workbook by
+   * `案件号 -> 主键`.  These do not replace any canonical withdrawal fields.
+   */
+  scoringRecordImported: boolean
+  scoringGlobalGate: string | null
+  scoringSceneReview: string | null
+  scoringScore: string | null
+  scoringDecisionStage: string | null
+  scoringFinalSuggestion: string | null
+  scoringOperationResult: string | null
+  scoringSummary: string | null
+  scoringCurrentStatus: string | null
+  scoringReviewedAt: string | null
+  scoringReviewElapsed: string | null
+  scoringQueueElapsed: string | null
+  scoringQueueEnteredAt: string | null
+  scoringQueueExitedAt: string | null
 }
 
 export interface WithdrawStatusSummary {
@@ -421,6 +439,42 @@ export interface WithdrawChannelSummaryResponse {
   fetchedAt: string
   localUpdatedAt: string | null
   channelDictionary: WithdrawChannelDictionaryEntry[]
+}
+
+/** Counts calculated from source-bound local withdrawal and score caches. */
+export interface ScoringReviewSummaryCounts {
+  totalCount: number
+  /** Included in scoreLte30Count; it is intentionally not an additional score bucket. */
+  notEnteredScoringCount: number
+  scoreLte30Count: number
+  score31To60Count: number
+  scoreGte61Count: number
+}
+
+export interface ScoringReviewOperatorSummaryItem extends ScoringReviewSummaryCounts {
+  operator: string
+}
+
+export interface ScoringReviewOperatorSummaryResponse {
+  sourceId: string
+  sourceDisplayName: string
+  businessTimezone: string
+  startAt: string
+  endAt: string
+  generatedAt: string
+  localUpdatedAt: string | null
+  rows: ScoringReviewOperatorSummaryItem[]
+  totals: ScoringReviewSummaryCounts
+}
+
+export interface WithdrawScoringImportResult {
+  sourceId: string
+  sourceRowCount: number
+  matchedCount: number
+  createdCount: number
+  updatedCount: number
+  unmatchedCount: number
+  syncedAt: string
 }
 
 export interface ChargeOrder {

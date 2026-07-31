@@ -10,6 +10,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -244,6 +245,75 @@ class WithdrawOrderSnapshot(Base):
     status_label: Mapped[str | None] = mapped_column(String(120))
     is_first: Mapped[str | None] = mapped_column(String(40))
     channel: Mapped[str | None] = mapped_column(String(120))
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
+    )
+
+
+class WithdrawScoringSnapshot(Base):
+    """Supplemental scoring-review fields for an already cached withdrawal order.
+
+    A row is keyed by the source and the score workbook's ``案件号``.  The
+    composite foreign key intentionally points to the authoritative withdrawal
+    snapshot's ``(source_id, remote_order_id)`` pair.  This makes score-only
+    workbooks unable to introduce a withdrawal order into the analysis system:
+    the importer can persist a score row only after the primary withdrawal row
+    exists.
+
+    The projection excludes the score workbook's UID, amount, channel, and
+    withdrawal-time columns.  Those values remain exclusively owned by
+    :class:`WithdrawOrderSnapshot` and must never be overwritten by a scoring
+    export.
+    """
+
+    __tablename__ = "withdraw_scoring_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id",
+            "withdraw_order_id",
+            name="uq_withdraw_scoring_snapshot_source_withdraw_order_id",
+        ),
+        ForeignKeyConstraint(
+            ["source_id", "withdraw_order_id"],
+            [
+                "withdraw_order_snapshots.source_id",
+                "withdraw_order_snapshots.remote_order_id",
+            ],
+            name="fk_withdraw_scoring_snapshot_withdraw_order",
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_withdraw_scoring_snapshot_source_review_completed_at",
+            "source_id",
+            "review_completed_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    withdraw_order_id: Mapped[str] = mapped_column(String(120), nullable=False)
+
+    global_hard_condition: Mapped[str | None] = mapped_column(String(120))
+    scenario_review: Mapped[str | None] = mapped_column(String(120))
+    # The workbook may contain an integer score or a textual state such as
+    # "未开始", so retain its display value without coercing it to a number.
+    score_review: Mapped[str | None] = mapped_column(String(80))
+    decision_stage: Mapped[str | None] = mapped_column(String(120))
+    final_review_suggestion: Mapped[str | None] = mapped_column(String(120))
+    operation_result: Mapped[str | None] = mapped_column(String(120))
+    review_summary: Mapped[str | None] = mapped_column(Text)
+    current_status: Mapped[str | None] = mapped_column(String(120))
+    review_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    review_duration: Mapped[str | None] = mapped_column(String(80))
+    queue_duration: Mapped[str | None] = mapped_column(String(80))
+    entered_queue_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exited_queue_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )

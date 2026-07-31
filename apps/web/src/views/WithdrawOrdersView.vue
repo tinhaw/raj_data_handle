@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Refresh, Search } from '@element-plus/icons-vue'
+import { Refresh, Search, UploadFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import type { EChartsOption } from 'echarts'
 import { computed, onMounted, reactive, ref } from 'vue'
@@ -7,15 +7,19 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { apiErrorMessage } from '../api/client'
 import { fetchEnabledSources } from '../api/sources'
 import {
+  importScoringReviewedCases,
   queryWithdrawChannelSummary,
   queryWithdrawOperatorSummary,
   queryWithdrawOrders,
+  queryScoringReviewOperatorSummary,
   startWithdrawOrderRefresh,
 } from '../api/withdrawOrders'
 import ChartPanel from '../components/ChartPanel.vue'
 import { currentUser } from '../stores/auth'
 import type {
   SourceConfig,
+  ScoringReviewOperatorSummaryResponse,
+  ScoringReviewSummaryCounts,
   WithdrawChannelSummaryItem,
   WithdrawChannelSummaryResponse,
   WithdrawOperatorSummaryItem,
@@ -28,7 +32,7 @@ import type {
 } from '../types'
 import { businessFullDayRange, formatDateTime, yesterdayFullDayRange } from '../ui'
 
-type WithdrawTab = 'orders' | 'channels' | 'operators'
+type WithdrawTab = 'orders' | 'channels' | 'operators' | 'scoring-review'
 type WithdrawChannelChartMetric = 'successfulOrderShare' | 'successfulAmountShare' | 'stuckRate'
 type ChartDisplayType = 'bar' | 'pie' | 'line'
 
@@ -111,6 +115,14 @@ const emptySummary: WithdrawOrderSummary = {
   timeSeries: [],
 }
 
+const emptyScoringReviewSummaryCounts: ScoringReviewSummaryCounts = {
+  totalCount: 0,
+  notEnteredScoringCount: 0,
+  scoreLte30Count: 0,
+  score31To60Count: 0,
+  scoreGte61Count: 0,
+}
+
 const activeTab = ref<WithdrawTab>('orders')
 const loading = ref(false)
 const refreshStarting = ref(false)
@@ -161,9 +173,19 @@ const operatorSummaryFilters = reactive({
   statuses: [] as string[],
   auditAdmin: '',
 })
+const scoringReviewSummaryLoading = ref(false)
+const scoringReviewImporting = ref(false)
+const scoringReviewUploadInput = ref<HTMLInputElement | null>(null)
+const scoringReviewImportFile = ref<File | null>(null)
+const scoringReviewSummaryResponse = ref<ScoringReviewOperatorSummaryResponse | null>(null)
+const scoringReviewSummaryFilters = reactive({
+  sourceId: '',
+  createTimeRange: yesterdayFullDayRange('Asia/Kolkata') as [string, string] | null,
+})
 let orderQueryRequestId = 0
 let channelSummaryRequestId = 0
 let operatorSummaryRequestId = 0
+let scoringReviewSummaryRequestId = 0
 
 const selectedOrderSource = computed(() =>
   sources.value.find((source) => source.sourceId === filters.sourceId),
@@ -173,6 +195,9 @@ const selectedOperatorSummarySource = computed(() =>
 )
 const selectedChannelSummarySource = computed(() =>
   sources.value.find((source) => source.sourceId === channelSummaryFilters.sourceId),
+)
+const selectedScoringReviewSummarySource = computed(() =>
+  sources.value.find((source) => source.sourceId === scoringReviewSummaryFilters.sourceId),
 )
 const summary = computed(() => response.value?.summary || emptySummary)
 const statusDictionary = computed(() => response.value?.statusDictionary || [])
@@ -225,6 +250,48 @@ const channelSummaryCurrency = computed(
     'INR',
 )
 const channelSummaryRows = computed(() => channelSummaryResponse.value?.items || [])
+const scoringReviewSummaryRows = computed(() => scoringReviewSummaryResponse.value?.rows || [])
+const scoringReviewSummaryTotals = computed(
+  () => scoringReviewSummaryResponse.value?.totals || emptyScoringReviewSummaryCounts,
+)
+const scoringReviewSummaryTimezone = computed(
+  () =>
+    scoringReviewSummaryResponse.value?.businessTimezone ||
+    selectedScoringReviewSummarySource.value?.businessTimezone ||
+    '盘口业务时区',
+)
+const scoringReviewSummarySource = computed(() => {
+  return (
+    scoringReviewSummaryResponse.value?.sourceDisplayName ||
+    selectedScoringReviewSummarySource.value?.displayName ||
+    '所选盘口'
+  )
+})
+const scoringReviewSummaryGeneratedAtText = computed(() =>
+  scoringReviewSummaryResponse.value
+    ? formatDateTime(scoringReviewSummaryResponse.value.generatedAt)
+    : '尚未查询',
+)
+const scoringReviewSummaryLocalUpdatedText = computed(() =>
+  scoringReviewSummaryResponse.value
+    ? formatDateTime(scoringReviewSummaryResponse.value.localUpdatedAt)
+    : '尚未查询',
+)
+const scoringReviewSummaryRangeText = computed(() => {
+  const result = scoringReviewSummaryResponse.value
+  if (!result) return '尚未查询'
+  return `${result.startAt.replace('T', ' ')} 至 ${result.endAt.replace('T', ' ')}`
+})
+const scoringReviewImportFileLabel = computed(() => {
+  const file = scoringReviewImportFile.value
+  if (!file) return '尚未选择评分审核 .xlsx 文件'
+  const sizeInMegabytes = file.size / (1024 * 1024)
+  const sizeLabel =
+    sizeInMegabytes >= 1
+      ? `${sizeInMegabytes.toFixed(1)} MB`
+      : `${Math.max(1, Math.round(file.size / 1024))} KB`
+  return `${file.name} · ${sizeLabel}`
+})
 const channelSummaryHasMultipleDates = computed(
   () => new Set(channelSummaryRows.value.map((row) => row.date).filter(Boolean)).size > 1,
 )
@@ -436,6 +503,9 @@ const channelSummaryDateRangeShortcuts = computed(() =>
 )
 const operatorSummaryDateRangeShortcuts = computed(() =>
   dateRangeShortcutsFor(selectedOperatorSummarySource.value),
+)
+const scoringReviewSummaryDateRangeShortcuts = computed(() =>
+  dateRangeShortcutsFor(selectedScoringReviewSummarySource.value),
 )
 const localUpdatedText = computed(() =>
   response.value ? formatDateTime(response.value.localUpdatedAt) : '尚未查询',
@@ -690,6 +760,15 @@ function firstWithdrawText(value: string | null | undefined): string {
   return normalized
 }
 
+function scoringText(value: string | null | undefined): string {
+  const normalized = value?.trim()
+  return normalized || '—'
+}
+
+function hasScoringSupplement(row: WithdrawOrder): boolean {
+  return row.scoringRecordImported
+}
+
 function operatorSummaryStatusLabel(status: string): string {
   return operatorSummaryStatusEntryByCode.value.get(status.trim())?.label?.trim() || '未配置状态'
 }
@@ -835,6 +914,89 @@ async function loadOperatorSummary(resetPage = false): Promise<void> {
   }
 }
 
+async function loadScoringReviewSummary(): Promise<void> {
+  if (!scoringReviewSummaryFilters.sourceId) {
+    ElMessage.warning('请先选择需要汇总的盘口。')
+    return
+  }
+  const [createTimeStart, createTimeEnd] = scoringReviewSummaryFilters.createTimeRange || []
+  if (!createTimeStart || !createTimeEnd) {
+    ElMessage.warning('请先选择评分审核汇总的创建时间范围。')
+    return
+  }
+  const requestId = ++scoringReviewSummaryRequestId
+  scoringReviewSummaryLoading.value = true
+  try {
+    const result = await queryScoringReviewOperatorSummary({
+      sourceId: scoringReviewSummaryFilters.sourceId,
+      createTimeStart,
+      createTimeEnd,
+    })
+    if (requestId !== scoringReviewSummaryRequestId) return
+    scoringReviewSummaryResponse.value = result
+  } catch (error) {
+    if (requestId === scoringReviewSummaryRequestId) {
+      ElMessage.error(apiErrorMessage(error, '评分审核汇总加载失败。'))
+    }
+  } finally {
+    if (requestId === scoringReviewSummaryRequestId) scoringReviewSummaryLoading.value = false
+  }
+}
+
+function openScoringReviewImportFilePicker(): void {
+  if (!scoringReviewSummaryFilters.sourceId) {
+    ElMessage.warning('请先选择评分审核数据所属的盘口。')
+    return
+  }
+  scoringReviewUploadInput.value?.click()
+}
+
+function handleScoringReviewImportFileSelected(event: Event): void {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0] || null
+  if (!file) return
+  if (!file.name.toLowerCase().endsWith('.xlsx')) {
+    scoringReviewImportFile.value = null
+    input.value = ''
+    ElMessage.warning('请选择评分审核导出的 .xlsx 文件。')
+    return
+  }
+  scoringReviewImportFile.value = file
+}
+
+async function importScoringReviewWorkbook(): Promise<void> {
+  const sourceId = scoringReviewSummaryFilters.sourceId
+  const file = scoringReviewImportFile.value
+  if (!sourceId) {
+    ElMessage.warning('请先选择评分审核数据所属的盘口。')
+    return
+  }
+  if (!file) {
+    ElMessage.warning('请先选择评分审核导出的 .xlsx 文件。')
+    return
+  }
+  if (scoringReviewImporting.value) return
+  scoringReviewImporting.value = true
+  try {
+    const result = await importScoringReviewedCases(sourceId, file)
+    ElMessage.success(
+      `评分审核导入完成：源表 ${result.sourceRowCount.toLocaleString()} 条，匹配 ${result.matchedCount.toLocaleString()} 条，新建 ${result.createdCount.toLocaleString()} 条，更新 ${result.updatedCount.toLocaleString()} 条，未匹配 ${result.unmatchedCount.toLocaleString()} 条。`,
+    )
+    scoringReviewImportFile.value = null
+    if (scoringReviewUploadInput.value) scoringReviewUploadInput.value.value = ''
+    if (filters.sourceId === result.sourceId) {
+      await load(false, true)
+    }
+    if (scoringReviewSummaryFilters.sourceId === result.sourceId) {
+      await loadScoringReviewSummary()
+    }
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '评分审核 Excel 导入失败。'))
+  } finally {
+    scoringReviewImporting.value = false
+  }
+}
+
 function openManualRefreshDialog(): void {
   if (!validateFilters() || refreshStarting.value) return
   manualRefreshQueryRange.value = 'yesterday'
@@ -881,6 +1043,11 @@ function resetOperatorSummaryResult(): void {
   operatorSummaryChartVisible.value = false
 }
 
+function resetScoringReviewSummaryResult(): void {
+  scoringReviewSummaryRequestId += 1
+  scoringReviewSummaryResponse.value = null
+}
+
 function handleSourceChange(): void {
   page.value = 1
   filters.createTimeRange = yesterdayFullDayRange(
@@ -913,6 +1080,15 @@ function handleOperatorSummarySourceChange(): void {
   operatorSummaryFilters.auditAdmin = ''
   resetOperatorSummaryResult()
   void loadOperatorSummary(true)
+}
+
+function handleScoringReviewSummarySourceChange(): void {
+  scoringReviewSummaryFilters.createTimeRange = yesterdayFullDayRange(
+    selectedScoringReviewSummarySource.value?.businessTimezone || 'Asia/Kolkata',
+  )
+  scoringReviewImportFile.value = null
+  if (scoringReviewUploadInput.value) scoringReviewUploadInput.value.value = ''
+  resetScoringReviewSummaryResult()
 }
 
 function handlePageChange(nextPage: number): void {
@@ -959,6 +1135,13 @@ function handleTabChange(nextTab: string | number): void {
     operatorSummaryFilters.sourceId
   ) {
     void loadOperatorSummary(true)
+  }
+  if (
+    nextTab === 'scoring-review' &&
+    scoringReviewSummaryResponse.value?.sourceId !== scoringReviewSummaryFilters.sourceId &&
+    scoringReviewSummaryFilters.sourceId
+  ) {
+    void loadScoringReviewSummary()
   }
 }
 
@@ -1078,6 +1261,8 @@ onMounted(async () => {
       channelSummaryFilters.createTimeRange = yesterdayFullDayRange(firstSource.businessTimezone)
       operatorSummaryFilters.sourceId = firstSourceId
       operatorSummaryFilters.createTimeRange = yesterdayFullDayRange(firstSource.businessTimezone)
+      scoringReviewSummaryFilters.sourceId = firstSourceId
+      scoringReviewSummaryFilters.createTimeRange = yesterdayFullDayRange(firstSource.businessTimezone)
       await load(true)
     }
   } catch (error) {
@@ -1233,13 +1418,87 @@ onMounted(async () => {
             <div class="section-heading">
               <div>
                 <h2>提现订单列表</h2>
-                <p>共 {{ total.toLocaleString() }} 条；本地数据更新时间：{{ localUpdatedText }}。</p>
+                <p>
+                  共 {{ total.toLocaleString() }} 条；本地数据更新时间：{{ localUpdatedText }}。展开“评分详情”可查看仅由评分审核 Excel 补充的字段。
+                </p>
               </div>
               <el-tag :type="refreshStatusTagType" effect="plain">
                 {{ refreshStatusLabel }}
               </el-tag>
             </div>
             <el-table v-loading="loading" :data="rows" empty-text="当前本地数据中暂无提现订单">
+              <el-table-column type="expand" width="76" label="评分详情" fixed="left">
+                <template #default="{ row }">
+                  <section class="withdraw-scoring-details">
+                    <header class="withdraw-scoring-details__heading">
+                      <div>
+                        <strong>评分审核补充信息</strong>
+                        <span>按评分 Excel 的案件号关联本提现订单主键；不会覆盖提现主表字段。</span>
+                      </div>
+                      <el-tag :type="hasScoringSupplement(row) ? 'success' : 'info'" effect="plain">
+                        {{ hasScoringSupplement(row) ? '已匹配评分记录' : '未匹配评分记录' }}
+                      </el-tag>
+                    </header>
+                    <p v-if="!hasScoringSupplement(row)" class="withdraw-scoring-details__empty">
+                      当前提现订单没有可关联的评分审核补充记录。
+                    </p>
+                    <dl v-else class="withdraw-scoring-details__grid">
+                      <div>
+                        <dt>全局硬性条件</dt>
+                        <dd>{{ scoringText(row.scoringGlobalGate) }}</dd>
+                      </div>
+                      <div>
+                        <dt>场景审核</dt>
+                        <dd>{{ scoringText(row.scoringSceneReview) }}</dd>
+                      </div>
+                      <div>
+                        <dt>评分审核</dt>
+                        <dd>{{ scoringText(row.scoringScore) }}</dd>
+                      </div>
+                      <div>
+                        <dt>决断阶段</dt>
+                        <dd>{{ scoringText(row.scoringDecisionStage) }}</dd>
+                      </div>
+                      <div>
+                        <dt>最终审核建议</dt>
+                        <dd>{{ scoringText(row.scoringFinalSuggestion) }}</dd>
+                      </div>
+                      <div>
+                        <dt>操作结果</dt>
+                        <dd>{{ scoringText(row.scoringOperationResult) }}</dd>
+                      </div>
+                      <div class="withdraw-scoring-details__wide">
+                        <dt>摘要</dt>
+                        <dd>{{ scoringText(row.scoringSummary) }}</dd>
+                      </div>
+                      <div>
+                        <dt>当前状态</dt>
+                        <dd>{{ scoringText(row.scoringCurrentStatus) }}</dd>
+                      </div>
+                      <div>
+                        <dt>审核完成时间</dt>
+                        <dd>{{ scoringText(row.scoringReviewedAt) }}</dd>
+                      </div>
+                      <div>
+                        <dt>审核耗时</dt>
+                        <dd>{{ scoringText(row.scoringReviewElapsed) }}</dd>
+                      </div>
+                      <div>
+                        <dt>队列中耗时</dt>
+                        <dd>{{ scoringText(row.scoringQueueElapsed) }}</dd>
+                      </div>
+                      <div>
+                        <dt>进入队列时间</dt>
+                        <dd>{{ scoringText(row.scoringQueueEnteredAt) }}</dd>
+                      </div>
+                      <div>
+                        <dt>退出队列时间</dt>
+                        <dd>{{ scoringText(row.scoringQueueExitedAt) }}</dd>
+                      </div>
+                    </dl>
+                  </section>
+                </template>
+              </el-table-column>
               <el-table-column label="订单 ID" min-width="150" prop="id" fixed="left" />
               <el-table-column label="用户 UID" min-width="140" prop="uid" />
               <el-table-column
@@ -1292,6 +1551,17 @@ onMounted(async () => {
               </el-table-column>
               <el-table-column label="操作人员" min-width="140">
                 <template #default="{ row }">{{ row.auditAdmin || '—' }}</template>
+              </el-table-column>
+              <el-table-column label="评分审核" min-width="124" align="center">
+                <template #default="{ row }">
+                  <el-tag v-if="hasScoringSupplement(row)" type="success" effect="plain">
+                    {{ scoringText(row.scoringScore) }}
+                  </el-tag>
+                  <span v-else class="withdraw-scoring-cell-empty">未匹配</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="最终审核建议" min-width="180" show-overflow-tooltip>
+                <template #default="{ row }">{{ scoringText(row.scoringFinalSuggestion) }}</template>
               </el-table-column>
               <el-table-column label="状态" min-width="130" fixed="right">
                 <template #default="{ row }">
@@ -1679,6 +1949,165 @@ onMounted(async () => {
           </section>
         </div>
       </el-tab-pane>
+
+      <el-tab-pane label="评分审核汇总" name="scoring-review">
+        <div class="tab-stack">
+          <header class="tab-pane-header">
+            <div>
+              <h2>提现订单评分审核汇总</h2>
+              <p>按提现订单主表创建时间汇总评分状态；只统计所选盘口的本系统本地提现/评分补充缓存。</p>
+            </div>
+          </header>
+
+          <section class="query-card surface-card">
+            <div class="query-card__grid scoring-review-query-grid">
+              <label class="query-field">
+                <span>盘口</span>
+                <el-select
+                  v-model="scoringReviewSummaryFilters.sourceId"
+                  :loading="sourcesLoading"
+                  placeholder="选择已启用盘口"
+                  @change="handleScoringReviewSummarySourceChange"
+                >
+                  <el-option
+                    v-for="source in sources"
+                    :key="source.sourceId"
+                    :label="source.displayName"
+                    :value="source.sourceId"
+                  />
+                </el-select>
+              </label>
+              <label class="query-field query-field--time-range">
+                <span>订单创建时间（{{ scoringReviewSummaryTimezone }}）</span>
+                <el-date-picker
+                  v-model="scoringReviewSummaryFilters.createTimeRange"
+                  type="datetimerange"
+                  :shortcuts="scoringReviewSummaryDateRangeShortcuts"
+                  value-format="YYYY-MM-DD HH:mm:ss"
+                  format="YYYY-MM-DD HH:mm:ss"
+                  range-separator="至"
+                  start-placeholder="开始时间"
+                  end-placeholder="结束时间"
+                  clearable
+                  :disabled="!scoringReviewSummaryFilters.sourceId"
+                  style="width: 100%"
+                />
+              </label>
+              <label class="query-field scoring-review-import-field">
+                <span>评分审核 Excel</span>
+                <div class="scoring-review-import-picker">
+                  <input
+                    ref="scoringReviewUploadInput"
+                    class="scoring-review-file-input"
+                    type="file"
+                    accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    @change="handleScoringReviewImportFileSelected"
+                  />
+                  <el-button
+                    :icon="UploadFilled"
+                    :disabled="!scoringReviewSummaryFilters.sourceId || scoringReviewImporting"
+                    @click="openScoringReviewImportFilePicker"
+                  >
+                    选择 .xlsx
+                  </el-button>
+                  <span :title="scoringReviewImportFile?.name" class="scoring-review-import-file-name">
+                    {{ scoringReviewImportFileLabel }}
+                  </span>
+                </div>
+              </label>
+            </div>
+            <div class="query-card__footer">
+              <span>
+                评分 Excel 仅按“案件号 → 提现主键”补充已缓存的提现订单；未匹配案件不会新增提现订单，原始文件不会保留。未进入评分已包含在“≤30 分”档中，不额外计入总单数。
+              </span>
+              <div class="query-card__footer-actions">
+                <el-button
+                  :loading="scoringReviewImporting"
+                  :disabled="!scoringReviewImportFile || !scoringReviewSummaryFilters.sourceId"
+                  @click="importScoringReviewWorkbook"
+                >
+                  导入评分 Excel
+                </el-button>
+                <el-button
+                  type="primary"
+                  :icon="Search"
+                  :loading="scoringReviewSummaryLoading"
+                  :disabled="!scoringReviewSummaryFilters.sourceId"
+                  @click="loadScoringReviewSummary"
+                >
+                  查询汇总
+                </el-button>
+              </div>
+            </div>
+          </section>
+
+          <section class="metric-grid scoring-review-metric-grid" aria-label="评分审核汇总指标">
+            <article class="surface-card metric-card metric-card--orders">
+              <span>评分审核总单数</span>
+              <strong>{{ scoringReviewSummaryTotals.totalCount.toLocaleString() }}</strong>
+              <small>三个评分档合计</small>
+            </article>
+            <article class="surface-card metric-card">
+              <span>未进入评分</span>
+              <strong>{{ scoringReviewSummaryTotals.notEnteredScoringCount.toLocaleString() }}</strong>
+              <small>已包含在 ≤30 分档</small>
+            </article>
+            <article class="surface-card metric-card">
+              <span>≤30 分</span>
+              <strong>{{ scoringReviewSummaryTotals.scoreLte30Count.toLocaleString() }}</strong>
+              <small>含未进入评分订单</small>
+            </article>
+            <article class="surface-card metric-card">
+              <span>31–60 分</span>
+              <strong>{{ scoringReviewSummaryTotals.score31To60Count.toLocaleString() }}</strong>
+              <small>评分区间订单数</small>
+            </article>
+            <article class="surface-card metric-card">
+              <span>≥61 分</span>
+              <strong>{{ scoringReviewSummaryTotals.scoreGte61Count.toLocaleString() }}</strong>
+              <small>评分区间订单数</small>
+            </article>
+          </section>
+
+          <section class="surface-card table-card scoring-review-table-card">
+            <div class="section-heading">
+              <div>
+                <h2>评分审核操作人统计</h2>
+                <p>
+                  {{ scoringReviewSummarySource }} · 共
+                  {{ scoringReviewSummaryRows.length.toLocaleString() }} 名操作人 · 本地缓存统计时间：
+                  {{ scoringReviewSummaryGeneratedAtText }} · 最近缓存更新：
+                  {{ scoringReviewSummaryLocalUpdatedText }} · 统计范围：
+                  {{ scoringReviewSummaryRangeText }}。
+                </p>
+              </div>
+              <el-tag type="info" effect="plain">{{ scoringReviewSummaryTimezone }}</el-tag>
+            </div>
+            <el-table
+              v-loading="scoringReviewSummaryLoading"
+              :data="scoringReviewSummaryRows"
+              empty-text="请先选择时间范围并查询评分审核汇总"
+            >
+              <el-table-column label="评分审核操作人" min-width="210" fixed="left" prop="operator" />
+              <el-table-column label="评分审核总单数" min-width="150" align="right">
+                <template #default="{ row }">{{ row.totalCount.toLocaleString() }}</template>
+              </el-table-column>
+              <el-table-column label="未进入评分" min-width="140" align="right">
+                <template #default="{ row }">{{ row.notEnteredScoringCount.toLocaleString() }}</template>
+              </el-table-column>
+              <el-table-column label="≤30 分（含未进入评分）" min-width="190" align="right">
+                <template #default="{ row }">{{ row.scoreLte30Count.toLocaleString() }}</template>
+              </el-table-column>
+              <el-table-column label="31–60 分" min-width="132" align="right">
+                <template #default="{ row }">{{ row.score31To60Count.toLocaleString() }}</template>
+              </el-table-column>
+              <el-table-column label="≥61 分" min-width="132" align="right">
+                <template #default="{ row }">{{ row.scoreGte61Count.toLocaleString() }}</template>
+              </el-table-column>
+            </el-table>
+          </section>
+        </div>
+      </el-tab-pane>
     </el-tabs>
 
     <el-dialog
@@ -1994,6 +2423,122 @@ onMounted(async () => {
   white-space: nowrap;
 }
 
+.scoring-review-metric-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.scoring-review-table-card {
+  min-width: 0;
+}
+
+.query-card__footer-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
+.scoring-review-import-field {
+  grid-column: span 1;
+}
+
+.scoring-review-import-picker {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.scoring-review-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.scoring-review-import-file-name {
+  overflow: hidden;
+  color: var(--ink-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.withdraw-scoring-cell-empty {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.withdraw-scoring-details {
+  margin: 2px 20px 12px;
+  padding: 14px 16px 16px;
+  border: 1px solid #dce9ed;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #f8fcfd 0%, #f7faff 100%);
+}
+
+.withdraw-scoring-details__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.withdraw-scoring-details__heading > div {
+  display: grid;
+  gap: 4px;
+}
+
+.withdraw-scoring-details__heading strong {
+  color: var(--ink-strong);
+  font-size: 14px;
+}
+
+.withdraw-scoring-details__heading span,
+.withdraw-scoring-details__empty {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.withdraw-scoring-details__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+  margin: 0;
+}
+
+.withdraw-scoring-details__grid > div {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #e5edf3;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.withdraw-scoring-details__grid dt {
+  margin: 0 0 4px;
+  color: #718399;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.withdraw-scoring-details__grid dd {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: #38546f;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.withdraw-scoring-details__grid .withdraw-scoring-details__wide {
+  grid-column: span 2;
+}
+
 .table-card :deep(.el-table) {
   cursor: default;
 }
@@ -2140,8 +2685,16 @@ onMounted(async () => {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .scoring-review-metric-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .operator-summary-status-field {
     grid-column: span 2;
+  }
+
+  .withdraw-scoring-details__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -2182,6 +2735,18 @@ onMounted(async () => {
     width: 100%;
   }
 
+  .query-card__footer-actions {
+    width: 100%;
+  }
+
+  .query-card__footer-actions .el-button {
+    flex: 1 1 0;
+  }
+
+  .scoring-review-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
 }
 
 @media (max-width: 640px) {
@@ -2195,6 +2760,34 @@ onMounted(async () => {
 
   .query-field--time-range,
   .operator-summary-status-field {
+    grid-column: span 1;
+  }
+
+  .scoring-review-metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .query-card__footer-actions,
+  .scoring-review-import-picker,
+  .withdraw-scoring-details__heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .scoring-review-import-file-name {
+    white-space: normal;
+  }
+
+  .withdraw-scoring-details {
+    margin-right: 8px;
+    margin-left: 8px;
+  }
+
+  .withdraw-scoring-details__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .withdraw-scoring-details__grid .withdraw-scoring-details__wide {
     grid-column: span 1;
   }
 

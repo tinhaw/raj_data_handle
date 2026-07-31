@@ -117,6 +117,40 @@ class WithdrawOperatorSummaryRequest(WithdrawOrderLocalQueryRequest):
         return normalized
 
 
+class ScoringReviewOperatorSummaryRequest(ApiSchema):
+    """Source-scoped local-cache range for scoring-review aggregation."""
+
+    source_id: str = Field(min_length=2, max_length=64)
+    create_time_start: str = Field(min_length=19, max_length=19)
+    create_time_end: str = Field(min_length=19, max_length=19)
+
+    @field_validator("source_id")
+    @classmethod
+    def normalize_source_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("盘口不能为空。")
+        return normalized
+
+    @field_validator("create_time_start", "create_time_end")
+    @classmethod
+    def validate_create_time(cls, value: str) -> str:
+        normalized = value.strip()
+        try:
+            datetime.strptime(normalized, "%Y-%m-%d %H:%M:%S")
+        except ValueError as exc:
+            raise ValueError("创建时间必须使用 YYYY-MM-DD HH:mm:ss 格式。") from exc
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_create_time_range(self) -> ScoringReviewOperatorSummaryRequest:
+        start = datetime.strptime(self.create_time_start, "%Y-%m-%d %H:%M:%S")
+        end = datetime.strptime(self.create_time_end, "%Y-%m-%d %H:%M:%S")
+        if start > end:
+            raise ValueError("创建时间范围的开始时间不能晚于结束时间。")
+        return self
+
+
 class WithdrawOrderResponse(ApiSchema):
     id: str
     uid: str
@@ -135,6 +169,24 @@ class WithdrawOrderResponse(ApiSchema):
     status_label: str | None
     is_first: str | None
     channel: str | None
+    # Scoring-review values are strictly supplemental.  The withdrawal export
+    # remains the source of truth for every existing withdrawal-order field.
+    # A missing scoring row is represented by ``None`` rather than creating a
+    # scoring-only order in the detail response.
+    scoring_record_imported: bool = False
+    scoring_global_gate: str | None = None
+    scoring_scene_review: str | None = None
+    scoring_score: str | None = None
+    scoring_decision_stage: str | None = None
+    scoring_final_suggestion: str | None = None
+    scoring_operation_result: str | None = None
+    scoring_summary: str | None = None
+    scoring_current_status: str | None = None
+    scoring_reviewed_at: str | None = None
+    scoring_review_elapsed: str | None = None
+    scoring_queue_elapsed: str | None = None
+    scoring_queue_entered_at: str | None = None
+    scoring_queue_exited_at: str | None = None
 
 
 class WithdrawStatusSummary(ApiSchema):
@@ -251,6 +303,79 @@ class WithdrawOperatorSummaryResponse(ApiSchema):
     status_columns: list[str]
     status_dictionary: list[WithdrawStatusDictionaryEntry]
     selected_order_total: int
+
+
+class ScoringReviewSummaryCounts(ApiSchema):
+    total_count: int = Field(ge=0)
+    not_entered_scoring_count: int = Field(ge=0)
+    score_lte30_count: int = Field(ge=0)
+    score31_to60_count: int = Field(ge=0)
+    score_gte61_count: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_score_distribution(self) -> ScoringReviewSummaryCounts:
+        if self.not_entered_scoring_count > self.score_lte30_count:
+            raise ValueError("未进入评分数量不能大于 30 分及以下数量。")
+        if self.total_count != (
+            self.score_lte30_count + self.score31_to60_count + self.score_gte61_count
+        ):
+            raise ValueError("评分区间数量之和必须等于总单数。")
+        return self
+
+
+class ScoringReviewOperatorSummaryItem(ScoringReviewSummaryCounts):
+    operator: str = Field(min_length=1, max_length=120)
+
+    @field_validator("operator")
+    @classmethod
+    def normalize_operator(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("操作人不能为空。")
+        return normalized
+
+
+class ScoringReviewOperatorSummaryResponse(ApiSchema):
+    source_id: str = Field(min_length=1, max_length=64)
+    source_display_name: str = Field(min_length=1, max_length=120)
+    business_timezone: str = Field(min_length=1, max_length=120)
+    start_at: datetime
+    end_at: datetime
+    generated_at: datetime
+    local_updated_at: datetime | None
+    rows: list[ScoringReviewOperatorSummaryItem]
+    totals: ScoringReviewSummaryCounts
+
+    @model_validator(mode="after")
+    def validate_totals_match_rows(self) -> ScoringReviewOperatorSummaryResponse:
+        fields = (
+            "total_count",
+            "not_entered_scoring_count",
+            "score_lte30_count",
+            "score31_to60_count",
+            "score_gte61_count",
+        )
+        for field_name in fields:
+            expected = sum(getattr(row, field_name) for row in self.rows)
+            if getattr(self.totals, field_name) != expected:
+                raise ValueError("评分审核汇总合计与操作人明细不一致。")
+        return self
+
+
+class WithdrawScoringImportResponse(ApiSchema):
+    """Safe counters for a score-workbook supplement import.
+
+    The uploaded workbook itself is parsed in memory and deliberately not
+    retained as an application file object.
+    """
+
+    source_id: str
+    source_row_count: int = Field(ge=0)
+    matched_count: int = Field(ge=0)
+    created_count: int = Field(ge=0)
+    updated_count: int = Field(ge=0)
+    unmatched_count: int = Field(ge=0)
+    synced_at: datetime
 
 
 class WithdrawOrderRefreshRequest(ApiSchema):
