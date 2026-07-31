@@ -46,6 +46,13 @@ const WITHDRAW_CHANNEL_CHART_COLORS = [
   '#2fa69d', '#4f8bc9', '#6fc6bd', '#e9a23b', '#8a67d6', '#d76d80', '#6f849c',
   '#2f9f98', '#4d8fd0', '#70c1b6', '#eaa23b', '#8467d7', '#d5677d', '#7388a0',
 ]
+const HTML_ESCAPE_MAP: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+}
 const WITHDRAW_CHANNEL_CHART_METRICS: WithdrawChannelChartMetricDefinition[] = [
   {
     value: 'successfulOrderShare',
@@ -72,6 +79,7 @@ const WITHDRAW_CHANNEL_CHART_DISPLAY_OPTIONS: Array<{ value: ChartDisplayType; l
   { value: 'line', label: '折线图' },
 ]
 const WITHDRAW_CHANNEL_CHART_PREFERENCE_KEY_PREFIX = 'raj-withdraw-channel-chart-preferences'
+const PIE_DIRECT_LABEL_LIMIT = 8
 const MANUAL_REFRESH_RANGE_OPTIONS: Array<{
   value: WithdrawOrderRefreshRange
   label: string
@@ -232,6 +240,27 @@ const withdrawChannelChartValues = computed(() => {
     value: numericValue(metric.read(row)),
   }))
 })
+const withdrawChannelChartHeight = computed(() => {
+  if (withdrawChannelChartDisplayType.value !== 'pie') return 300
+  const channelCount = withdrawChannelChartValues.value.length
+  if (channelCount >= 13) return 420
+  if (channelCount >= 9) return 360
+  return 300
+})
+const withdrawChannelPieLabelNames = computed(
+  () => {
+    const positiveItems = [...withdrawChannelChartValues.value]
+      .filter((item) => item.value > 0)
+      .sort((left, right) => right.value - left.value)
+    const labelLimit =
+      positiveItems.length <= PIE_DIRECT_LABEL_LIMIT
+        ? positiveItems.length
+        : positiveItems.length <= 12
+          ? 10
+          : PIE_DIRECT_LABEL_LIMIT
+    return new Set(positiveItems.slice(0, labelLimit).map((item) => item.name))
+  },
+)
 const withdrawChannelChartEmpty = computed(
   () => !withdrawChannelChartValues.value.some((item) => item.value > 0),
 )
@@ -240,43 +269,132 @@ const withdrawChannelChartOption = computed<EChartsOption>(() => {
   const formatter = (value: unknown) => percentageChartValueText(value)
   if (withdrawChannelChartDisplayType.value === 'pie') {
     return {
-      color: WITHDRAW_CHANNEL_CHART_COLORS,
+      animationDuration: 420,
+      animationDurationUpdate: 320,
+      animationEasing: 'cubicOut',
+      color: [
+        metric.color,
+        ...WITHDRAW_CHANNEL_CHART_COLORS.filter((color) => color !== metric.color),
+      ],
       tooltip: {
         trigger: 'item',
         triggerOn: 'mousemove|click|mousewheel',
-        valueFormatter: formatter,
+        confine: true,
+        backgroundColor: 'rgba(18, 43, 64, 0.96)',
+        borderColor: 'rgba(147, 196, 218, 0.38)',
+        borderWidth: 1,
+        padding: [10, 12],
+        textStyle: { color: '#f7fbff', fontSize: 12 },
+        formatter: withdrawChannelPieTooltipText,
       },
       legend: {
         type: 'scroll' as const,
         bottom: 0,
+        left: 12,
+        right: 12,
         data: withdrawChannelChartValues.value.map((item) => item.name),
+        itemWidth: 14,
+        itemHeight: 10,
+        itemGap: 14,
+        pageButtonItemGap: 6,
+        pageButtonGap: 12,
+        pageIconColor: '#397de5',
+        pageIconInactiveColor: '#c7d2df',
+        pageTextStyle: { color: '#718399', fontSize: 12 },
+        textStyle: {
+          color: '#53657a',
+          fontSize: 12,
+          fontWeight: 600,
+          width: 120,
+          overflow: 'truncate',
+          ellipsis: '…',
+        },
+      },
+      title: {
+        text: '渠道分布',
+        subtext: `${withdrawChannelChartValues.value.filter((item) => item.value > 0).length} 个`,
+        left: 'center',
+        top: '37%',
+        textAlign: 'center',
+        textStyle: { color: '#31465d', fontSize: 13, fontWeight: 700 },
+        subtextStyle: { color: '#8a9aab', fontSize: 11, lineHeight: 16 },
       },
       series: [
         {
           type: 'pie',
-          radius: ['42%', '70%'],
-          center: ['50%', '45%'],
+          radius: ['46%', '72%'],
+          center: ['50%', withdrawChannelChartValues.value.length > 12 ? '42%' : '44%'],
+          startAngle: 90,
           avoidLabelOverlap: true,
-          label: { formatter: '{b}' },
-          labelLine: { length: 12, length2: 8 },
-          data: withdrawChannelChartValues.value,
+          minShowLabelAngle: 3,
+          padAngle: 2,
+          itemStyle: {
+            borderColor: '#ffffff',
+            borderWidth: 3,
+            borderRadius: 4,
+          },
+          emphasis: {
+            scale: true,
+            scaleSize: 8,
+            itemStyle: {
+              shadowBlur: 16,
+              shadowColor: 'rgba(31, 61, 90, 0.2)',
+            },
+          },
+          label: {
+            show: true,
+            formatter: '{b}',
+            color: '#38546f',
+            fontSize: 12,
+            fontWeight: 600,
+          },
+          labelLine: {
+            show: true,
+            length: 16,
+            length2: 12,
+            smooth: 0.18,
+            lineStyle: { width: 1, opacity: 0.72 },
+          },
+          labelLayout: { hideOverlap: true, moveOverlap: 'shiftY' },
+          data: withdrawChannelChartValues.value.map((item) => {
+            const showLabel = withdrawChannelPieLabelNames.value.has(item.name)
+            return {
+              ...item,
+              label: { show: showLabel },
+              labelLine: { show: showLabel },
+            }
+          }),
         },
       ],
     }
   }
   return {
+    animationDuration: 420,
+    animationDurationUpdate: 320,
+    animationEasing: 'cubicOut',
     grid: { left: 28, right: 24, top: 20, bottom: 52, containLabel: true },
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: withdrawChannelChartDisplayType.value === 'bar' ? 'shadow' : 'line' },
       valueFormatter: formatter,
+      backgroundColor: 'rgba(18, 43, 64, 0.96)',
+      borderColor: 'rgba(147, 196, 218, 0.38)',
+      borderWidth: 1,
+      padding: [10, 12],
+      textStyle: { color: '#f7fbff', fontSize: 12 },
     },
     xAxis: {
       type: 'category',
       data: withdrawChannelChartValues.value.map((item) => item.name),
-      axisLabel: { interval: 0, rotate: 24 },
+      axisLine: { lineStyle: { color: '#dbe6ef' } },
+      axisTick: { show: false },
+      axisLabel: { interval: 0, rotate: 24, color: '#617b92', fontSize: 12 },
     },
-    yAxis: { type: 'value', axisLabel: { formatter } },
+    yAxis: {
+      type: 'value',
+      axisLabel: { formatter, color: '#617b92', fontSize: 12 },
+      splitLine: { lineStyle: { color: '#edf2f6', type: 'dashed' } },
+    },
     series: [
       {
         type: withdrawChannelChartDisplayType.value,
@@ -286,6 +404,8 @@ const withdrawChannelChartOption = computed<EChartsOption>(() => {
         itemStyle: {
           color: metric.color,
           borderRadius: withdrawChannelChartDisplayType.value === 'bar' ? [6, 6, 0, 0] : undefined,
+          shadowBlur: withdrawChannelChartDisplayType.value === 'bar' ? 8 : 0,
+          shadowColor: withdrawChannelChartDisplayType.value === 'bar' ? `${metric.color}33` : undefined,
         },
         lineStyle: withdrawChannelChartDisplayType.value === 'line' ? { width: 3 } : undefined,
         areaStyle: withdrawChannelChartDisplayType.value === 'line' ? { color: `${metric.color}22` } : undefined,
@@ -492,6 +612,23 @@ function numericValue(value: string | number | null | undefined): number {
 function percentageChartValueText(value: unknown): string {
   const rawValue = Array.isArray(value) ? value[0] : value
   return `${numericValue(String(rawValue ?? 0)).toFixed(2)}%`
+}
+
+function escapeTooltipText(value: unknown): string {
+  return String(value ?? '').replace(/[&<>"']/g, (character) => HTML_ESCAPE_MAP[character] || character)
+}
+
+function tooltipColor(value: unknown): string {
+  const color = typeof value === 'string' ? value : ''
+  return /^#[0-9a-f]{3,8}$/i.test(color) ? color : '#397de5'
+}
+
+function withdrawChannelPieTooltipText(params: unknown): string {
+  const item = (Array.isArray(params) ? params[0] : params) as
+    | { name?: unknown; value?: unknown; color?: unknown }
+    | undefined
+  if (!item) return ''
+  return `<div style="min-width:156px;line-height:1.55"><div style="display:flex;align-items:center;gap:7px;font-weight:700"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${tooltipColor(item.color)}"></span>${escapeTooltipText(item.name)}</div><div style="margin-top:5px;color:#c9d9e7"><span>${escapeTooltipText(selectedWithdrawChannelChartMetric.value.label)}</span><strong style="float:right;margin-left:18px;color:#fff">${escapeTooltipText(percentageChartValueText(item.value))}</strong></div></div>`
 }
 
 function withdrawChannelChartName(
@@ -1300,7 +1437,7 @@ onMounted(async () => {
               :title="selectedWithdrawChannelChartMetric.label"
               :option="withdrawChannelChartOption"
               :empty="withdrawChannelChartEmpty"
-              :height="300"
+              :height="withdrawChannelChartHeight"
               :active="activeTab === 'channels'"
               plain
               :show-title="false"
@@ -1778,7 +1915,20 @@ onMounted(async () => {
 }
 
 .withdraw-channel-chart-card {
+  position: relative;
+  overflow: hidden;
   padding: 18px;
+  background: linear-gradient(180deg, #ffffff 0%, #f9fcfe 100%);
+}
+
+.withdraw-channel-chart-card::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--teal), #75c7bd, #d9f1ed);
+  content: '';
 }
 
 .withdraw-channel-chart-card__heading {
