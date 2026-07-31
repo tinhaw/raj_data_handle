@@ -327,12 +327,8 @@ const withdrawChannelChartOption = computed<EChartsOption>(() => {
           startAngle: 90,
           avoidLabelOverlap: true,
           minShowLabelAngle: 3,
-          padAngle: 2,
-          itemStyle: {
-            borderColor: '#ffffff',
-            borderWidth: 3,
-            borderRadius: 4,
-          },
+          padAngle: 0,
+          itemStyle: { borderWidth: 0, borderRadius: 0 },
           emphasis: {
             scale: true,
             scaleSize: 8,

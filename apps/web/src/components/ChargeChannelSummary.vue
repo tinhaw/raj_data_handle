@@ -147,11 +147,11 @@ const chartOption = computed<EChartsOption>(() => {
         center: ['50%', chartValues.value.length > 12 ? '42%' : '44%'],
         avoidLabelOverlap: true,
         minShowLabelAngle: 3,
-        padAngle: 2,
+        padAngle: 0,
         label: { show: true, formatter: '{b}', color: '#40536a', fontSize: 12, fontWeight: 600 },
         labelLayout: { hideOverlap: true, moveOverlap: 'shiftY' },
         labelLine: { show: true, length: 16, length2: 12, smooth: 0.18, lineStyle: { width: 1, opacity: 0.72 } },
-        itemStyle: { borderColor: '#ffffff', borderWidth: 3, borderRadius: 4 },
+        itemStyle: { borderWidth: 0, borderRadius: 0 },
         emphasis: { scale: true, scaleSize: 9, itemStyle: { shadowBlur: 18, shadowColor: 'rgba(24, 61, 90, 0.22)' } },
         data: chartValues.value.map((item, index) => ({
           ...item,
