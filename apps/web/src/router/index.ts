@@ -35,6 +35,11 @@ const router = createRouter({
       meta: { navKey: '/withdraw-orders' },
     },
     {
+      path: '/spin-orders',
+      component: () => import('../views/SpinOrdersView.vue'),
+      meta: { navKey: '/spin-orders' },
+    },
+    {
       path: '/settings/system',
       component: () => import('../views/SystemSettingsView.vue'),
       meta: { navKey: '/settings/system' },

@@ -23,7 +23,9 @@ from packages.domain.services.data_dictionary_service import (
     list_charge_statuses,
     list_payment_channel_names,
     list_payment_channels,
+    list_user_source_channels,
     list_withdraw_statuses,
+    replace_user_source_channels,
     sync_payment_channel_names,
     sync_payment_channels,
     sync_remote_withdraw_statuses,
@@ -31,6 +33,90 @@ from packages.domain.services.data_dictionary_service import (
     update_withdraw_status,
     withdraw_status_dictionary,
 )
+
+
+@pytest.mark.asyncio
+async def test_user_source_channel_replacement_is_source_scoped_and_all_or_nothing() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    observed_at = datetime(2026, 7, 31, tzinfo=UTC)
+
+    async with factory() as session:
+        session.add_all(
+            [
+                SourceConfig(
+                    source_id="rajwin",
+                    display_name="RajWin",
+                    business_timezone="Asia/Kolkata",
+                    currency="INR",
+                ),
+                SourceConfig(
+                    source_id="rajluck",
+                    display_name="RajLuck",
+                    business_timezone="Asia/Kolkata",
+                    currency="INR",
+                ),
+                DataDictionaryEntry(
+                    source_id="rajwin",
+                    dictionary_type="user_source_channel",
+                    entry_code="old",
+                    entry_label="旧渠道",
+                    active=True,
+                    first_seen_at=observed_at,
+                    last_seen_at=observed_at,
+                    updated_at=observed_at,
+                ),
+                DataDictionaryEntry(
+                    source_id="rajluck",
+                    dictionary_type="user_source_channel",
+                    entry_code="other-source",
+                    entry_label="其他盘口渠道",
+                    active=True,
+                    first_seen_at=observed_at,
+                    last_seen_at=observed_at,
+                    updated_at=observed_at,
+                ),
+            ]
+        )
+        await session.commit()
+
+        replaced = await replace_user_source_channels(
+            session,
+            source_id="rajwin",
+            channels=[
+                {"code": "100", "label": "渠道 A"},
+                {"code": "200", "label": "渠道 B"},
+            ],
+            now=observed_at,
+        )
+        await session.commit()
+        assert replaced == 2
+        assert [
+            (item.source_id, item.entry_code, item.entry_label)
+            for item in await list_user_source_channels(session)
+        ] == [
+            ("rajluck", "other-source", "其他盘口渠道"),
+            ("rajwin", "100", "渠道 A"),
+            ("rajwin", "200", "渠道 B"),
+        ]
+
+        with pytest.raises(DataDictionarySyncError, match="为空"):
+            await replace_user_source_channels(
+                session,
+                source_id="rajwin",
+                channels=[],
+                now=observed_at,
+            )
+        await session.rollback()
+        replacement_rows = await list_user_source_channels(session, source_id="rajwin")
+        assert [item.entry_code for item in replacement_rows] == [
+            "100",
+            "200",
+        ]
+
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -52,11 +138,14 @@ async def test_charge_statuses_are_seeded_idempotently_and_repair_confirmed_valu
         )
         await session.commit()
 
-        assert await ensure_charge_statuses(
-            session,
-            source_id="rajwin",
-            now=seeded_at,
-        ) == 4
+        assert (
+            await ensure_charge_statuses(
+                session,
+                source_id="rajwin",
+                now=seeded_at,
+            )
+            == 4
+        )
         await session.commit()
         rows = await list_charge_statuses(session, source_id="rajwin", active=True)
         assert [(row.entry_code, row.entry_label) for row in rows] == [
@@ -78,11 +167,14 @@ async def test_charge_statuses_are_seeded_idempotently_and_repair_confirmed_valu
         stored.active = False
         await session.commit()
 
-        assert await ensure_charge_statuses(
-            session,
-            source_id="rajwin",
-            now=seeded_at,
-        ) == 0
+        assert (
+            await ensure_charge_statuses(
+                session,
+                source_id="rajwin",
+                now=seeded_at,
+            )
+            == 0
+        )
         await session.commit()
         repaired = await list_charge_statuses(session, source_id="rajwin", active=True)
         assert [(row.entry_code, row.entry_label) for row in repaired] == [

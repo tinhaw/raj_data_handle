@@ -3,6 +3,7 @@ import {
   Bell,
   Collection,
   DataAnalysis,
+  Present,
   Setting,
   SwitchButton,
   User,
@@ -115,6 +116,10 @@ onBeforeUnmount(() => {
         <el-menu-item index="/withdraw-orders">
           <el-icon><Wallet /></el-icon>
           <template #title>提现订单</template>
+        </el-menu-item>
+        <el-menu-item index="/spin-orders">
+          <el-icon><Present /></el-icon>
+          <template #title>转盘订单</template>
         </el-menu-item>
         <el-menu-item index="/settings/system">
           <el-icon><Setting /></el-icon>

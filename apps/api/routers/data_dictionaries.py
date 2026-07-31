@@ -9,6 +9,7 @@ from packages.domain.schemas.data_dictionary import (
     ChargeStatusCreateRequest,
     ChargeStatusPatchRequest,
     DataDictionaryEntryResponse,
+    UserSourceChannelSyncResponse,
     WithdrawStatusCreateRequest,
     WithdrawStatusPatchRequest,
     WithdrawStatusSyncRequest,
@@ -25,13 +26,73 @@ from packages.domain.services.data_dictionary_service import (
     list_charge_statuses,
     list_payment_channel_names,
     list_payment_channels,
+    list_spin_order_statuses,
+    list_user_source_channels,
     list_withdraw_statuses,
+    sync_remote_user_source_channels,
     sync_remote_withdraw_statuses,
     update_charge_status,
     update_withdraw_status,
 )
 
 router = APIRouter(tags=["data-dictionaries"])
+
+
+@router.get(
+    "/settings/data-dictionaries/spin-order-statuses",
+    response_model=list[DataDictionaryEntryResponse],
+)
+async def spin_order_statuses(
+    source_id: str | None = None,
+    active: bool | None = None,
+    _: AuthContext = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[DataDictionaryEntryResponse]:
+    return await list_spin_order_statuses(session, source_id=source_id, active=active)
+
+
+@router.get(
+    "/settings/data-dictionaries/user-source-channels",
+    response_model=list[DataDictionaryEntryResponse],
+)
+async def user_source_channels(
+    source_id: str | None = None,
+    active: bool | None = None,
+    _: AuthContext = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[DataDictionaryEntryResponse]:
+    return await list_user_source_channels(session, source_id=source_id, active=active)
+
+
+@router.post(
+    "/settings/data-dictionaries/user-source-channels/refresh",
+    response_model=UserSourceChannelSyncResponse,
+)
+async def refresh_user_source_channels(
+    payload: WithdrawStatusSyncRequest,
+    auth: AuthContext = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> UserSourceChannelSyncResponse:
+    try:
+        result = await sync_remote_user_source_channels(
+            session,
+            source_id=payload.source_id,
+            actor_user_id=auth.user.id,
+        )
+    except DataDictionaryNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except DataDictionaryRemoteSyncError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except DataDictionaryValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return UserSourceChannelSyncResponse(
+        source_id=result.source_id,
+        source_display_name=result.source_display_name,
+        fetched_at=result.fetched_at,
+        remote_total=result.remote_total,
+        replaced_entries=result.replaced_entries,
+        entries=result.entries,
+    )
 
 
 @router.get(

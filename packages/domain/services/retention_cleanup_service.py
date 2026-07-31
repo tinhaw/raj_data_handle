@@ -10,6 +10,7 @@ from packages.domain.models import (
     ChargeOrderSnapshot,
     ReconciliationBatch,
     SecurityAuditLog,
+    SpinOrderSnapshot,
     StoredFileObject,
     StoredFileReference,
     WithdrawOrderSnapshot,
@@ -20,7 +21,11 @@ from packages.storage.local import LocalFileStorage
 
 def _is_missing_order_snapshot_table(error: OperationalError | ProgrammingError) -> bool:
     message = str(error).lower()
-    return ("withdraw_order_snapshots" in message or "charge_order_snapshots" in message) and (
+    return (
+        "withdraw_order_snapshots" in message
+        or "charge_order_snapshots" in message
+        or "spin_order_snapshots" in message
+    ) and (
         "does not exist" in message or "no such table" in message
     )
 
@@ -70,6 +75,25 @@ async def _cleanup_expired_charge_snapshots(
         return 0
 
 
+async def _cleanup_expired_spin_snapshots(
+    session: AsyncSession,
+    *,
+    now: datetime,
+) -> int:
+    retention = await get_retention_settings(session)
+    cutoff = now - timedelta(days=retention.remote_cache_retention_days)
+    try:
+        result = await session.execute(
+            delete(SpinOrderSnapshot).where(SpinOrderSnapshot.synced_at < cutoff)
+        )
+        return int(result.rowcount or 0)
+    except (OperationalError, ProgrammingError) as exc:
+        if not _is_missing_order_snapshot_table(exc):
+            raise
+        await session.rollback()
+        return 0
+
+
 async def cleanup_expired_data(
     session: AsyncSession,
     *,
@@ -82,6 +106,10 @@ async def cleanup_expired_data(
         now=cleanup_time,
     )
     deleted_charge_order_snapshots = await _cleanup_expired_charge_snapshots(
+        session,
+        now=cleanup_time,
+    )
+    deleted_spin_order_snapshots = await _cleanup_expired_spin_snapshots(
         session,
         now=cleanup_time,
     )
@@ -130,6 +158,7 @@ async def cleanup_expired_data(
         "deletedBatches": len(expired_batch_ids),
         "deletedWithdrawOrderSnapshots": deleted_withdraw_order_snapshots,
         "deletedChargeOrderSnapshots": deleted_charge_order_snapshots,
+        "deletedSpinOrderSnapshots": deleted_spin_order_snapshots,
     }
     if any(counts.values()):
         session.add(

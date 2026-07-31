@@ -32,6 +32,7 @@ from packages.domain.services.auth_service import write_audit
 from packages.domain.services.data_dictionary_service import (
     DataDictionarySyncError,
     ensure_charge_statuses,
+    ensure_spin_order_statuses,
     sync_payment_channel_names,
     sync_payment_channels,
 )
@@ -240,6 +241,7 @@ async def upsert_source(
     if creating:
         await session.flush()
         await ensure_charge_statuses(session, source_id=source.source_id)
+        await ensure_spin_order_statuses(session, source_id=source.source_id)
     await write_audit(
         session,
         action="source.create" if creating else "source.update",

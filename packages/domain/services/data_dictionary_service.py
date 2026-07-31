@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +13,7 @@ from packages.domain.models import DataDictionaryEntry, SourceConfig
 from packages.domain.schemas.data_dictionary import DataDictionaryEntryResponse
 from packages.domain.services.auth_service import write_audit
 from packages.domain.services.remote_charge_service import RemoteChargeError
+from packages.domain.services.remote_spin_service import RajAdminSpinClient
 from packages.domain.services.remote_withdraw_service import RajAdminWithdrawClient
 
 CHARGE_STATUS_DICTIONARY = "charge_status"
@@ -25,6 +26,15 @@ CHARGE_STATUS_ENTRIES = (
 PAYMENT_CHANNEL_DICTIONARY = "payment_channel"
 PAYMENT_CHANNEL_NAME_DICTIONARY = "payment_channel_name"
 WITHDRAW_STATUS_DICTIONARY = "withdraw_status"
+SPIN_ORDER_STATUS_DICTIONARY = "spin_order_status"
+SPIN_ORDER_STATUS_ENTRIES = (
+    ("0", "待审核"),
+    ("1", "审核通过"),
+    ("101", "自动审核通过"),
+    ("2", "已拒绝"),
+    ("3", "已挂起"),
+)
+USER_SOURCE_CHANNEL_DICTIONARY = "user_source_channel"
 
 
 class DataDictionarySyncError(ValueError):
@@ -70,6 +80,16 @@ class WithdrawStatusRemoteSyncResult:
     remote_total: int
     created_entries: int
     refreshed_entries: int
+    entries: list[DataDictionaryEntryResponse]
+
+
+@dataclass(frozen=True, slots=True)
+class UserSourceChannelRemoteSyncResult:
+    source_id: str
+    source_display_name: str
+    fetched_at: datetime
+    remote_total: int
+    replaced_entries: int
     entries: list[DataDictionaryEntryResponse]
 
 
@@ -144,6 +164,218 @@ async def list_charge_statuses(
     return [
         _entry_response(entry, source_display_name=source.display_name) for entry, source in rows
     ]
+
+
+async def ensure_spin_order_statuses(
+    session: AsyncSession,
+    *,
+    source_id: str,
+    now: datetime | None = None,
+) -> int:
+    """Seed the confirmed fixed spin-review status dictionary for one source."""
+
+    source = await session.get(SourceConfig, source_id)
+    if source is None:
+        raise DataDictionaryNotFoundError("盘口配置不存在。")
+    existing = list(
+        await session.scalars(
+            select(DataDictionaryEntry).where(
+                DataDictionaryEntry.source_id == source_id,
+                DataDictionaryEntry.dictionary_type == SPIN_ORDER_STATUS_DICTIONARY,
+            )
+        )
+    )
+    by_code = {entry.entry_code: entry for entry in existing}
+    observed_at = now or datetime.now(UTC)
+    created = 0
+    for code, label in SPIN_ORDER_STATUS_ENTRIES:
+        entry = by_code.get(code)
+        if entry is None:
+            session.add(
+                DataDictionaryEntry(
+                    source_id=source_id,
+                    dictionary_type=SPIN_ORDER_STATUS_DICTIONARY,
+                    entry_code=code,
+                    entry_label=label,
+                    active=True,
+                    first_seen_at=observed_at,
+                    last_seen_at=observed_at,
+                    updated_at=observed_at,
+                )
+            )
+            created += 1
+            continue
+        # The status code is the reporting semantic.  Keep the fixed label
+        # and enabled state aligned with the confirmed source contract.
+        entry.entry_label = label
+        entry.active = True
+        entry.last_seen_at = observed_at
+        entry.updated_at = observed_at
+    await session.flush()
+    return created
+
+
+async def list_spin_order_statuses(
+    session: AsyncSession,
+    *,
+    source_id: str | None = None,
+    active: bool | None = None,
+) -> list[DataDictionaryEntryResponse]:
+    statement = (
+        select(DataDictionaryEntry, SourceConfig)
+        .join(SourceConfig, SourceConfig.source_id == DataDictionaryEntry.source_id)
+        .where(DataDictionaryEntry.dictionary_type == SPIN_ORDER_STATUS_DICTIONARY)
+        .order_by(SourceConfig.display_name, DataDictionaryEntry.entry_code)
+    )
+    if source_id:
+        statement = statement.where(DataDictionaryEntry.source_id == source_id)
+    if active is not None:
+        statement = statement.where(DataDictionaryEntry.active.is_(active))
+    rows = (await session.execute(statement)).all()
+    return [
+        _entry_response(entry, source_display_name=source.display_name) for entry, source in rows
+    ]
+
+
+async def list_user_source_channels(
+    session: AsyncSession,
+    *,
+    source_id: str | None = None,
+    active: bool | None = None,
+) -> list[DataDictionaryEntryResponse]:
+    statement = (
+        select(DataDictionaryEntry, SourceConfig)
+        .join(SourceConfig, SourceConfig.source_id == DataDictionaryEntry.source_id)
+        .where(DataDictionaryEntry.dictionary_type == USER_SOURCE_CHANNEL_DICTIONARY)
+        .order_by(
+            SourceConfig.display_name,
+            DataDictionaryEntry.entry_label,
+            DataDictionaryEntry.entry_code,
+        )
+    )
+    if source_id:
+        statement = statement.where(DataDictionaryEntry.source_id == source_id)
+    if active is not None:
+        statement = statement.where(DataDictionaryEntry.active.is_(active))
+    rows = (await session.execute(statement)).all()
+    return [
+        _entry_response(entry, source_display_name=source.display_name) for entry, source in rows
+    ]
+
+
+async def replace_user_source_channels(
+    session: AsyncSession,
+    *,
+    source_id: str,
+    channels: list[dict[str, str]],
+    now: datetime | None = None,
+) -> int:
+    """Replace the entire source-scoped channel_id dictionary in one transaction."""
+
+    source = await session.get(SourceConfig, source_id)
+    if source is None:
+        raise DataDictionaryNotFoundError("盘口配置不存在。")
+    normalized: dict[str, str] = {}
+    for channel in channels:
+        code = str(channel.get("code") or "").strip()
+        label = str(channel.get("label") or "").strip()
+        if not code or not label:
+            raise DataDictionarySyncError("渠道来源字典包含空代码或展示名称。")
+        if code in normalized:
+            raise DataDictionarySyncError("渠道来源字典包含重复代码。")
+        normalized[code] = label
+    if not normalized:
+        raise DataDictionarySyncError("渠道来源字典为空，未覆盖本地字典。")
+    refreshed_at = now or datetime.now(UTC)
+    # The caller has completed remote validation before this point.  Delete
+    # and insert remain in the current transaction, so a later error rolls
+    # back to the untouched prior dictionary.
+    await session.execute(
+        delete(DataDictionaryEntry).where(
+            DataDictionaryEntry.source_id == source_id,
+            DataDictionaryEntry.dictionary_type == USER_SOURCE_CHANNEL_DICTIONARY,
+        )
+    )
+    session.add_all(
+        [
+            DataDictionaryEntry(
+                source_id=source_id,
+                dictionary_type=USER_SOURCE_CHANNEL_DICTIONARY,
+                entry_code=code,
+                entry_label=label,
+                active=True,
+                first_seen_at=refreshed_at,
+                last_seen_at=refreshed_at,
+                updated_at=refreshed_at,
+            )
+            for code, label in normalized.items()
+        ]
+    )
+    await session.flush()
+    return len(normalized)
+
+
+async def sync_remote_user_source_channels(
+    session: AsyncSession,
+    *,
+    source_id: str,
+    actor_user_id: int,
+    settings: Settings | None = None,
+) -> UserSourceChannelRemoteSyncResult:
+    """User-triggered, transactional full replacement of channel_id mappings."""
+
+    source = await session.get(SourceConfig, source_id)
+    if source is None:
+        raise DataDictionaryNotFoundError("盘口配置不存在。")
+    if not source.enabled:
+        raise DataDictionaryValidationError("所选盘口尚未启用。")
+    if not source.base_url or not source.encrypted_credentials:
+        raise DataDictionaryValidationError("所选盘口缺少远端地址或凭据。")
+    current_settings = settings or get_settings()
+    try:
+        credentials = decrypt_credentials(
+            source.encrypted_credentials,
+            source_id=source.source_id,
+            credential_version=source.credential_version,
+            settings=current_settings,
+        )
+        async with RajAdminSpinClient(
+            base_url=source.base_url,
+            username=credentials["username"],
+            password=credentials["password"],
+            totp_secret=credentials["totp_secret"],
+        ) as client:
+            channels = await client.fetch_user_source_channels()
+        fetched_at = datetime.now(UTC)
+        replaced_entries = await replace_user_source_channels(
+            session,
+            source_id=source.source_id,
+            channels=channels,
+            now=fetched_at,
+        )
+    except (KeyError, SecurityValidationError) as exc:
+        raise DataDictionaryValidationError("已保存的盘口凭据不完整或无法解密。") from exc
+    except (DataDictionarySyncError, RemoteChargeError) as exc:
+        raise DataDictionaryRemoteSyncError(
+            "远端渠道来源字典读取或校验失败，本地字典未覆盖。"
+        ) from exc
+    await write_audit(
+        session,
+        action="data_dictionary.user_source_channel.replace",
+        actor_user_id=actor_user_id,
+        target_type="source",
+        target_id=source.source_id,
+        metadata={"remote_total": len(channels), "replaced_entries": replaced_entries},
+    )
+    await session.commit()
+    return UserSourceChannelRemoteSyncResult(
+        source_id=source.source_id,
+        source_display_name=source.display_name,
+        fetched_at=fetched_at,
+        remote_total=len(channels),
+        replaced_entries=replaced_entries,
+        entries=await list_user_source_channels(session, source_id=source.source_id),
+    )
 
 
 async def sync_payment_channel_names(

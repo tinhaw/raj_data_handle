@@ -1,5 +1,9 @@
 import { api } from './client'
-import type { DataDictionaryEntry, WithdrawStatusSyncResult } from '../types'
+import type {
+  DataDictionaryEntry,
+  UserSourceChannelSyncResult,
+  WithdrawStatusSyncResult,
+} from '../types'
 
 export async function fetchChargeStatuses(params: {
   sourceId?: string
@@ -116,5 +120,38 @@ export async function syncWithdrawStatuses(sourceId: string): Promise<WithdrawSt
     await api.post<WithdrawStatusSyncResult>('/settings/data-dictionaries/withdraw-statuses/sync', {
       sourceId,
     })
+  ).data
+}
+
+export async function fetchSpinOrderStatuses(params: {
+  sourceId?: string
+  active?: boolean
+} = {}): Promise<DataDictionaryEntry[]> {
+  const response = await api.get<DataDictionaryEntry[]>(
+    '/settings/data-dictionaries/spin-order-statuses',
+    { params: { source_id: params.sourceId, active: params.active } },
+  )
+  return response.data
+}
+
+export async function fetchUserSourceChannels(params: {
+  sourceId?: string
+  active?: boolean
+} = {}): Promise<DataDictionaryEntry[]> {
+  const response = await api.get<DataDictionaryEntry[]>(
+    '/settings/data-dictionaries/user-source-channels',
+    { params: { source_id: params.sourceId, active: params.active } },
+  )
+  return response.data
+}
+
+export async function refreshUserSourceChannels(
+  sourceId: string,
+): Promise<UserSourceChannelSyncResult> {
+  return (
+    await api.post<UserSourceChannelSyncResult>(
+      '/settings/data-dictionaries/user-source-channels/refresh',
+      { sourceId },
+    )
   ).data
 }

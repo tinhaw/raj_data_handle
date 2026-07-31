@@ -78,3 +78,14 @@ class WithdrawStatusSyncResponse(ApiSchema):
     created_entries: int
     refreshed_entries: int
     entries: list[DataDictionaryEntryResponse]
+
+
+class UserSourceChannelSyncResponse(ApiSchema):
+    """Result of replacing one source's channel_id dictionary from remote data."""
+
+    source_id: str
+    source_display_name: str
+    fetched_at: datetime
+    remote_total: int
+    replaced_entries: int
+    entries: list[DataDictionaryEntryResponse]

@@ -119,7 +119,13 @@ export interface DataDictionaryEntry {
   id: number
   sourceId: string
   sourceDisplayName: string
-  dictionaryType: 'charge_status' | 'payment_channel' | 'payment_channel_name' | 'withdraw_status'
+  dictionaryType:
+    | 'charge_status'
+    | 'payment_channel'
+    | 'payment_channel_name'
+    | 'spin_order_status'
+    | 'user_source_channel'
+    | 'withdraw_status'
   entryCode: string
   entryLabel: string
   active: boolean
@@ -135,6 +141,15 @@ export interface WithdrawStatusSyncResult {
   remoteTotal: number
   createdEntries: number
   refreshedEntries: number
+  entries: DataDictionaryEntry[]
+}
+
+export interface UserSourceChannelSyncResult {
+  sourceId: string
+  sourceDisplayName: string
+  fetchedAt: string
+  remoteTotal: number
+  replacedEntries: number
   entries: DataDictionaryEntry[]
 }
 
@@ -499,4 +514,131 @@ export interface ChargeChannelSummaryResponse {
   effectiveCreateTimeEnd: string
   fetchedAt: string
   localUpdatedAt: string | null
+}
+
+export type SpinOrderRefreshRange = 'day_before_yesterday' | 'yesterday' | 'today'
+export type SpinOrderRefreshStatus =
+  | 'not_started'
+  | 'idle'
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+
+export interface SpinOrder {
+  id: string
+  uid: string
+  vipLevel: string | null
+  agentTotalCount: string | null
+  amount: string | null
+  spinConfigId: string
+  spinConfigLabel: string
+  roundNumber: string | null
+  inviteCount: string | null
+  status: string
+  statusLabel: string
+  createTime: string | null
+  auditTime: string | null
+  channelId: string | null
+  channelName: string
+}
+
+export interface SpinStatusDictionaryEntry {
+  code: string
+  label: string
+  active: boolean
+}
+
+export interface SpinChannelDictionaryEntry {
+  code: string
+  label: string
+}
+
+export interface SpinOrderStatusDistribution {
+  status: string
+  count: number
+}
+
+export interface SpinOrderSummary {
+  orderCount: number
+  passedOrderCount: number
+  pendingOrderCount: number
+  rejectedOrderCount: number
+  suspendedOrderCount: number
+  approvalRate: string
+  winnerCount: number
+  passedWinnerCount: number
+  personApprovalRate: string
+  statusDistribution: SpinOrderStatusDistribution[]
+}
+
+export interface SpinOrderQueryResponse {
+  items: SpinOrder[]
+  total: number
+  page: number
+  pageSize: number
+  sourceId: string
+  sourceDisplayName: string
+  businessTimezone: string
+  fetchedAt: string
+  localUpdatedAt: string | null
+  lastRefreshedAt: string | null
+  refreshStatus: SpinOrderRefreshStatus
+  remoteTotal: number
+  fetchedPages: number
+  complete: boolean
+  resolvedUidCount: number
+  unresolvedUidCount: number
+  statusDictionary: SpinStatusDictionaryEntry[]
+  channelDictionary: SpinChannelDictionaryEntry[]
+  summary: SpinOrderSummary
+}
+
+export interface SpinChannelSummaryItem {
+  date: string
+  spinConfigId: string
+  spinConfigLabel: string
+  channelId: string | null
+  channelName: string
+  applicationOrderCount: number
+  passedOrderCount: number
+  pendingOrderCount: number
+  rejectedOrderCount: number
+  suspendedOrderCount: number
+  approvalRate: string
+  winnerCount: number
+  passedWinnerCount: number
+  personApprovalRate: string
+}
+
+export interface SpinTwoHourSeriesItem {
+  date: string
+  bucket: string
+  spinConfigId: string
+  spinConfigLabel: string
+  channelId: string | null
+  channelName: string
+  applicantCount: number
+}
+
+export interface SpinChannelSummaryResponse {
+  items: SpinChannelSummaryItem[]
+  total: number
+  page: number
+  pageSize: number
+  sourceId: string
+  sourceDisplayName: string
+  businessTimezone: string
+  fetchedAt: string
+  localUpdatedAt: string | null
+  channelDictionary: SpinChannelDictionaryEntry[]
+  timeSeries: SpinTwoHourSeriesItem[]
+}
+
+export interface SpinOrderRefreshResult {
+  status: 'queued'
+  sourceIds: string[]
+  requestedAt: string
+  queryRange: SpinOrderRefreshRange | null
+  message: string
 }
