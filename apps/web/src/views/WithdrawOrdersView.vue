@@ -13,8 +13,10 @@ import {
   startWithdrawOrderRefresh,
 } from '../api/withdrawOrders'
 import ChartPanel from '../components/ChartPanel.vue'
+import { currentUser } from '../stores/auth'
 import type {
   SourceConfig,
+  WithdrawChannelSummaryItem,
   WithdrawChannelSummaryResponse,
   WithdrawOperatorSummaryItem,
   WithdrawOperatorSummaryResponse,
@@ -27,10 +29,49 @@ import type {
 import { businessFullDayRange, formatDateTime, yesterdayFullDayRange } from '../ui'
 
 type WithdrawTab = 'orders' | 'channels' | 'operators'
+type WithdrawChannelChartMetric = 'successfulOrderShare' | 'successfulAmountShare' | 'stuckRate'
+type ChartDisplayType = 'bar' | 'pie' | 'line'
+
+interface WithdrawChannelChartMetricDefinition {
+  value: WithdrawChannelChartMetric
+  label: string
+  color: string
+  read: (row: WithdrawChannelSummaryItem) => string
+}
 
 const OPERATOR_SUMMARY_EXCLUDED_STATUS_CODES = new Set(['0', '4', '5'])
 const OPERATOR_SUMMARY_EXCLUDED_STATUS_LABELS = new Set(['待审核', '待审查', '提交中'])
 const OPERATOR_CHART_COLORS = ['#377eea', '#39b8b0', '#f5a623', '#8d6ee8', '#ec6b62', '#5d8fc5']
+const WITHDRAW_CHANNEL_CHART_COLORS = [
+  '#2fa69d', '#4f8bc9', '#6fc6bd', '#e9a23b', '#8a67d6', '#d76d80', '#6f849c',
+  '#2f9f98', '#4d8fd0', '#70c1b6', '#eaa23b', '#8467d7', '#d5677d', '#7388a0',
+]
+const WITHDRAW_CHANNEL_CHART_METRICS: WithdrawChannelChartMetricDefinition[] = [
+  {
+    value: 'successfulOrderShare',
+    label: '渠道成功订单占比',
+    color: '#397de5',
+    read: (row) => row.successfulOrderShare,
+  },
+  {
+    value: 'successfulAmountShare',
+    label: '渠道成功金额占比',
+    color: '#8a67d6',
+    read: (row) => row.successfulAmountShare,
+  },
+  {
+    value: 'stuckRate',
+    label: '卡单率',
+    color: '#e9a23b',
+    read: (row) => row.stuckRate,
+  },
+]
+const WITHDRAW_CHANNEL_CHART_DISPLAY_OPTIONS: Array<{ value: ChartDisplayType; label: string }> = [
+  { value: 'bar', label: '柱状图' },
+  { value: 'pie', label: '饼图' },
+  { value: 'line', label: '折线图' },
+]
+const WITHDRAW_CHANNEL_CHART_PREFERENCE_KEY_PREFIX = 'raj-withdraw-channel-chart-preferences'
 const MANUAL_REFRESH_RANGE_OPTIONS: Array<{
   value: WithdrawOrderRefreshRange
   label: string
@@ -91,6 +132,9 @@ const channelSummaryLoading = ref(false)
 const channelSummaryResponse = ref<WithdrawChannelSummaryResponse | null>(null)
 const channelSummaryPage = ref(1)
 const channelSummaryPageSize = ref(50)
+const withdrawChannelChartMetric = ref<WithdrawChannelChartMetric>('successfulOrderShare')
+const withdrawChannelChartDisplayType = ref<ChartDisplayType>('bar')
+const withdrawChannelChartPreferences = ref<Partial<Record<WithdrawChannelChartMetric, ChartDisplayType>>>({})
 const channelSummaryFilters = reactive({
   sourceId: '',
   createTimeRange: null as [string, string] | null,
@@ -173,6 +217,83 @@ const channelSummaryCurrency = computed(
     'INR',
 )
 const channelSummaryRows = computed(() => channelSummaryResponse.value?.items || [])
+const channelSummaryHasMultipleDates = computed(
+  () => new Set(channelSummaryRows.value.map((row) => row.date).filter(Boolean)).size > 1,
+)
+const selectedWithdrawChannelChartMetric = computed<WithdrawChannelChartMetricDefinition>(
+  () =>
+    WITHDRAW_CHANNEL_CHART_METRICS.find((metric) => metric.value === withdrawChannelChartMetric.value) ||
+    WITHDRAW_CHANNEL_CHART_METRICS[0]!,
+)
+const withdrawChannelChartValues = computed(() => {
+  const metric = selectedWithdrawChannelChartMetric.value
+  return channelSummaryRows.value.map((row) => ({
+    name: withdrawChannelChartName(row, channelSummaryHasMultipleDates.value),
+    value: numericValue(metric.read(row)),
+  }))
+})
+const withdrawChannelChartEmpty = computed(
+  () => !withdrawChannelChartValues.value.some((item) => item.value > 0),
+)
+const withdrawChannelChartOption = computed<EChartsOption>(() => {
+  const metric = selectedWithdrawChannelChartMetric.value
+  const formatter = (value: unknown) => percentageChartValueText(value)
+  if (withdrawChannelChartDisplayType.value === 'pie') {
+    return {
+      color: WITHDRAW_CHANNEL_CHART_COLORS,
+      tooltip: {
+        trigger: 'item',
+        triggerOn: 'mousemove|click|mousewheel',
+        valueFormatter: formatter,
+      },
+      legend: {
+        type: 'scroll' as const,
+        bottom: 0,
+        data: withdrawChannelChartValues.value.map((item) => item.name),
+      },
+      series: [
+        {
+          type: 'pie',
+          radius: ['42%', '70%'],
+          center: ['50%', '45%'],
+          avoidLabelOverlap: true,
+          label: { formatter: '{b}' },
+          labelLine: { length: 12, length2: 8 },
+          data: withdrawChannelChartValues.value,
+        },
+      ],
+    }
+  }
+  return {
+    grid: { left: 28, right: 24, top: 20, bottom: 52, containLabel: true },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: withdrawChannelChartDisplayType.value === 'bar' ? 'shadow' : 'line' },
+      valueFormatter: formatter,
+    },
+    xAxis: {
+      type: 'category',
+      data: withdrawChannelChartValues.value.map((item) => item.name),
+      axisLabel: { interval: 0, rotate: 24 },
+    },
+    yAxis: { type: 'value', axisLabel: { formatter } },
+    series: [
+      {
+        type: withdrawChannelChartDisplayType.value,
+        data: withdrawChannelChartValues.value.map((item) => item.value),
+        smooth: withdrawChannelChartDisplayType.value === 'line',
+        symbol: withdrawChannelChartDisplayType.value === 'line' ? 'circle' : undefined,
+        itemStyle: {
+          color: metric.color,
+          borderRadius: withdrawChannelChartDisplayType.value === 'bar' ? [6, 6, 0, 0] : undefined,
+        },
+        lineStyle: withdrawChannelChartDisplayType.value === 'line' ? { width: 3 } : undefined,
+        areaStyle: withdrawChannelChartDisplayType.value === 'line' ? { color: `${metric.color}22` } : undefined,
+        barMaxWidth: withdrawChannelChartDisplayType.value === 'bar' ? 42 : undefined,
+      },
+    ],
+  }
+})
 const channelOptions = computed(() => response.value?.channelDictionary || [])
 const channelSummaryOptions = computed(
   () => {
@@ -361,6 +482,71 @@ function orderStatusLabel(row: WithdrawOrder): string {
 function ratioText(value: string | null | undefined): string {
   const numeric = Number(value)
   return Number.isFinite(numeric) ? `${numeric.toFixed(2)}%` : '—'
+}
+
+function numericValue(value: string | number | null | undefined): number {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : 0
+}
+
+function percentageChartValueText(value: unknown): string {
+  const rawValue = Array.isArray(value) ? value[0] : value
+  return `${numericValue(String(rawValue ?? 0)).toFixed(2)}%`
+}
+
+function withdrawChannelChartName(
+  row: WithdrawChannelSummaryItem,
+  includeDate = false,
+): string {
+  const channelName = row.payChannelName?.trim() || row.payChannel?.trim() || '未配置渠道'
+  return includeDate && row.date ? `${row.date} · ${channelName}` : channelName
+}
+
+function withdrawChannelChartPreferenceKey(): string {
+  return `${WITHDRAW_CHANNEL_CHART_PREFERENCE_KEY_PREFIX}:${currentUser.value?.id || 'current'}`
+}
+
+function loadWithdrawChannelChartPreferences(): void {
+  try {
+    const saved = JSON.parse(
+      window.localStorage.getItem(withdrawChannelChartPreferenceKey()) || '{}',
+    ) as Record<string, unknown>
+    withdrawChannelChartPreferences.value = Object.fromEntries(
+      Object.entries(saved).filter(
+        ([metric, chartType]) =>
+          WITHDRAW_CHANNEL_CHART_METRICS.some((item) => item.value === metric) &&
+          WITHDRAW_CHANNEL_CHART_DISPLAY_OPTIONS.some((item) => item.value === chartType),
+      ),
+    ) as Partial<Record<WithdrawChannelChartMetric, ChartDisplayType>>
+  } catch {
+    withdrawChannelChartPreferences.value = {}
+  }
+  withdrawChannelChartDisplayType.value =
+    withdrawChannelChartPreferences.value[withdrawChannelChartMetric.value] || 'bar'
+}
+
+function handleWithdrawChannelChartMetricChange(value: WithdrawChannelChartMetric): void {
+  withdrawChannelChartMetric.value = value
+  withdrawChannelChartDisplayType.value = withdrawChannelChartPreferences.value[value] || 'bar'
+}
+
+function saveWithdrawChannelChartPreference(): void {
+  withdrawChannelChartPreferences.value = {
+    ...withdrawChannelChartPreferences.value,
+    [withdrawChannelChartMetric.value]: withdrawChannelChartDisplayType.value,
+  }
+  try {
+    window.localStorage.setItem(
+      withdrawChannelChartPreferenceKey(),
+      JSON.stringify(withdrawChannelChartPreferences.value),
+    )
+    const displayName = WITHDRAW_CHANNEL_CHART_DISPLAY_OPTIONS.find(
+      (item) => item.value === withdrawChannelChartDisplayType.value,
+    )?.label || '图表'
+    ElMessage.success(`已保存“${selectedWithdrawChannelChartMetric.value.label}”的${displayName}偏好。`)
+  } catch {
+    ElMessage.error('图表偏好保存失败，请检查浏览器本地存储权限。')
+  }
 }
 
 function firstWithdrawText(value: string | null | undefined): string {
@@ -746,6 +932,7 @@ function openOperatorSummaryChart(item: WithdrawOperatorSummaryItem): void {
 }
 
 onMounted(async () => {
+  loadWithdrawChannelChartPreferences()
   sourcesLoading.value = true
   try {
     sources.value = await fetchEnabledSources()
@@ -1068,6 +1255,56 @@ onMounted(async () => {
                 查询汇总
               </el-button>
             </div>
+          </section>
+
+          <section class="surface-card withdraw-channel-chart-card">
+            <div class="withdraw-channel-chart-card__heading">
+              <div>
+                <h2>提现-渠道图表</h2>
+                <p>
+                  以当前列表页中的支付渠道为横坐标展示指标；跨多个日期时，图例会附带日期以避免渠道名称重复。保存后会默认使用当前指标的展示方式。
+                </p>
+              </div>
+              <div class="withdraw-channel-chart-card__controls">
+                <label>
+                  <span>指标</span>
+                  <el-select
+                    :model-value="withdrawChannelChartMetric"
+                    @update:model-value="handleWithdrawChannelChartMetricChange"
+                  >
+                    <el-option
+                      v-for="metric in WITHDRAW_CHANNEL_CHART_METRICS"
+                      :key="metric.value"
+                      :label="metric.label"
+                      :value="metric.value"
+                    />
+                  </el-select>
+                </label>
+                <label>
+                  <span>展示方式</span>
+                  <el-select v-model="withdrawChannelChartDisplayType">
+                    <el-option
+                      v-for="option in WITHDRAW_CHANNEL_CHART_DISPLAY_OPTIONS"
+                      :key="option.value"
+                      :label="option.label"
+                      :value="option.value"
+                    />
+                  </el-select>
+                </label>
+                <el-button type="primary" plain @click="saveWithdrawChannelChartPreference">
+                  保存偏好
+                </el-button>
+              </div>
+            </div>
+            <ChartPanel
+              :title="selectedWithdrawChannelChartMetric.label"
+              :option="withdrawChannelChartOption"
+              :empty="withdrawChannelChartEmpty"
+              :height="300"
+              :active="activeTab === 'channels'"
+              plain
+              :show-title="false"
+            />
           </section>
 
           <section class="surface-card table-card channel-summary-table-card">
@@ -1540,6 +1777,51 @@ onMounted(async () => {
   font-size: 12px;
 }
 
+.withdraw-channel-chart-card {
+  padding: 18px;
+}
+
+.withdraw-channel-chart-card__heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.withdraw-channel-chart-card__heading h2 {
+  margin: 0;
+  color: var(--ink-strong);
+  font-size: 20px;
+}
+
+.withdraw-channel-chart-card__heading p {
+  max-width: 760px;
+  margin: 6px 0 0;
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.withdraw-channel-chart-card__controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.withdraw-channel-chart-card__controls label {
+  display: grid;
+  min-width: 146px;
+  gap: 6px;
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.withdraw-channel-chart-card__controls :deep(.el-select) {
+  width: 100%;
+}
+
 .metric-card {
   position: relative;
   overflow: hidden;
@@ -1719,13 +2001,25 @@ onMounted(async () => {
 
 @media (max-width: 900px) {
   .tab-pane-header,
-  .header-actions {
+  .header-actions,
+  .withdraw-channel-chart-card__heading,
+  .withdraw-channel-chart-card__controls {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .header-actions {
+  .header-actions,
+  .withdraw-channel-chart-card__controls {
     width: 100%;
+  }
+
+  .withdraw-channel-chart-card__controls label {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .withdraw-channel-chart-card__controls .el-button {
+    align-self: flex-start;
   }
 
   .refresh-state,
