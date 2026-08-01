@@ -8,6 +8,7 @@ from packages.common.database import get_db_session
 from packages.domain.schemas.withdraw_order import (
     ScoringReviewOperatorSummaryRequest,
     ScoringReviewOperatorSummaryResponse,
+    ScoringReviewRemoteSyncRequest,
     WithdrawChannelSummaryRequest,
     WithdrawChannelSummaryResponse,
     WithdrawOperatorSummaryRequest,
@@ -21,6 +22,10 @@ from packages.domain.schemas.withdraw_order import (
 from packages.domain.services.auth_service import AuthContext
 from packages.domain.services.scoring_review_summary_service import (
     query_scoring_review_operator_summary,
+)
+from packages.domain.services.scoring_review_sync_service import (
+    ScoringReviewSyncError,
+    sync_scoring_reviewed_cases_from_remote,
 )
 from packages.domain.services.scoring_reviewed_cases_import_service import (
     MAX_SCORING_REVIEWED_CASES_EXPORT_BYTES,
@@ -251,6 +256,45 @@ async def import_scoring_review_workbook(
     except SourceNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except (ScoringReviewedCasesImportError, WithdrawScoringImportError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except WithdrawScoringCacheSchemaPendingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    return WithdrawScoringImportResponse(
+        source_id=result.source_id,
+        source_row_count=result.source_row_count,
+        matched_count=result.matched_count,
+        created_count=result.created_count,
+        updated_count=result.updated_count,
+        unmatched_count=result.unmatched_count,
+        synced_at=result.synced_at,
+    )
+
+
+@router.post(
+    "/scoring-review/sync",
+    response_model=WithdrawScoringImportResponse,
+)
+async def sync_scoring_review_cases(
+    payload: ScoringReviewRemoteSyncRequest,
+    auth: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_db_session),
+) -> WithdrawScoringImportResponse:
+    """Sync one configured scoring API range without exposing its key to clients."""
+
+    try:
+        result = await sync_scoring_reviewed_cases_from_remote(
+            session,
+            source_id=payload.source_id,
+            create_time_start=payload.create_time_start,
+            create_time_end=payload.create_time_end,
+            actor_user_id=auth.user.id,
+        )
+    except SourceNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except (ScoringReviewSyncError, WithdrawScoringImportError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except WithdrawScoringCacheSchemaPendingError as exc:
         raise HTTPException(

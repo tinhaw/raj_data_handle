@@ -92,6 +92,16 @@ export async function importScoringReviewedCases(
   ).data
 }
 
+export async function syncScoringReviewedCases(payload: {
+  sourceId: string
+  createTimeStart: string
+  createTimeEnd: string
+}): Promise<WithdrawScoringImportResult> {
+  return (
+    await api.post<WithdrawScoringImportResult>('/withdraw-orders/scoring-review/sync', payload)
+  ).data
+}
+
 export async function startWithdrawOrderRefresh(payload: {
   sourceId?: string
   queryRange?: WithdrawOrderRefreshRange

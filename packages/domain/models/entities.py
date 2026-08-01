@@ -568,6 +568,18 @@ class SourceConfig(Base):
     credential_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     credential_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # The scoring-review service is a separate, read-only integration.  Its
+    # API key must never be mixed with the Raj admin login credentials above:
+    # it has a different authorization model and can point at a different
+    # source-specific base URL.
+    scoring_api_base_url: Mapped[str | None] = mapped_column(String(500))
+    encrypted_scoring_api_key: Mapped[str | None] = mapped_column(Text)
+    scoring_api_key_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    scoring_api_key_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    scoring_api_last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    scoring_api_last_test_status: Mapped[str | None] = mapped_column(String(30))
+    scoring_api_last_test_request_id: Mapped[str | None] = mapped_column(String(64))
+
     last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_test_status: Mapped[str | None] = mapped_column(String(30))
     last_test_request_id: Mapped[str | None] = mapped_column(String(64))

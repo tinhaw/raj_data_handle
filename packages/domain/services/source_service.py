@@ -37,6 +37,10 @@ from packages.domain.services.data_dictionary_service import (
     sync_payment_channels,
 )
 from packages.domain.services.remote_charge_service import RajAdminChargeClient, RemoteChargeError
+from packages.domain.services.remote_scoring_review_service import (
+    RemoteScoringReviewError,
+    ScoringReviewRemoteClient,
+)
 
 SOURCE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 
@@ -89,6 +93,39 @@ def normalize_base_url(value: str | None, settings: Settings) -> str | None:
     if path not in {"", "/"}:
         raise SourceValidationError("Base URL 不能包含业务接口路径。")
     return urlunsplit((parts.scheme, parts.netloc, "", "", "")).rstrip("/")
+
+
+def normalize_scoring_api_base_url(value: str | None, settings: Settings) -> str | None:
+    """Normalize an external scoring-review API root, including its ``/api`` path.
+
+    This deliberately differs from :func:`normalize_base_url`: Raj admin
+    connections start at a host root, while the documented scoring API base is
+    ``https://<host>/api``.  Keeping the paths separate prevents an admin URL
+    from being accidentally used as an API-key endpoint.
+    """
+
+    if value is None:
+        return None
+    parts = urlsplit(value.strip())
+    if parts.username or parts.password or parts.query or parts.fragment:
+        raise SourceValidationError("评分审核 API Base URL 不能包含凭据、查询参数或片段。")
+    is_local_dev = settings.environment == "development" and parts.hostname in {
+        "localhost",
+        "127.0.0.1",
+    }
+    if parts.scheme != "https" and not (is_local_dev and parts.scheme == "http"):
+        raise SourceValidationError("评分审核 API Base URL 必须使用 HTTPS。")
+    if not parts.hostname:
+        raise SourceValidationError("评分审核 API Base URL 缺少有效主机名。")
+    if parts.path.rstrip("/") != "/api":
+        raise SourceValidationError("评分审核 API Base URL 必须以 /api 结束。")
+    return urlunsplit((parts.scheme, parts.netloc, "/api", "", ""))
+
+
+def _scoring_api_credential_scope(source_id: str) -> str:
+    """Return a distinct AES-GCM associated-data scope for the API key."""
+
+    return f"{source_id}:scoring-review-api"
 
 
 def _credentials_dict(request: object) -> dict[str, str | None]:
@@ -258,6 +295,43 @@ async def upsert_source(
         credentials_changed = True
         changed_fields.append("credentials")
 
+    scoring_api = getattr(request, "scoring_api", None)
+    if scoring_api is not None:
+        raw_scoring_api_url = (
+            str(scoring_api.base_url) if scoring_api.base_url is not None else None
+        )
+        scoring_api_base_url = normalize_scoring_api_base_url(
+            raw_scoring_api_url,
+            current_settings,
+        )
+        if source.scoring_api_base_url != scoring_api_base_url:
+            source.scoring_api_base_url = scoring_api_base_url
+            source.scoring_api_last_test_status = None
+            changed_fields.append("scoring_api_base_url")
+
+        supplied_api_key = (scoring_api.api_key or "").strip()
+        if supplied_api_key:
+            if scoring_api_base_url is None:
+                raise SourceValidationError("配置评分审核 API Key 前必须填写 Base URL。")
+            source.scoring_api_key_version = (source.scoring_api_key_version or 0) + 1
+            source.encrypted_scoring_api_key = encrypt_credentials(
+                {"api_key": supplied_api_key},
+                source_id=_scoring_api_credential_scope(source.source_id),
+                credential_version=source.scoring_api_key_version,
+                settings=current_settings,
+            )
+            source.scoring_api_key_updated_at = datetime.now(UTC)
+            source.scoring_api_last_test_status = None
+            changed_fields.append("scoring_api_key")
+        elif scoring_api_base_url is None and source.encrypted_scoring_api_key is not None:
+            # Clearing the URL explicitly clears the inaccessible key too.
+            # A new version makes a copied historical ciphertext unusable.
+            source.scoring_api_key_version = (source.scoring_api_key_version or 0) + 1
+            source.encrypted_scoring_api_key = None
+            source.scoring_api_key_updated_at = datetime.now(UTC)
+            source.scoring_api_last_test_status = None
+            changed_fields.append("scoring_api_key")
+
     requested_enabled = getattr(request, "enabled", None)
     if requested_enabled is not None:
         if requested_enabled:
@@ -352,6 +426,56 @@ async def clear_credentials(
     )
     await session.commit()
     return source
+
+
+async def test_source_scoring_api_connection(
+    session: AsyncSession,
+    *,
+    source_id: str,
+    actor_user_id: int,
+) -> tuple[SourceConfig, str]:
+    """Run the external API's harmless one-row read as an independent test."""
+
+    source = await get_source(session, source_id)
+    if not source.scoring_api_base_url or not source.encrypted_scoring_api_key:
+        raise SourceValidationError("请先保存评分审核 API Base URL 和 API Key。")
+    request_id = uuid.uuid4().hex
+    settings = get_settings()
+    try:
+        payload = decrypt_credentials(
+            source.encrypted_scoring_api_key,
+            source_id=_scoring_api_credential_scope(source.source_id),
+            credential_version=source.scoring_api_key_version,
+            settings=settings,
+        )
+        api_key = payload["api_key"]
+    except (SecurityValidationError, KeyError) as exc:
+        raise SourceValidationError("已保存的评分审核 API Key 无法解密，请重新配置。") from exc
+
+    test_status = "failed"
+    try:
+        async with ScoringReviewRemoteClient(
+            base_url=source.scoring_api_base_url,
+            api_key=api_key,
+        ) as client:
+            await client.test_connection()
+        test_status = "passed"
+    except RemoteScoringReviewError:
+        test_status = "failed"
+    source.scoring_api_last_tested_at = datetime.now(UTC)
+    source.scoring_api_last_test_status = test_status
+    source.scoring_api_last_test_request_id = request_id
+    await write_audit(
+        session,
+        action="source.scoring_api.connection_test",
+        actor_user_id=actor_user_id,
+        target_type="source",
+        target_id=source.source_id,
+        result=test_status,
+        metadata={"request_id": request_id},
+    )
+    await session.commit()
+    return source, request_id
 
 
 def _platform_key_for_channel(label: str) -> str | None:

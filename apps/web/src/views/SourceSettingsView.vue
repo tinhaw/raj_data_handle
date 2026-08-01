@@ -11,6 +11,7 @@ import {
   fetchAllSources,
   reorderSources,
   testSourceConnection,
+  testSourceScoringApi,
   updateSource,
 } from '../api/sources'
 import type { SourceConfig } from '../types'
@@ -19,11 +20,13 @@ import { formatDateTime } from '../ui'
 const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
+const scoringApiTesting = ref(false)
 const rows = ref<SourceConfig[]>([])
 const reordering = ref(false)
 const dialogVisible = ref(false)
 const editingId = ref<string | null>(null)
 const credentialsConfigured = ref(false)
+const scoringApiKeyConfigured = ref(false)
 const presetSourceIds = new Set(['rajwin', 'rajluck'])
 const form = reactive({
   sourceId: '',
@@ -35,6 +38,8 @@ const form = reactive({
   username: '',
   password: '',
   totpSecret: '',
+  scoringApiBaseUrl: '',
+  scoringApiKey: '',
 })
 
 async function load(): Promise<void> {
@@ -51,6 +56,7 @@ async function load(): Promise<void> {
 function add(): void {
   editingId.value = null
   credentialsConfigured.value = false
+  scoringApiKeyConfigured.value = false
   form.sourceId = ''
   form.displayName = ''
   form.baseUrl = ''
@@ -60,12 +66,15 @@ function add(): void {
   form.username = ''
   form.password = ''
   form.totpSecret = ''
+  form.scoringApiBaseUrl = ''
+  form.scoringApiKey = ''
   dialogVisible.value = true
 }
 
 function edit(row: SourceConfig): void {
   editingId.value = row.sourceId
   credentialsConfigured.value = row.credentialConfigured
+  scoringApiKeyConfigured.value = row.scoringApiKeyConfigured
   form.sourceId = row.sourceId
   form.displayName = row.displayName
   form.baseUrl = row.baseUrl || ''
@@ -75,6 +84,8 @@ function edit(row: SourceConfig): void {
   form.username = ''
   form.password = ''
   form.totpSecret = ''
+  form.scoringApiBaseUrl = row.scoringApiBaseUrl || ''
+  form.scoringApiKey = ''
   dialogVisible.value = true
 }
 
@@ -107,11 +118,19 @@ function sourcePayload(enabled: boolean): Record<string, unknown> {
     currency: form.currency,
     enabled,
     credentials,
+    scoringApi: {
+      baseUrl: form.scoringApiBaseUrl || null,
+      apiKey: form.scoringApiKey || null,
+    },
   }
 }
 
 function credentialsWereProvided(): boolean {
   return Boolean(form.username || form.password || form.totpSecret)
+}
+
+function scoringApiKeyWasProvided(): boolean {
+  return Boolean(form.scoringApiKey)
 }
 
 async function persistSource(enabled: boolean): Promise<string> {
@@ -123,10 +142,12 @@ async function persistSource(enabled: boolean): Promise<string> {
     })
     editingId.value = sourceId
     credentialsConfigured.value ||= credentialsWereProvided()
+    scoringApiKeyConfigured.value ||= scoringApiKeyWasProvided()
     return sourceId
   }
   await updateSource(editingId.value, sourcePayload(enabled))
   credentialsConfigured.value ||= credentialsWereProvided()
+  scoringApiKeyConfigured.value ||= scoringApiKeyWasProvided()
   return editingId.value
 }
 
@@ -170,6 +191,27 @@ async function saveAndTest(): Promise<void> {
   } finally {
     await load()
     testing.value = false
+  }
+}
+
+async function saveAndTestScoringApi(): Promise<void> {
+  if (!validateForm()) return
+  const wasCreating = editingId.value === null
+  scoringApiTesting.value = true
+  try {
+    const sourceId = await persistSource(wasCreating ? false : form.enabled)
+    const result = await testSourceScoringApi(sourceId)
+    if (result.status !== 'passed') {
+      ElMessage.warning(result.message)
+      return
+    }
+    ElMessage.success('评分审核 API 连接测试通过，配置已保存。')
+    dialogVisible.value = false
+  } catch (error) {
+    ElMessage.warning(apiErrorMessage(error, '保存或评分审核 API 测试失败。'))
+  } finally {
+    await load()
+    scoringApiTesting.value = false
   }
 }
 
@@ -246,7 +288,7 @@ onMounted(load)
 
     <el-alert
       title="凭据字段只写不读"
-      description="页面只显示是否已配置；账号、密码和 TOTP Secret 加密保存，接口永不回显。连接测试只执行登录，并读取 pay_method 的 key/title 与 pay_channel_name 的 value/label 两套只读字典。"
+      description="页面只显示是否已配置；后台账号凭据与评分审核 API Key 分别加密保存，接口永不回显。评分审核 API 使用配套盘口的 /api 地址和独立 Key，不复用后台登录配置。"
       type="info"
       show-icon
       :closable="false"
@@ -290,6 +332,14 @@ onMounted(load)
         </el-table-column>
         <el-table-column label="盘口名" min-width="130" prop="displayName" />
         <el-table-column label="Base URL" min-width="230" prop="baseUrl" show-overflow-tooltip />
+        <el-table-column label="评分审核 API" min-width="240" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span>{{ row.scoringApiBaseUrl || '未配置' }}</span>
+            <small class="table-subtext">
+              {{ row.scoringApiKeyConfigured ? 'API Key 已配置' : 'API Key 未配置' }}
+            </small>
+          </template>
+        </el-table-column>
         <el-table-column label="时区 / 币种" min-width="180">
           <template #default="{ row }">{{ row.businessTimezone }} · {{ row.currency }}</template>
         </el-table-column>
@@ -304,6 +354,12 @@ onMounted(load)
           <template #default="{ row }">
             <span>{{ row.lastTestStatus || '未测试' }}</span>
             <small class="table-subtext">{{ formatDateTime(row.lastTestedAt) }}</small>
+          </template>
+        </el-table-column>
+        <el-table-column label="评分 API 测试" min-width="160">
+          <template #default="{ row }">
+            <span>{{ row.scoringApiLastTestStatus || '未测试' }}</span>
+            <small class="table-subtext">{{ formatDateTime(row.scoringApiLastTestedAt) }}</small>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="90">
@@ -409,20 +465,51 @@ onMounted(load)
             autocomplete="off"
           />
         </el-form-item>
+        <el-divider content-position="left">
+          评分审核 API（可选，按配套盘口配置）
+        </el-divider>
+        <el-form-item label="评分审核 API Base URL">
+          <el-input
+            v-model="form.scoringApiBaseUrl"
+            placeholder="https://primary.example.com/api"
+          />
+          <span class="field-help">
+            使用评分审核系统为该盘口提供的 HTTPS API 根地址，必须以 /api 结束。
+          </span>
+        </el-form-item>
+        <el-form-item label="评分审核 API Key">
+          <el-input
+            v-model="form.scoringApiKey"
+            :placeholder="scoringApiKeyConfigured ? '已设置，留空则保持原值' : '请输入具有 reviewed-cases:read 权限的 Key'"
+            type="password"
+            show-password
+            autocomplete="new-password"
+          />
+          <span class="field-help">
+            仅由服务端同步使用，页面和接口均不会回显。清空 Base URL 并保存会同时清除该 Key。
+          </span>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button :loading="saving" :disabled="testing" @click="save">
+        <el-button :loading="saving" :disabled="testing || scoringApiTesting" @click="save">
           {{ editingId === null ? '创建草稿' : '保存配置' }}
         </el-button>
         <el-button
           type="primary"
           :icon="Connection"
           :loading="testing"
-          :disabled="saving"
+          :disabled="saving || scoringApiTesting"
           @click="saveAndTest"
         >
           保存并测试
+        </el-button>
+        <el-button
+          :loading="scoringApiTesting"
+          :disabled="saving || testing"
+          @click="saveAndTestScoringApi"
+        >
+          测试评分 API
         </el-button>
       </template>
     </el-dialog>

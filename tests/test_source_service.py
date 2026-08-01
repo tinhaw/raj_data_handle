@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from packages.common.security import SecurityValidationError, decrypt_credentials
 from packages.common.settings import Settings
 from packages.domain.models import (
     Base,
@@ -11,14 +12,20 @@ from packages.domain.models import (
     ReconciliationBatch,
     SourceConfig,
 )
-from packages.domain.schemas.source import SourceCreateRequest, SourceCredentialsWrite
+from packages.domain.schemas.source import (
+    ScoringApiWrite,
+    SourceCreateRequest,
+    SourceCredentialsWrite,
+)
 from packages.domain.services.source_service import (
     SourceConflictError,
     SourceValidationError,
+    _scoring_api_credential_scope,
     create_source,
     delete_source,
     list_sources,
     normalize_base_url,
+    normalize_scoring_api_base_url,
     reorder_sources,
     validate_source_id,
     validate_timezone,
@@ -39,6 +46,18 @@ def test_base_url_is_normalized_without_business_path() -> None:
         normalize_base_url("https://admin.example.com/", configured) == "https://admin.example.com"
     )
     assert normalize_base_url("http://localhost:9000", configured) == "http://localhost:9000"
+
+
+def test_scoring_api_base_url_retains_its_required_api_root() -> None:
+    configured = development_settings()
+    assert (
+        normalize_scoring_api_base_url("https://scoring.example.com/api/", configured)
+        == "https://scoring.example.com/api"
+    )
+    with pytest.raises(SourceValidationError, match="/api"):
+        normalize_scoring_api_base_url("https://scoring.example.com", configured)
+    with pytest.raises(SourceValidationError):
+        normalize_scoring_api_base_url("https://scoring.example.com/api?key=secret", configured)
 
 
 @pytest.mark.parametrize(
@@ -158,6 +177,49 @@ async def test_new_source_accepts_initial_credentials_before_database_flush() ->
 
     assert created.credential_version == 1
     assert created.encrypted_credentials is not None
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_source_keeps_scoring_api_key_in_a_separate_encrypted_scope() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings = development_settings()
+
+    async with factory() as session:
+        created = await create_source(
+            session,
+            request=SourceCreateRequest(
+                source_id="rajscore",
+                display_name="RajScore",
+                scoring_api=ScoringApiWrite(
+                    base_url="https://scoring.example.test/api",
+                    api_key="srk_v1_prefix.secret",
+                ),
+            ),
+            actor_user_id=1,
+            settings=settings,
+        )
+
+    assert created.scoring_api_base_url == "https://scoring.example.test/api"
+    assert created.encrypted_scoring_api_key is not None
+    assert created.scoring_api_key_version == 1
+    with pytest.raises(SecurityValidationError):
+        # The admin-login associated-data scope must not decrypt an API key.
+        decrypt_credentials(
+            created.encrypted_scoring_api_key,
+            source_id=created.source_id,
+            credential_version=created.scoring_api_key_version,
+            settings=settings,
+        )
+    assert decrypt_credentials(
+        created.encrypted_scoring_api_key,
+        source_id=_scoring_api_credential_scope(created.source_id),
+        credential_version=created.scoring_api_key_version,
+        settings=settings,
+    ) == {"api_key": "srk_v1_prefix.secret"}
     await engine.dispose()
 
 

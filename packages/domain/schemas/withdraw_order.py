@@ -151,6 +151,10 @@ class ScoringReviewOperatorSummaryRequest(ApiSchema):
         return self
 
 
+class ScoringReviewRemoteSyncRequest(ScoringReviewOperatorSummaryRequest):
+    """A selected source and create-time range for a server-side API sync."""
+
+
 class WithdrawOrderResponse(ApiSchema):
     id: str
     uid: str

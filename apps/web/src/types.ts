@@ -34,6 +34,11 @@ export interface SourceConfig {
   configVersion: number
   credentialConfigured: boolean
   credentialUpdatedAt: string | null
+  scoringApiBaseUrl: string | null
+  scoringApiKeyConfigured: boolean
+  scoringApiKeyUpdatedAt: string | null
+  scoringApiLastTestedAt: string | null
+  scoringApiLastTestStatus: string | null
   lastTestedAt: string | null
   lastTestStatus: string | null
   createdAt: string

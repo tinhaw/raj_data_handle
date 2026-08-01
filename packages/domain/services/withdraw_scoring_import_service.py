@@ -183,10 +183,43 @@ async def import_scoring_reviewed_cases_export(
     """
 
     parsed = parse_scoring_reviewed_cases_export(content)
+    return await import_scoring_reviewed_cases(
+        session,
+        source_id=source_id,
+        cases=parsed.cases,
+        source_row_count=parsed.source_row_count,
+        actor_user_id=actor_user_id,
+        now=now,
+    )
+
+
+async def import_scoring_reviewed_cases(
+    session: AsyncSession,
+    *,
+    source_id: str,
+    cases: list[ScoringReviewedCase],
+    source_row_count: int,
+    actor_user_id: int | None,
+    now: datetime | None = None,
+    audit_action: str = "withdraw_scoring.import",
+    audit_metadata: dict[str, object] | None = None,
+) -> WithdrawScoringImportResult:
+    """Atomically persist validated score cases from an approved transport.
+
+    Both the workbook parser and the scoring-review API are intentionally
+    reduced to the same :class:`ScoringReviewedCase` projection before this
+    function runs.  This prevents a new transport from becoming a route for
+    master withdrawal fields or arbitrary remote JSON to enter the cache.
+    """
+
+    if source_row_count != len(cases):
+        raise WithdrawScoringImportError("评分审核数据行数与案件数不一致。")
+    case_ids = [case.withdraw_order_id for case in cases]
+    if len(case_ids) != len(set(case_ids)):
+        raise WithdrawScoringImportError("评分审核数据包含重复案件号。")
     synced_at = _now(now)
     try:
         source = await get_source(session, source_id)
-        case_ids = [case.withdraw_order_id for case in parsed.cases]
         masters = await _withdrawals_by_case_id(
             session,
             source_id=source.source_id,
@@ -200,7 +233,7 @@ async def import_scoring_reviewed_cases_export(
 
         created_count = 0
         updated_count = 0
-        for case in parsed.cases:
+        for case in cases:
             if case.withdraw_order_id not in masters:
                 continue
             snapshot = existing.get(case.withdraw_order_id)
@@ -224,21 +257,24 @@ async def import_scoring_reviewed_cases_export(
             )
 
         matched_count = created_count + updated_count
-        unmatched_count = parsed.source_row_count - matched_count
+        unmatched_count = source_row_count - matched_count
         await session.flush()
+        metadata: dict[str, object] = {
+            "sourceRows": source_row_count,
+            "matchedRows": matched_count,
+            "createdRows": created_count,
+            "updatedRows": updated_count,
+            "unmatchedRows": unmatched_count,
+        }
+        if audit_metadata:
+            metadata.update(audit_metadata)
         await write_audit(
             session,
-            action="withdraw_scoring.import",
+            action=audit_action,
             actor_user_id=actor_user_id,
             target_type="source",
             target_id=source.source_id,
-            metadata={
-                "sourceRows": parsed.source_row_count,
-                "matchedRows": matched_count,
-                "createdRows": created_count,
-                "updatedRows": updated_count,
-                "unmatchedRows": unmatched_count,
-            },
+            metadata=metadata,
         )
         await session.commit()
     except (OperationalError, ProgrammingError) as exc:
@@ -254,7 +290,7 @@ async def import_scoring_reviewed_cases_export(
 
     return WithdrawScoringImportResult(
         source_id=source.source_id,
-        source_row_count=parsed.source_row_count,
+        source_row_count=source_row_count,
         matched_count=matched_count,
         created_count=created_count,
         updated_count=updated_count,

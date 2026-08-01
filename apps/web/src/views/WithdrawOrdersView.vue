@@ -14,6 +14,7 @@ import {
   queryWithdrawOrders,
   queryScoringReviewOperatorSummary,
   startWithdrawOrderRefresh,
+  syncScoringReviewedCases,
 } from '../api/withdrawOrders'
 import ChartPanel from '../components/ChartPanel.vue'
 import { currentUser } from '../stores/auth'
@@ -178,6 +179,7 @@ const operatorSummaryFilters = reactive({
 })
 const scoringReviewSummaryLoading = ref(false)
 const scoringReviewImporting = ref(false)
+const scoringReviewSyncing = ref(false)
 const scoringReviewUploadInput = ref<HTMLInputElement | null>(null)
 const scoringReviewImportFile = ref<File | null>(null)
 const scoringReviewSummaryResponse = ref<ScoringReviewOperatorSummaryResponse | null>(null)
@@ -202,6 +204,14 @@ const selectedChannelSummarySource = computed(() =>
 const selectedScoringReviewSummarySource = computed(() =>
   sources.value.find((source) => source.sourceId === scoringReviewSummaryFilters.sourceId),
 )
+const scoringReviewApiReady = computed(() => {
+  const source = selectedScoringReviewSummarySource.value
+  return Boolean(
+    source?.scoringApiBaseUrl &&
+      source.scoringApiKeyConfigured &&
+      source.scoringApiLastTestStatus === 'passed',
+  )
+})
 const summary = computed(() => response.value?.summary || emptySummary)
 const statusDictionary = computed(() => response.value?.statusDictionary || [])
 const statusEntryByCode = computed(
@@ -1169,6 +1179,41 @@ async function importScoringReviewWorkbook(): Promise<void> {
   }
 }
 
+async function syncScoringReviewFromRemote(): Promise<void> {
+  const sourceId = scoringReviewSummaryFilters.sourceId
+  const [createTimeStart, createTimeEnd] = scoringReviewSummaryFilters.createTimeRange || []
+  if (!sourceId || !createTimeStart || !createTimeEnd) {
+    ElMessage.warning('请先选择盘口和评分审核同步的创建时间范围。')
+    return
+  }
+  if (!scoringReviewApiReady.value) {
+    ElMessage.warning('所选盘口尚未完成评分审核 API 配置或连接测试。')
+    return
+  }
+  if (scoringReviewSyncing.value) return
+  scoringReviewSyncing.value = true
+  try {
+    const result = await syncScoringReviewedCases({
+      sourceId,
+      createTimeStart,
+      createTimeEnd,
+    })
+    ElMessage.success(
+      `评分审核远端同步完成：拉取 ${result.sourceRowCount.toLocaleString()} 条，匹配 ${result.matchedCount.toLocaleString()} 条，新建 ${result.createdCount.toLocaleString()} 条，更新 ${result.updatedCount.toLocaleString()} 条，未匹配 ${result.unmatchedCount.toLocaleString()} 条。`,
+    )
+    if (filters.sourceId === result.sourceId) {
+      await load(false, true)
+    }
+    if (scoringReviewSummaryFilters.sourceId === result.sourceId) {
+      await loadScoringReviewSummary()
+    }
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '评分审核远端同步失败。'))
+  } finally {
+    scoringReviewSyncing.value = false
+  }
+}
+
 function openManualRefreshDialog(): void {
   if (!validateFilters() || refreshStarting.value) return
   manualRefreshQueryRange.value = 'yesterday'
@@ -2057,7 +2102,7 @@ onMounted(async () => {
                   />
                   <el-button
                     :icon="UploadFilled"
-                    :disabled="!scoringReviewSummaryFilters.sourceId || scoringReviewImporting"
+                    :disabled="!scoringReviewSummaryFilters.sourceId || scoringReviewImporting || scoringReviewSyncing"
                     @click="openScoringReviewImportFilePicker"
                   >
                     选择 .xlsx
@@ -2070,12 +2115,27 @@ onMounted(async () => {
             </div>
             <div class="query-card__footer">
               <span>
-                评分 Excel 仅按“案件号 → 提现主键”补充已缓存的提现订单；未匹配案件不会新增提现订单，原始文件不会保留。未进入评分已包含在“≤30 分”档中，不额外计入总单数。
+                远端同步使用所选盘口配置的评分审核 API，并按“案件号 → 提现主键”补充已缓存订单；不会将 API Key 或完整远端响应发送到浏览器。Excel 导入保留为备用方式，未匹配案件不会新增提现订单。
               </span>
               <div class="query-card__footer-actions">
+                <el-tooltip
+                  content="请先在盘口配置中完成该盘口的评分审核 API Base URL、API Key 与连接测试。"
+                  :disabled="scoringReviewApiReady"
+                >
+                  <span>
+                    <el-button
+                      :icon="Refresh"
+                      :loading="scoringReviewSyncing"
+                      :disabled="!scoringReviewSummaryFilters.sourceId || !scoringReviewApiReady || scoringReviewImporting"
+                      @click="syncScoringReviewFromRemote"
+                    >
+                      从远端同步
+                    </el-button>
+                  </span>
+                </el-tooltip>
                 <el-button
                   :loading="scoringReviewImporting"
-                  :disabled="!scoringReviewImportFile || !scoringReviewSummaryFilters.sourceId"
+                  :disabled="!scoringReviewImportFile || !scoringReviewSummaryFilters.sourceId || scoringReviewSyncing"
                   @click="importScoringReviewWorkbook"
                 >
                   导入评分 Excel

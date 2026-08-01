@@ -34,6 +34,16 @@ export async function testSourceConnection(
   ).data
 }
 
+export async function testSourceScoringApi(
+  sourceId: string,
+): Promise<{ sourceId: string; status: string; requestId: string; message: string }> {
+  return (
+    await api.post<{ sourceId: string; status: string; requestId: string; message: string }>(
+      `/settings/sources/${sourceId}/test-scoring-api`,
+    )
+  ).data
+}
+
 export async function clearSourceCredentials(sourceId: string): Promise<SourceConfig> {
   return (await api.delete<SourceConfig>(`/settings/sources/${sourceId}/credentials`)).data
 }

@@ -24,6 +24,7 @@ from packages.domain.services.source_service import (
     delete_source,
     list_sources,
     reorder_sources,
+    test_source_scoring_api_connection,
     upsert_source,
 )
 from packages.domain.services.source_service import (
@@ -45,6 +46,11 @@ def _source_response(source: SourceConfig) -> SourceResponse:
         config_version=source.config_version,
         credential_configured=bool(source.encrypted_credentials),
         credential_updated_at=source.credential_updated_at,
+        scoring_api_base_url=source.scoring_api_base_url,
+        scoring_api_key_configured=bool(source.encrypted_scoring_api_key),
+        scoring_api_key_updated_at=source.scoring_api_key_updated_at,
+        scoring_api_last_tested_at=source.scoring_api_last_tested_at,
+        scoring_api_last_test_status=source.scoring_api_last_test_status,
         last_tested_at=source.last_tested_at,
         last_test_status=source.last_test_status,
         created_at=source.created_at,
@@ -212,5 +218,34 @@ async def test_source_connection(
             "连接成功，已同步支付渠道名称字典和可识别的充值渠道。"
             if source.last_test_status == "passed"
             else "连接失败，请检查 Base URL、账号、密码、TOTP Secret 和远端网络。"
+        ),
+    )
+
+
+@router.post(
+    "/settings/sources/{source_id}/test-scoring-api",
+    response_model=SourceConnectionTestResponse,
+)
+async def test_source_scoring_api(
+    source_id: str,
+    auth: AuthContext = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> SourceConnectionTestResponse:
+    try:
+        source, request_id = await test_source_scoring_api_connection(
+            session,
+            source_id=source_id,
+            actor_user_id=auth.user.id,
+        )
+    except SourceValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return SourceConnectionTestResponse(
+        source_id=source.source_id,
+        status=source.scoring_api_last_test_status or "failed",
+        request_id=request_id,
+        message=(
+            "评分审核 API 连接成功。"
+            if source.scoring_api_last_test_status == "passed"
+            else "评分审核 API 连接失败，请检查 Base URL、API Key、权限和远端网络。"
         ),
     )
