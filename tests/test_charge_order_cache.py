@@ -36,10 +36,19 @@ from packages.domain.services.remote_charge_service import ChargeFetchResult, no
 
 class FakeChargeClient:
     calls: list[dict[str, object]] = []
+    timeout_seconds: list[float] = []
 
-    def __init__(self, *, base_url: str, page_size: int = 100, **_: object) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        page_size: int = 100,
+        timeout_seconds: float = 180.0,
+        **_: object,
+    ) -> None:
         self.base_url = base_url
         self.page_size = page_size
+        FakeChargeClient.timeout_seconds.append(timeout_seconds)
 
     async def __aenter__(self) -> FakeChargeClient:
         return self
@@ -344,6 +353,7 @@ async def test_worker_refreshes_recharge_cache_and_deduplicates_by_source_and_or
         FakeChargeClient,
     )
     FakeChargeClient.calls = []
+    FakeChargeClient.timeout_seconds = []
     now = datetime(2026, 7, 30, 10, 0, tzinfo=UTC)
     async with factory() as session:
         source = SourceConfig(
@@ -437,6 +447,7 @@ async def test_worker_refreshes_charge_cache_at_the_configured_export_time(
         FakeChargeClient,
     )
     FakeChargeClient.calls = []
+    FakeChargeClient.timeout_seconds = []
     source = SourceConfig(
         source_id="rajwin",
         display_name="RajWin",
@@ -459,6 +470,7 @@ async def test_worker_refreshes_charge_cache_at_the_configured_export_time(
         remote_cache_retention_days=30,
         charge_order_export_date_mode="previous_day",
         charge_order_export_time=time(2, 3, 4),
+        remote_order_sync_timeout_seconds=240,
     )
     # Asia/Kolkata 02:03:03 / 02:03:04 on 2026-07-31.
     before_due = datetime(2026, 7, 30, 20, 33, 3, tzinfo=UTC)
@@ -487,6 +499,7 @@ async def test_worker_refreshes_charge_cache_at_the_configured_export_time(
             "create_end": "2026-07-30 23:59:59",
         }
     ]
+    assert FakeChargeClient.timeout_seconds == [240]
     await engine.dispose()
 
 

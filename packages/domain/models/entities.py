@@ -135,6 +135,11 @@ class SystemRetentionSetting(Base):
         nullable=False,
         default=5,
     )
+    remote_order_sync_timeout_seconds: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=180,
+    )
     charge_order_refresh_interval_hours: Mapped[int] = mapped_column(
         Integer,
         nullable=False,

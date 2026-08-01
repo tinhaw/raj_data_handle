@@ -32,6 +32,7 @@ const form = reactive({
   withdrawOrderExportTime: '00:05:01',
   automaticSyncRetryLimit: 3,
   automaticSyncRetryIntervalMinutes: 5,
+  remoteOrderSyncTimeoutSeconds: 180,
   chargeOrderExportDateMode: 'previous_day' as ChargeOrderExportDateMode,
   chargeOrderExportSpecificDate: null as string | null,
   chargeOrderExportTime: '00:00:01',
@@ -52,6 +53,7 @@ function applySettings(settings: RetentionSettings): void {
   form.withdrawOrderExportTime = settings.withdrawOrderExportTime
   form.automaticSyncRetryLimit = settings.automaticSyncRetryLimit
   form.automaticSyncRetryIntervalMinutes = settings.automaticSyncRetryIntervalMinutes
+  form.remoteOrderSyncTimeoutSeconds = settings.remoteOrderSyncTimeoutSeconds
   form.chargeOrderExportDateMode = settings.chargeOrderExportDateMode
   form.chargeOrderExportSpecificDate = settings.chargeOrderExportSpecificDate
   form.chargeOrderExportTime = settings.chargeOrderExportTime
@@ -139,6 +141,27 @@ onMounted(load)
                 :disabled="!isAdmin"
               />
               <span class="field-help">默认 30 天；到期后需重新登录。</span>
+            </el-form-item>
+          </div>
+        </el-form>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-heading">
+          <h2>远端订单同步超时</h2>
+          <p>适用于充值、提现、转盘和评分审核订单的远端读取与 Excel 下载；不影响盘口连接测试。</p>
+        </div>
+        <el-form label-position="top">
+          <div class="form-grid">
+            <el-form-item label="请求超时（秒）">
+              <el-input-number
+                v-model="form.remoteOrderSyncTimeoutSeconds"
+                :min="30"
+                :max="600"
+                :precision="0"
+                :disabled="!isAdmin"
+              />
+              <span class="field-help">默认 180 秒；连接建立仍最多等待 10 秒。新同步任务会使用保存后的值。</span>
             </el-form-item>
           </div>
         </el-form>

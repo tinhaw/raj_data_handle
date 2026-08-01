@@ -87,6 +87,7 @@ export interface RetentionSettings {
   withdrawOrderExportTime: string
   automaticSyncRetryLimit: number
   automaticSyncRetryIntervalMinutes: number
+  remoteOrderSyncTimeoutSeconds: number
   chargeOrderRefreshIntervalHours: number
   chargeOrderRefreshPageSize: ChargeOrderRefreshPageSize
   chargeOrderQueryRange: ChargeOrderQueryRange

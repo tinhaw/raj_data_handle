@@ -11,6 +11,7 @@ export type RetentionSettingsUpdate = Pick<
   | 'withdrawOrderExportTime'
   | 'automaticSyncRetryLimit'
   | 'automaticSyncRetryIntervalMinutes'
+  | 'remoteOrderSyncTimeoutSeconds'
   | 'chargeOrderExportDateMode'
   | 'chargeOrderExportSpecificDate'
   | 'chargeOrderExportTime'

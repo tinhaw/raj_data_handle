@@ -97,6 +97,7 @@ class _Claim:
     query_range: str | None
     page_size: int
     sync_run_id: str
+    timeout_seconds: int
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -513,6 +514,10 @@ async def _claim_due(
             query_range=manual_query_range if manual else None,
             page_size=retention.spin_order_refresh_page_size,
             sync_run_id=sync_run.id,
+            timeout_seconds=(
+                retention.remote_order_sync_timeout_seconds
+                or settings.remote_order_sync_timeout_seconds
+            ),
         )
     await session.commit()
     return None
@@ -861,6 +866,7 @@ async def _execute(
             password=credentials["password"],
             totp_secret=credentials["totp_secret"],
             page_size=claim.page_size,
+            timeout_seconds=claim.timeout_seconds,
         ) as client:
             sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
             if sync_run is not None:

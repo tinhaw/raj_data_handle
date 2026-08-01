@@ -66,6 +66,11 @@ class RetentionSettingsResponse(BaseModel):
         le=1440,
         alias="automaticSyncRetryIntervalMinutes",
     )
+    remote_order_sync_timeout_seconds: int = Field(
+        ge=30,
+        le=600,
+        alias="remoteOrderSyncTimeoutSeconds",
+    )
     charge_order_refresh_interval_hours: int = Field(
         ge=1,
         le=24,
@@ -154,6 +159,12 @@ class RetentionSettingsUpdateRequest(BaseModel):
         ge=1,
         le=1440,
         alias="automaticSyncRetryIntervalMinutes",
+    )
+    remote_order_sync_timeout_seconds: int | None = Field(
+        default=None,
+        ge=30,
+        le=600,
+        alias="remoteOrderSyncTimeoutSeconds",
     )
     charge_order_refresh_interval_hours: int | None = Field(
         default=None,

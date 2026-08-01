@@ -72,6 +72,7 @@ class _RefreshClaim:
     window_end: datetime
     sync_run_id: str
     query_range: str | None
+    timeout_seconds: int
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -423,6 +424,10 @@ async def _claim_due(
             window_end=window_end,
             sync_run_id=sync_run.id,
             query_range=requested_query_range if manual_requested else None,
+            timeout_seconds=(
+                retention.remote_order_sync_timeout_seconds
+                or settings.remote_order_sync_timeout_seconds
+            ),
         )
     await session.commit()
     return None
@@ -692,6 +697,7 @@ async def _execute(
             username=credentials["username"],
             password=credentials["password"],
             totp_secret=credentials["totp_secret"],
+            timeout_seconds=claim.timeout_seconds,
         ) as client:
             sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
             if sync_run is not None:

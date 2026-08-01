@@ -81,6 +81,7 @@ class _RefreshClaim:
     requested_query_range: str
     automatic: bool
     sync_run_id: str
+    timeout_seconds: int
 
 
 def _is_missing_refresh_schema(error: OperationalError | ProgrammingError) -> bool:
@@ -438,6 +439,10 @@ async def _claim_due(
             requested_query_range=requested_query_range,
             automatic=not manual_requested,
             sync_run_id=sync_run.id,
+            timeout_seconds=(
+                retention.remote_order_sync_timeout_seconds
+                or settings.remote_order_sync_timeout_seconds
+            ),
         )
     await session.commit()
     return None
@@ -865,6 +870,7 @@ async def _execute(
             username=credentials["username"],
             password=credentials["password"],
             totp_secret=credentials["totp_secret"],
+            timeout_seconds=claim.timeout_seconds,
         ) as client:
             sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
             if sync_run is not None:

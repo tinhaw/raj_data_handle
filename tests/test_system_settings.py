@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime, time
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from apps.api.routers.system_settings import _response
@@ -40,6 +40,7 @@ def test_order_export_time_defaults_preserve_the_staggered_schedule() -> None:
     assert settings.withdraw_order_export_time == time(0, 5, 1)
     assert settings.automatic_sync_retry_limit == 3
     assert settings.automatic_sync_retry_interval_minutes == 5
+    assert settings.remote_order_sync_timeout_seconds == 180
 
     with pytest.raises(ValidationError, match="timezone or UTC offset"):
         _settings(charge_order_export_time="01:02:03+05:30")
@@ -108,6 +109,28 @@ def test_automatic_sync_retry_settings_are_bounded() -> None:
         )
 
 
+def test_remote_order_sync_timeout_setting_is_bounded() -> None:
+    payload = RetentionSettingsUpdateRequest(
+        uploadedFileRetentionDays=3,
+        resultRetentionDays=30,
+        remoteCacheRetentionDays=30,
+        remoteOrderSyncTimeoutSeconds=240,
+        sessionTtlDays=30,
+    )
+
+    assert payload.remote_order_sync_timeout_seconds == 240
+
+    for invalid_value in (29, 601):
+        with pytest.raises(ValidationError):
+            RetentionSettingsUpdateRequest(
+                uploadedFileRetentionDays=3,
+                resultRetentionDays=30,
+                remoteCacheRetentionDays=30,
+                remoteOrderSyncTimeoutSeconds=invalid_value,
+                sessionTtlDays=30,
+            )
+
+
 def test_spin_refresh_settings_use_safe_backfill_defaults() -> None:
     settings = _settings()
 
@@ -171,6 +194,7 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
         assert current.withdraw_order_export_time == time(0, 5, 1)
         assert current.automatic_sync_retry_limit == 3
         assert current.automatic_sync_retry_interval_minutes == 5
+        assert current.remote_order_sync_timeout_seconds == 180
         assert session_settings is not None
         assert session_settings.session_ttl_days == 30
 
@@ -186,6 +210,7 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
                 withdrawOrderExportTime="02:03:04",
                 automaticSyncRetryLimit=2,
                 automaticSyncRetryIntervalMinutes=15,
+                remoteOrderSyncTimeoutSeconds=240,
                 chargeOrderExportDateMode="specific_date",
                 chargeOrderExportSpecificDate="2026-07-28",
                 chargeOrderExportTime="01:02:03",
@@ -210,6 +235,7 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
     assert updated.withdraw_order_export_time == time(2, 3, 4)
     assert updated.automatic_sync_retry_limit == 2
     assert updated.automatic_sync_retry_interval_minutes == 15
+    assert updated.remote_order_sync_timeout_seconds == 240
     assert updated.charge_order_export_date_mode == "specific_date"
     assert updated.charge_order_export_specific_date == date(2026, 7, 28)
     assert updated.charge_order_export_time == time(1, 2, 3)
@@ -227,6 +253,8 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
     assert audit.metadata_json["current"]["automaticSyncRetryLimit"] == 2
     assert audit.metadata_json["previous"]["automaticSyncRetryIntervalMinutes"] == 5
     assert audit.metadata_json["current"]["automaticSyncRetryIntervalMinutes"] == 15
+    assert audit.metadata_json["previous"]["remoteOrderSyncTimeoutSeconds"] == 180
+    assert audit.metadata_json["current"]["remoteOrderSyncTimeoutSeconds"] == 240
     assert audit.metadata_json["current"]["withdrawOrderExportDateMode"] == "specific_date"
     assert audit.metadata_json["current"]["withdrawOrderExportSpecificDate"] == "2026-07-29"
     assert audit.metadata_json["current"]["withdrawOrderExportTime"] == "02:03:04"
@@ -234,6 +262,32 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
     assert audit.metadata_json["current"]["chargeOrderExportTime"] == "01:02:03"
     assert audit.metadata_json["previous"]["spinOrderRefreshIntervalHours"] == 2
     assert audit.metadata_json["current"]["spinOrderRefreshIntervalHours"] == 4
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_timeout_setting_uses_default_until_its_migration_is_applied() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    defaults = _settings()
+
+    async with factory() as session:
+        await get_retention_settings(session, defaults=defaults)
+
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "ALTER TABLE system_retention_settings "
+                "DROP COLUMN remote_order_sync_timeout_seconds"
+            )
+        )
+
+    async with factory() as session:
+        retention = await get_retention_settings(session, defaults=defaults)
+
+    assert retention.remote_order_sync_timeout_seconds == 180
     await engine.dispose()
 
 
@@ -264,6 +318,7 @@ def test_system_settings_response_exposes_withdraw_export_policy_in_camel_case()
     assert payload["chargeOrderExportTime"] == time(1, 2, 3)
     assert payload["automaticSyncRetryLimit"] == 3
     assert payload["automaticSyncRetryIntervalMinutes"] == 5
+    assert payload["remoteOrderSyncTimeoutSeconds"] == 180
     assert payload["spinOrderRefreshIntervalHours"] == 2
     assert payload["spinOrderRefreshPageSize"] == 100
     assert payload["spinOrderQueryRange"] == "previous_business_day_to_completed_slot"

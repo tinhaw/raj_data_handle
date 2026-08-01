@@ -16,6 +16,7 @@ from packages.domain.models import (
     DataSyncRunEvent,
     SecurityAuditLog,
     SourceConfig,
+    SystemRetentionSetting,
     WithdrawOrderSnapshot,
     WithdrawScoringSnapshot,
 )
@@ -32,10 +33,12 @@ from packages.domain.services.source_service import _scoring_api_credential_scop
 class FakeScoringReviewClient:
     events: list[tuple[str, str | None]] = []
     export_content = b""
+    timeout_seconds: list[float] = []
 
-    def __init__(self, *, base_url: str, api_key: str) -> None:
+    def __init__(self, *, base_url: str, api_key: str, timeout_seconds: float = 180.0) -> None:
         assert base_url == "https://score.rajwin.example/api"
         assert api_key == "srk_v1_test.secret"
+        FakeScoringReviewClient.timeout_seconds.append(timeout_seconds)
 
     async def __aenter__(self) -> FakeScoringReviewClient:
         return self
@@ -160,11 +163,19 @@ async def test_remote_scoring_sync_is_source_scoped_and_only_enriches_existing_o
         FakeScoringReviewClient,
     )
     FakeScoringReviewClient.events = []
+    FakeScoringReviewClient.timeout_seconds = []
     FakeScoringReviewClient.export_content = _scoring_export_content()
     async with factory() as session:
         session.add_all(
             [
                 _source(settings),
+                SystemRetentionSetting(
+                    id=1,
+                    uploaded_file_retention_days=3,
+                    result_retention_days=30,
+                    remote_cache_retention_days=30,
+                    remote_order_sync_timeout_seconds=240,
+                ),
                 WithdrawOrderSnapshot(
                     source_id="rajwin",
                     remote_order_id="case-1",
@@ -203,6 +214,7 @@ async def test_remote_scoring_sync_is_source_scoped_and_only_enriches_existing_o
     assert snapshots[0].score_review == "35"
     assert snapshots[0].review_summary == "允许保存的摘要"
     assert FakeScoringReviewClient.events == [("export", "2026-07-31T00:00:00+05:30")]
+    assert FakeScoringReviewClient.timeout_seconds == [240]
     assert audit is not None
     assert audit.metadata_json == {
         "sourceRows": 2,

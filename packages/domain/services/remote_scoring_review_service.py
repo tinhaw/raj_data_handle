@@ -14,6 +14,8 @@ from packages.domain.services.scoring_reviewed_cases_import_service import (
 )
 
 REVIEWED_CASES_EXPORT_PATH = "/external/v1/scoring-reviews/reviewed-cases/export"
+SCORING_REVIEW_CONNECT_TIMEOUT_SECONDS = 10.0
+SCORING_REVIEW_EXPORT_TIMEOUT_SECONDS = 180.0
 
 
 class RemoteScoringReviewError(ValueError):
@@ -23,11 +25,21 @@ class RemoteScoringReviewError(ValueError):
 class ScoringReviewRemoteClient:
     """Read reviewed cases only through the Excel export contract."""
 
-    def __init__(self, *, base_url: str, api_key: str) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        timeout_seconds: float = SCORING_REVIEW_EXPORT_TIMEOUT_SECONDS,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self._api_key = api_key
+        self._timeout_seconds = timeout_seconds
         self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=httpx.Timeout(
+                timeout_seconds,
+                connect=min(SCORING_REVIEW_CONNECT_TIMEOUT_SECONDS, timeout_seconds),
+            ),
             follow_redirects=False,
         )
 
@@ -70,9 +82,10 @@ class ScoringReviewRemoteClient:
                     "Accept": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 },
                 params=params,
-                # Workbook generation can take longer than an ordinary API
-                # probe; the external export contract calls for 180 seconds.
-                timeout=httpx.Timeout(180.0, connect=10.0),
+                timeout=httpx.Timeout(
+                    self._timeout_seconds,
+                    connect=min(SCORING_REVIEW_CONNECT_TIMEOUT_SECONDS, self._timeout_seconds),
+                ),
             ) as response:
                 if response.status_code < 200 or response.status_code >= 300:
                     raise RemoteScoringReviewError("评分审核 API 导出请求未成功。")

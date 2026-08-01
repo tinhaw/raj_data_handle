@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     # does not consume this limit; 0 means do not retry a failed window.
     automatic_sync_retry_limit: int = Field(default=3, ge=0, le=10)
     automatic_sync_retry_interval_minutes: int = Field(default=5, ge=1, le=1440)
+    remote_order_sync_timeout_seconds: int = Field(default=180, ge=30, le=600)
     charge_order_refresh_interval_hours: int = Field(default=1, ge=1, le=24)
     charge_order_refresh_page_size: int = Field(default=100)
     charge_order_query_range: Literal[

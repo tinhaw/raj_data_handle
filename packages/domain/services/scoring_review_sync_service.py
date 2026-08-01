@@ -31,6 +31,7 @@ from packages.domain.services.source_service import (
     _scoring_api_credential_scope,
     get_source,
 )
+from packages.domain.services.system_setting_service import get_retention_settings
 from packages.domain.services.withdraw_scoring_import_service import (
     WithdrawScoringCacheSchemaPendingError,
     WithdrawScoringImportError,
@@ -138,6 +139,7 @@ async def sync_scoring_reviewed_cases_from_remote(
     """
 
     current_settings = settings or get_settings()
+    retention = await get_retention_settings(session, defaults=current_settings)
     source = await get_source(session, source_id)
     if not source.enabled:
         raise ScoringReviewSyncError("所选盘口尚未启用，不能同步评分审核数据。")
@@ -199,6 +201,10 @@ async def sync_scoring_reviewed_cases_from_remote(
         async with ScoringReviewRemoteClient(
             base_url=source.scoring_api_base_url,
             api_key=api_key,
+            timeout_seconds=(
+                retention.remote_order_sync_timeout_seconds
+                or current_settings.remote_order_sync_timeout_seconds
+            ),
         ) as client:
             export_content = await client.export_reviewed_cases(
                 create_time_start=start_at,

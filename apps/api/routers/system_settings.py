@@ -50,6 +50,11 @@ def _response(
             if retention.automatic_sync_retry_interval_minutes is not None
             else 5
         ),
+        remoteOrderSyncTimeoutSeconds=(
+            retention.remote_order_sync_timeout_seconds
+            if retention.remote_order_sync_timeout_seconds is not None
+            else 180
+        ),
         chargeOrderRefreshIntervalHours=retention.charge_order_refresh_interval_hours or 1,
         chargeOrderRefreshPageSize=retention.charge_order_refresh_page_size or 100,
         chargeOrderQueryRange=retention.charge_order_query_range or "today",

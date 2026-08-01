@@ -36,6 +36,7 @@ def _is_missing_refresh_policy_column(
         or "withdraw_order_export_time" in message
         or "automatic_sync_retry_limit" in message
         or "automatic_sync_retry_interval_minutes" in message
+        or "remote_order_sync_timeout_seconds" in message
         or "spin_order_refresh_interval_hours" in message
         or "spin_order_refresh_page_size" in message
         or "spin_order_query_range" in message
@@ -45,7 +46,7 @@ def _is_missing_refresh_policy_column(
 
 async def _load_legacy_retention_row(
     session: AsyncSession,
-) -> tuple[object | None, bool, bool, bool, bool, bool, bool, bool, bool, bool]:
+) -> tuple[object | None, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]:
     """Read a settings row while refresh-policy migrations are pending.
 
     The ORM cannot select a model with a column that has not been migrated yet.
@@ -67,6 +68,7 @@ async def _load_legacy_retention_row(
             "charge_order_export_time, withdraw_order_export_date_mode, "
             "withdraw_order_export_specific_date, withdraw_order_export_time, "
             "automatic_sync_retry_limit, automatic_sync_retry_interval_minutes, "
+            "remote_order_sync_timeout_seconds, "
             "spin_order_refresh_interval_hours, spin_order_refresh_page_size, "
             "spin_order_query_range, ",
             True,
@@ -76,6 +78,28 @@ async def _load_legacy_retention_row(
             True,
             True,
             True,
+            True,
+            True,
+            True,
+        ),
+        (
+            "sync_log_retention_days, withdraw_order_query_range, "
+            "withdraw_order_refresh_page_size, charge_order_refresh_interval_hours, "
+            "charge_order_refresh_page_size, charge_order_query_range, "
+            "charge_order_export_date_mode, charge_order_export_specific_date, "
+            "charge_order_export_time, withdraw_order_export_date_mode, "
+            "withdraw_order_export_specific_date, withdraw_order_export_time, "
+            "automatic_sync_retry_limit, automatic_sync_retry_interval_minutes, "
+            "spin_order_refresh_interval_hours, spin_order_refresh_page_size, "
+            "spin_order_query_range, ",
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            False,
             True,
             True,
         ),
@@ -95,6 +119,7 @@ async def _load_legacy_retention_row(
             True,
             True,
             False,
+            False,
             True,
             True,
         ),
@@ -113,6 +138,7 @@ async def _load_legacy_retention_row(
             True,
             False,
             False,
+            False,
             True,
             True,
         ),
@@ -128,6 +154,7 @@ async def _load_legacy_retention_row(
             True,
             True,
             True,
+            False,
             False,
             False,
             True,
@@ -148,6 +175,7 @@ async def _load_legacy_retention_row(
             False,
             False,
             False,
+            False,
         ),
         (
             "withdraw_order_query_range, withdraw_order_refresh_page_size, "
@@ -162,11 +190,13 @@ async def _load_legacy_retention_row(
             False,
             False,
             False,
+            False,
         ),
         (
             "withdraw_order_query_range, withdraw_order_refresh_page_size, ",
             True,
             True,
+            False,
             False,
             False,
             False,
@@ -186,8 +216,9 @@ async def _load_legacy_retention_row(
             False,
             False,
             False,
+            False,
         ),
-        ("", False, False, False, False, False, False, False, False, False),
+        ("", False, False, False, False, False, False, False, False, False, False),
     )
     for (
         extra_columns,
@@ -198,6 +229,7 @@ async def _load_legacy_retention_row(
         has_withdraw_export_policy,
         has_export_time_policy,
         has_retry_policy,
+        has_timeout_policy,
         has_spin_policy,
         has_sync_log_policy,
     ) in projections:
@@ -225,10 +257,11 @@ async def _load_legacy_retention_row(
             has_withdraw_export_policy,
             has_export_time_policy,
             has_retry_policy,
+            has_timeout_policy,
             has_spin_policy,
             has_sync_log_policy,
         )
-    return None, False, False, False, False, False, False, False, False, False
+    return None, False, False, False, False, False, False, False, False, False, False
 
 
 async def _load_retention_settings(
@@ -261,6 +294,7 @@ async def _load_retention_settings(
             has_withdraw_export_policy,
             has_export_time_policy,
             has_retry_policy,
+            has_timeout_policy,
             has_spin_policy,
             has_sync_log_policy,
         ) = await _load_legacy_retention_row(session)
@@ -310,6 +344,11 @@ async def _load_retention_settings(
                     int(legacy["automatic_sync_retry_interval_minutes"])
                     if has_retry_policy
                     else current_defaults.automatic_sync_retry_interval_minutes
+                ),
+                remote_order_sync_timeout_seconds=(
+                    int(legacy["remote_order_sync_timeout_seconds"])
+                    if has_timeout_policy
+                    else current_defaults.remote_order_sync_timeout_seconds
                 ),
                 charge_order_refresh_interval_hours=(
                     int(legacy["charge_order_refresh_interval_hours"])
@@ -382,6 +421,7 @@ async def _load_retention_settings(
         withdraw_order_export_time=current_defaults.withdraw_order_export_time,
         automatic_sync_retry_limit=current_defaults.automatic_sync_retry_limit,
         automatic_sync_retry_interval_minutes=current_defaults.automatic_sync_retry_interval_minutes,
+        remote_order_sync_timeout_seconds=current_defaults.remote_order_sync_timeout_seconds,
         charge_order_refresh_interval_hours=(current_defaults.charge_order_refresh_interval_hours),
         charge_order_refresh_page_size=current_defaults.charge_order_refresh_page_size,
         charge_order_query_range=current_defaults.charge_order_query_range,
@@ -439,6 +479,7 @@ async def update_retention_settings(
         "withdrawOrderExportTime": row.withdraw_order_export_time.isoformat(),
         "automaticSyncRetryLimit": row.automatic_sync_retry_limit,
         "automaticSyncRetryIntervalMinutes": row.automatic_sync_retry_interval_minutes,
+        "remoteOrderSyncTimeoutSeconds": row.remote_order_sync_timeout_seconds,
         "chargeOrderRefreshIntervalHours": row.charge_order_refresh_interval_hours,
         "chargeOrderRefreshPageSize": row.charge_order_refresh_page_size,
         "chargeOrderQueryRange": row.charge_order_query_range,
@@ -478,6 +519,8 @@ async def update_retention_settings(
         row.automatic_sync_retry_limit = payload.automatic_sync_retry_limit
     if payload.automatic_sync_retry_interval_minutes is not None:
         row.automatic_sync_retry_interval_minutes = payload.automatic_sync_retry_interval_minutes
+    if payload.remote_order_sync_timeout_seconds is not None:
+        row.remote_order_sync_timeout_seconds = payload.remote_order_sync_timeout_seconds
     if payload.charge_order_refresh_interval_hours is not None:
         row.charge_order_refresh_interval_hours = payload.charge_order_refresh_interval_hours
     if payload.charge_order_refresh_page_size is not None:
@@ -533,6 +576,7 @@ async def update_retention_settings(
                     "withdrawOrderExportTime": row.withdraw_order_export_time.isoformat(),
                     "automaticSyncRetryLimit": row.automatic_sync_retry_limit,
                     "automaticSyncRetryIntervalMinutes": row.automatic_sync_retry_interval_minutes,
+                    "remoteOrderSyncTimeoutSeconds": row.remote_order_sync_timeout_seconds,
                     "chargeOrderRefreshIntervalHours": row.charge_order_refresh_interval_hours,
                     "chargeOrderRefreshPageSize": row.charge_order_refresh_page_size,
                     "chargeOrderQueryRange": row.charge_order_query_range,
