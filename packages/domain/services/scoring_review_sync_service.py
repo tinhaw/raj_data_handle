@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from math import ceil
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -14,10 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from packages.common.security import SecurityValidationError, decrypt_credentials
 from packages.common.settings import Settings, get_settings
 from packages.domain.services.data_sync_run_service import (
-    SyncRunMetrics,
     add_sync_run_event,
     cancel_sync_run,
-    complete_sync_run,
     create_sync_run,
     fail_sync_run,
     get_sync_run_for_update,
@@ -25,6 +22,10 @@ from packages.domain.services.data_sync_run_service import (
 from packages.domain.services.remote_scoring_review_service import (
     RemoteScoringReviewError,
     ScoringReviewRemoteClient,
+)
+from packages.domain.services.scoring_reviewed_cases_import_service import (
+    ScoringReviewedCasesImportError,
+    parse_scoring_reviewed_cases_export,
 )
 from packages.domain.services.source_service import (
     _scoring_api_credential_scope,
@@ -37,13 +38,6 @@ from packages.domain.services.withdraw_scoring_import_service import (
     import_scoring_reviewed_cases,
 )
 
-# The reviewed-cases endpoint includes source-owned diagnostic objects that
-# are intentionally discarded by this application.  In production 500 rows
-# can exceed our 8 MiB response guard even though the allowlisted projection
-# is small, so use a smaller page that has been verified against the source.
-SCORING_REVIEW_SYNC_PAGE_SIZE = 250
-MAX_SCORING_REVIEW_SYNC_PAGES = 100
-MAX_SCORING_REVIEW_SYNC_CASES = MAX_SCORING_REVIEW_SYNC_PAGES * SCORING_REVIEW_SYNC_PAGE_SIZE
 WALL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
@@ -136,11 +130,11 @@ async def sync_scoring_reviewed_cases_from_remote(
     settings: Settings | None = None,
     trigger_type: Literal["automatic", "manual"] = "manual",
 ) -> WithdrawScoringImportResult:
-    """Fetch one bounded source/date range then atomically persist its projection.
+    """Export one source/date range then atomically persist its projection.
 
-    The remote API is never exposed to the browser.  All pages are read before
-    any local cache mutation, and a changing or incomplete remote result aborts
-    the sync instead of partially overwriting a score supplement.
+    The remote API is never exposed to the browser.  The source-owned workbook
+    is downloaded only into a bounded in-memory buffer and immediately parsed
+    with the shared strict Excel whitelist before any local cache mutation.
     """
 
     current_settings = settings or get_settings()
@@ -182,15 +176,15 @@ async def sync_scoring_reviewed_cases_from_remote(
             requested_at=requested_at,
             window_start_utc=start_at.astimezone(UTC),
             window_end_utc=end_at.astimezone(UTC),
-            page_size=SCORING_REVIEW_SYNC_PAGE_SIZE,
             status="running",
+            metadata={"transport": "excel_export"},
         )
         await add_sync_run_event(
             session,
             run=sync_run,
-            event_type="scoring_remote_fetch_started",
+            event_type="scoring_remote_export_started",
             status="running",
-            message="开始读取评分审核远端数据。",
+            message="开始导出评分审核远端 Excel。",
         )
         await session.commit()
     except (OperationalError, ProgrammingError) as exc:
@@ -206,60 +200,45 @@ async def sync_scoring_reviewed_cases_from_remote(
             base_url=source.scoring_api_base_url,
             api_key=api_key,
         ) as client:
-            first_page = await client.fetch_reviewed_cases(
-                page=1,
-                page_size=SCORING_REVIEW_SYNC_PAGE_SIZE,
+            export_content = await client.export_reviewed_cases(
                 create_time_start=start_at,
                 create_time_end=end_at,
             )
-            if first_page.total > MAX_SCORING_REVIEW_SYNC_CASES:
-                raise ScoringReviewSyncError(
-                    "评分审核结果过多，请缩小创建时间范围后再同步。"
-                )
-            expected_pages = (
-                ceil(first_page.total / first_page.page_size) if first_page.total else 0
-            )
-            if expected_pages > MAX_SCORING_REVIEW_SYNC_PAGES:
-                raise ScoringReviewSyncError(
-                    "评分审核结果分页过多，请缩小创建时间范围后再同步。"
-                )
-            cases = list(first_page.cases)
-            for page_number in range(2, expected_pages + 1):
-                page = await client.fetch_reviewed_cases(
-                    page=page_number,
-                    page_size=first_page.page_size,
-                    create_time_start=start_at,
-                    create_time_end=end_at,
-                )
-                if page.total != first_page.total or page.page_size != first_page.page_size:
-                    raise ScoringReviewSyncError("评分审核远端数据在同步期间发生变化，请重试。")
-                cases.extend(page.cases)
-        if len(cases) != first_page.total:
-            raise ScoringReviewSyncError("评分审核远端分页结果不完整，请稍后重试。")
-        case_ids = [case.withdraw_order_id for case in cases]
-        if len(case_ids) != len(set(case_ids)):
-            raise ScoringReviewSyncError("评分审核远端分页结果包含重复案件号，请稍后重试。")
 
+        sync_run = await get_sync_run_for_update(session, run_id=sync_run.id)
+        if sync_run is not None:
+            # Only the byte length is retained for operational diagnosis; the
+            # source workbook itself remains in memory and is discarded after
+            # the strict projection below.
+            sync_run.input_size_bytes = len(export_content)
+            await add_sync_run_event(
+                session,
+                run=sync_run,
+                event_type="scoring_remote_export_fetched",
+                status="running",
+                message="评分审核远端 Excel 导出完成，准备校验。",
+                metadata={"exportBytes": len(export_content)},
+            )
+        await session.commit()
+
+        parsed_export = parse_scoring_reviewed_cases_export(export_content)
         sync_run = await get_sync_run_for_update(session, run_id=sync_run.id)
         if sync_run is not None:
             await add_sync_run_event(
                 session,
                 run=sync_run,
-                event_type="scoring_remote_fetch_fetched",
+                event_type="scoring_remote_export_parsed",
                 status="running",
-                message="评分审核远端数据读取完成，准备补充本地提现订单。",
-                metadata={
-                    "remoteTotal": first_page.total,
-                    "fetchedPages": expected_pages,
-                },
+                message="评分审核 Excel 校验完成，准备补充本地提现订单。",
+                metadata={"sourceRowCount": parsed_export.source_row_count},
             )
         await session.commit()
 
         result = await import_scoring_reviewed_cases(
             session,
             source_id=source.source_id,
-            cases=cases,
-            source_row_count=first_page.total,
+            cases=parsed_export.cases,
+            source_row_count=parsed_export.source_row_count,
             actor_user_id=actor_user_id,
             audit_action=(
                 "withdraw_scoring.auto_sync"
@@ -269,28 +248,12 @@ async def sync_scoring_reviewed_cases_from_remote(
             audit_metadata={
                 "createTimeStart": create_time_start,
                 "createTimeEnd": create_time_end,
-                "remotePages": expected_pages,
+                "transport": "excel_export",
+                "exportBytes": len(export_content),
             },
+            sync_run_id=sync_run.id,
+            remote_total=parsed_export.source_row_count,
         )
-        sync_run = await get_sync_run_for_update(session, run_id=sync_run.id)
-        if sync_run is not None:
-            await complete_sync_run(
-                session,
-                run=sync_run,
-                metrics=SyncRunMetrics(
-                    remote_total=first_page.total,
-                    export_row_count=result.source_row_count,
-                    fetched_pages=expected_pages,
-                    imported_count=result.source_row_count,
-                    created_count=result.created_count,
-                    updated_count=result.updated_count,
-                    duplicate_count=0,
-                    matched_count=result.matched_count,
-                    unmatched_count=result.unmatched_count,
-                ),
-                metadata={"remotePages": expected_pages},
-            )
-        await session.commit()
         return result
     except asyncio.CancelledError:
         await _record_remote_sync_cancelled(session, sync_run_id=sync_run.id)
@@ -301,6 +264,14 @@ async def sync_scoring_reviewed_cases_from_remote(
             sync_run_id=sync_run.id,
             error_code="remote_scoring_review_sync_failed",
             error_message="评分审核远端数据读取失败，请稍后重试。",
+        )
+        raise ScoringReviewSyncError(str(exc)) from exc
+    except ScoringReviewedCasesImportError as exc:
+        await _record_remote_sync_failure(
+            session,
+            sync_run_id=sync_run.id,
+            error_code="remote_scoring_review_sync_failed",
+            error_message="评分审核远端导出或校验未完成，请稍后重试。",
         )
         raise ScoringReviewSyncError(str(exc)) from exc
     except (ScoringReviewSyncError, WithdrawScoringImportError):

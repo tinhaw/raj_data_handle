@@ -364,17 +364,20 @@ async def import_scoring_reviewed_cases(
     audit_action: str = "withdraw_scoring.import",
     audit_metadata: dict[str, object] | None = None,
     sync_run_id: str | None = None,
+    remote_total: int | None = None,
 ) -> WithdrawScoringImportResult:
     """Atomically persist validated score cases from an approved transport.
 
-    Both the workbook parser and the scoring-review API are intentionally
-    reduced to the same :class:`ScoringReviewedCase` projection before this
-    function runs.  This prevents a new transport from becoming a route for
-    master withdrawal fields or arbitrary remote JSON to enter the cache.
+    Both manual and remote workbooks are intentionally reduced to the same
+    :class:`ScoringReviewedCase` projection before this function runs.  This
+    prevents a new transport from becoming a route for master withdrawal
+    fields or arbitrary remote data to enter the cache.
     """
 
     if source_row_count != len(cases):
         raise WithdrawScoringImportError("评分审核数据行数与案件数不一致。")
+    if remote_total is not None and remote_total != source_row_count:
+        raise WithdrawScoringImportError("评分审核远端总数与导出行数不一致。")
     case_ids = [case.withdraw_order_id for case in cases]
     if len(case_ids) != len(set(case_ids)):
         raise WithdrawScoringImportError("评分审核数据包含重复案件号。")
@@ -462,6 +465,7 @@ async def import_scoring_reviewed_cases(
                 session,
                 run=sync_run,
                 metrics=SyncRunMetrics(
+                    remote_total=remote_total,
                     export_row_count=source_row_count,
                     imported_count=source_row_count,
                     created_count=created_count,

@@ -434,7 +434,7 @@ async def test_source_scoring_api_connection(
     source_id: str,
     actor_user_id: int,
 ) -> tuple[SourceConfig, str]:
-    """Run the external API's harmless one-row read as an independent test."""
+    """Validate the external API's low-volume Excel export independently."""
 
     source = await get_source(session, source_id)
     if not source.scoring_api_base_url or not source.encrypted_scoring_api_key:
