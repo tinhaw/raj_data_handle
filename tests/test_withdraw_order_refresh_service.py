@@ -12,6 +12,7 @@ from packages.domain.models import (
     Base,
     DataSyncRun,
     DataSyncRunEvent,
+    SecurityAuditLog,
     SourceConfig,
     SystemRetentionSetting,
     WithdrawOrderRefreshState,
@@ -359,6 +360,78 @@ async def test_withdraw_refresh_automatically_syncs_scores_for_a_tested_source(
             "trigger_type": "automatic",
         }
     ]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_scoring_sync_failure_does_not_retry_a_successful_withdraw_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    engine, factory = await _database()
+    source = _source(settings)
+    source.scoring_api_base_url = "https://scoring.rajwin.example/api"
+    source.encrypted_scoring_api_key = "configured-key"
+    source.scoring_api_last_test_status = "passed"
+    FakeWithdrawClient.statuses = [{"code": "success", "label": "代付成功"}]
+    FakeWithdrawClient.export_outcomes = {
+        source.base_url or "": WithdrawFetchResult(
+            orders=[_order("scoring-failure")],
+            fetched_pages=1,
+            remote_total=1,
+            complete=True,
+            export_row_count=1,
+        )
+    }
+    FakeWithdrawClient.events = []
+
+    async def failing_scoring_sync(**_: object) -> WithdrawScoringImportResult:
+        raise RuntimeError("upstream scoring API unavailable")
+
+    monkeypatch.setattr(
+        "packages.domain.services.withdraw_order_refresh_service.RajAdminWithdrawClient",
+        FakeWithdrawClient,
+    )
+    monkeypatch.setattr(
+        "packages.domain.services.withdraw_order_refresh_service.sync_scoring_reviewed_cases_from_remote",
+        failing_scoring_sync,
+    )
+    async with factory() as session:
+        session.add_all([source, _retention()])
+        await session.commit()
+        result = await run_due_withdraw_order_refreshes(
+            session,
+            now=datetime(2026, 7, 30, 18, 35, 1, tzinfo=UTC),
+            settings=settings,
+        )
+        state = await session.get(WithdrawOrderRefreshState, "rajwin")
+        withdraw_runs = list(
+            await session.scalars(
+                select(DataSyncRun).where(DataSyncRun.business_type == "withdraw_orders")
+            )
+        )
+        audit = await session.scalar(
+            select(SecurityAuditLog).where(
+                SecurityAuditLog.action == "withdraw_scoring.auto_sync_failed"
+            )
+        )
+
+    assert [item.status for item in result] == ["succeeded"]
+    assert FakeWithdrawClient.events == [
+        ("statuses", "https://rajwin.example.test"),
+        (
+            "export",
+            {
+                "base_url": "https://rajwin.example.test",
+                "create_start": "2026-07-30 00:00:00",
+                "create_end": "2026-07-30 23:59:59",
+            },
+        ),
+    ]
+    assert state is not None
+    assert (state.status, state.last_failed_at, state.last_error) == ("succeeded", None, None)
+    assert [(run.status, run.remote_total) for run in withdraw_runs] == [("succeeded", 1)]
+    assert audit is not None
     await engine.dispose()
 
 

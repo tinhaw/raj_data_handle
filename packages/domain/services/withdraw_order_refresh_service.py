@@ -713,27 +713,18 @@ async def _failure(
     return WithdrawOrderRefreshRunResult(claim.source_id, "failed")
 
 
-async def _scoring_sync_failure(
+async def _record_scoring_sync_failure(
     session: AsyncSession,
     *,
     claim: _RefreshClaim,
-    finished_at: datetime,
-) -> WithdrawOrderRefreshRunResult:
-    """Mark a post-refresh scoring failure retriable without leaking API details."""
+) -> None:
+    """Audit a score-sync failure without invalidating a saved withdrawal refresh.
 
-    state = await session.get(
-        WithdrawOrderRefreshState,
-        claim.source_id,
-        with_for_update=True,
-        populate_existing=True,
-    )
-    if state is None or _as_utc(state.last_started_at) != claim.started_at:
-        return WithdrawOrderRefreshRunResult(claim.source_id, state.status if state else "failed")
-    state.status = "failed"
-    state.last_failed_at = finished_at
-    state.last_error = "提现订单已刷新，但评分审核订单同步失败，将稍后重试。"
-    state.lease_expires_at = None
-    state.updated_at = finished_at
+    The scoring run has its own durable terminal record.  Marking the parent
+    withdrawal state failed would immediately repeat the entire remote Excel
+    export, even though that export and its local cache have already succeeded.
+    """
+
     await write_audit(
         session,
         action="withdraw_scoring.auto_sync_failed",
@@ -750,7 +741,6 @@ async def _scoring_sync_failure(
         },
     )
     await session.commit()
-    return WithdrawOrderRefreshRunResult(claim.source_id, "failed")
 
 
 async def _sync_scoring_reviews_after_withdraw_refresh(
@@ -786,10 +776,9 @@ async def _sync_scoring_reviews_after_withdraw_refresh(
         )
     except asyncio.CancelledError:
         await session.rollback()
-        await _scoring_sync_failure(
+        await _record_scoring_sync_failure(
             session,
             claim=claim,
-            finished_at=datetime.now(UTC),
         )
         raise
     except Exception:
@@ -797,10 +786,9 @@ async def _sync_scoring_reviews_after_withdraw_refresh(
         # only safe business errors.  Do not persist or log an exception text,
         # because a transport failure could include upstream request details.
         await session.rollback()
-        return await _scoring_sync_failure(
+        await _record_scoring_sync_failure(
             session,
             claim=claim,
-            finished_at=datetime.now(UTC),
         )
     return withdraw_result
 

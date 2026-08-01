@@ -23,7 +23,6 @@ from packages.domain.services.data_sync_run_service import (
     get_sync_run_for_update,
 )
 from packages.domain.services.remote_scoring_review_service import (
-    MAX_SCORING_REVIEW_PAGE_SIZE,
     RemoteScoringReviewError,
     ScoringReviewRemoteClient,
 )
@@ -38,8 +37,13 @@ from packages.domain.services.withdraw_scoring_import_service import (
     import_scoring_reviewed_cases,
 )
 
-MAX_SCORING_REVIEW_SYNC_PAGES = 50
-MAX_SCORING_REVIEW_SYNC_CASES = MAX_SCORING_REVIEW_SYNC_PAGES * MAX_SCORING_REVIEW_PAGE_SIZE
+# The reviewed-cases endpoint includes source-owned diagnostic objects that
+# are intentionally discarded by this application.  In production 500 rows
+# can exceed our 8 MiB response guard even though the allowlisted projection
+# is small, so use a smaller page that has been verified against the source.
+SCORING_REVIEW_SYNC_PAGE_SIZE = 250
+MAX_SCORING_REVIEW_SYNC_PAGES = 100
+MAX_SCORING_REVIEW_SYNC_CASES = MAX_SCORING_REVIEW_SYNC_PAGES * SCORING_REVIEW_SYNC_PAGE_SIZE
 WALL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
@@ -178,7 +182,7 @@ async def sync_scoring_reviewed_cases_from_remote(
             requested_at=requested_at,
             window_start_utc=start_at.astimezone(UTC),
             window_end_utc=end_at.astimezone(UTC),
-            page_size=MAX_SCORING_REVIEW_PAGE_SIZE,
+            page_size=SCORING_REVIEW_SYNC_PAGE_SIZE,
             status="running",
         )
         await add_sync_run_event(
@@ -204,7 +208,7 @@ async def sync_scoring_reviewed_cases_from_remote(
         ) as client:
             first_page = await client.fetch_reviewed_cases(
                 page=1,
-                page_size=MAX_SCORING_REVIEW_PAGE_SIZE,
+                page_size=SCORING_REVIEW_SYNC_PAGE_SIZE,
                 create_time_start=start_at,
                 create_time_end=end_at,
             )

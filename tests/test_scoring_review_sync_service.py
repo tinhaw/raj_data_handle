@@ -183,7 +183,7 @@ async def test_remote_scoring_sync_is_source_scoped_and_only_enriches_existing_o
     assert [(row.source_id, row.withdraw_order_id) for row in snapshots] == [("rajwin", "case-1")]
     assert snapshots[0].score_review == "35"
     assert snapshots[0].review_summary == "允许保存的摘要"
-    assert FakeScoringReviewClient.events == [(1, 500, "2026-07-31T00:00:00+05:30")]
+    assert FakeScoringReviewClient.events == [(1, 250, "2026-07-31T00:00:00+05:30")]
     assert audit is not None
     assert audit.metadata_json == {
         "sourceRows": 2,
