@@ -12,6 +12,8 @@ from packages.common.settings import Settings
 from packages.domain.models import (
     Base,
     DataDictionaryEntry,
+    DataSyncRun,
+    DataSyncRunEvent,
     SourceConfig,
     SpinOrderSnapshot,
     SystemRetentionSetting,
@@ -390,6 +392,15 @@ async def test_two_hour_worker_refreshes_all_orders_and_minimal_uid_channel_cach
         outcomes = await run_due_spin_order_refreshes(session, now=run_at, settings=settings)
         snapshot = await session.scalar(select(SpinOrderSnapshot))
         channel_cache = await session.scalar(select(UserChannelCache))
+        sync_run = await session.scalar(select(DataSyncRun))
+        sync_events = list(
+            await session.scalars(
+                select(DataSyncRunEvent).order_by(
+                    DataSyncRunEvent.occurred_at,
+                    DataSyncRunEvent.id,
+                )
+            )
+        )
 
     assert [outcome.status for outcome in outcomes] == ["succeeded"]
     assert FakeSpinClient.calls[0]["create_start"] == "2026-07-29 00:00:00"
@@ -403,6 +414,27 @@ async def test_two_hour_worker_refreshes_all_orders_and_minimal_uid_channel_cach
         "source-a",
         "resolved",
     )
+    assert sync_run is not None
+    assert (sync_run.business_type, sync_run.trigger_type, sync_run.status) == (
+        "spin_orders",
+        "automatic",
+        "succeeded",
+    )
+    assert (
+        sync_run.remote_total,
+        sync_run.cached_total,
+        sync_run.fetched_pages,
+        sync_run.resolved_uid_count,
+        sync_run.unresolved_uid_count,
+    ) == (1, 1, 5, 1, 0)
+    assert [event.event_type for event in sync_events] == [
+        "running",
+        "remote_fetch_started",
+        "remote_fetch_completed",
+        "uid_channel_resolution_started",
+        "uid_channel_resolution_completed",
+        "completed",
+    ]
     await engine.dispose()
 
 

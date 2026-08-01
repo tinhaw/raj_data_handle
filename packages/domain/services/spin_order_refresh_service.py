@@ -20,6 +20,17 @@ from packages.domain.models import (
 )
 from packages.domain.services.auth_service import write_audit
 from packages.domain.services.data_dictionary_service import ensure_spin_order_statuses
+from packages.domain.services.data_sync_run_service import (
+    SyncRunMetrics,
+    add_sync_run_event,
+    cancel_sync_run,
+    complete_sync_run,
+    create_sync_run,
+    fail_sync_run,
+    get_sync_run_for_update,
+    mark_sync_run_running,
+    supersede_sync_run,
+)
 from packages.domain.services.remote_spin_service import RajAdminSpinClient, SpinFetchResult
 from packages.domain.services.source_service import get_source
 from packages.domain.services.spin_order_service import SPIN_CONFIG_LABELS
@@ -83,6 +94,7 @@ class _Claim:
     window_end: datetime
     query_range: str | None
     page_size: int
+    sync_run_id: str
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -115,9 +127,21 @@ def _parse_wall_time(value: str | None, *, timezone_name: str) -> datetime | Non
 
 def _missing_schema(error: OperationalError | ProgrammingError) -> bool:
     message = str(error).lower()
-    return ("spin_order_snapshots" in message or "spin_order_refresh_states" in message) and (
-        "does not exist" in message or "no such table" in message
+    missing_table = (
+        "spin_order_snapshots" in message
+        or "spin_order_refresh_states" in message
+        or "data_sync_runs" in message
+        or "data_sync_run_events" in message
+    ) and ("does not exist" in message or "no such table" in message)
+    missing_pointer = (
+        "pending_sync_run_id" in message
+        or "active_sync_run_id" in message
+    ) and (
+        "does not exist" in message
+        or "no such table" in message
+        or "no such column" in message
     )
+    return missing_table or missing_pointer
 
 
 async def _state(
@@ -289,7 +313,8 @@ async def queue_spin_order_refreshes(
     actor_user_id: int | None,
     now: datetime | None = None,
 ) -> SpinOrderRefreshQueueResult:
-    if query_range is not None and query_range not in SPIN_MANUAL_REFRESH_RANGES:
+    requested_query_range = query_range or "today"
+    if requested_query_range not in SPIN_MANUAL_REFRESH_RANGES:
         raise SpinOrderRefreshValidationError("不支持的转盘订单刷新时间范围。")
     requested_at = _now(now)
     if source_id:
@@ -314,8 +339,26 @@ async def queue_spin_order_refreshes(
         source_ids: list[str] = []
         for source in sources:
             state = await _state(session, source_id=source.source_id, now=requested_at)
+            if state.pending_sync_run_id:
+                pending_run = await get_sync_run_for_update(
+                    session,
+                    run_id=state.pending_sync_run_id,
+                )
+                if pending_run is not None and pending_run.status == "queued":
+                    await supersede_sync_run(session, run=pending_run, finished_at=requested_at)
             state.manual_request_at = requested_at
-            state.manual_query_range = query_range or "today"
+            state.manual_query_range = requested_query_range
+            queued_run = await create_sync_run(
+                session,
+                source=source,
+                business_type="spin_orders",
+                trigger_type="manual",
+                requested_by_user_id=actor_user_id,
+                requested_at=requested_at,
+                query_range=requested_query_range,
+                status="queued",
+            )
+            state.pending_sync_run_id = queued_run.id
             lease = _as_utc(state.lease_expires_at) or requested_at
             if state.status != "running" or lease <= requested_at:
                 state.status = "queued"
@@ -327,7 +370,7 @@ async def queue_spin_order_refreshes(
             actor_user_id=actor_user_id,
             target_type="spin_order_refresh",
             target_id=source_id or "all",
-            metadata={"sourceIds": source_ids, "queryRange": query_range or "today"},
+            metadata={"sourceIds": source_ids, "queryRange": requested_query_range},
         )
         await session.commit()
     except (OperationalError, ProgrammingError) as exc:
@@ -337,7 +380,7 @@ async def queue_spin_order_refreshes(
         raise SpinOrderRefreshValidationError(
             "转盘订单本地缓存正在初始化，请在数据库迁移完成后重试。"
         ) from exc
-    return SpinOrderRefreshQueueResult(source_ids, requested_at, query_range)
+    return SpinOrderRefreshQueueResult(source_ids, requested_at, requested_query_range)
 
 
 async def _claim_due(
@@ -375,10 +418,10 @@ async def _claim_due(
         )
         if not _due(state, now=now, window_end=automatic_end):
             continue
-        query_range = state.manual_query_range if manual else None
+        manual_query_range = state.manual_query_range or "today"
         window_start, window_end = (
             _manual_window(
-                query_range=query_range or "today",
+                query_range=manual_query_range,
                 timezone_name=source.business_timezone,
                 now=now,
             )
@@ -392,6 +435,49 @@ async def _claim_due(
         state.lease_expires_at = now + REFRESH_LEASE_DURATION
         state.last_error = None
         state.updated_at = now
+        if manual:
+            sync_run = (
+                await get_sync_run_for_update(session, run_id=state.pending_sync_run_id)
+                if state.pending_sync_run_id
+                else None
+            )
+            if sync_run is None or sync_run.status != "queued":
+                # A request created during a rolling release may not have a
+                # corresponding log row yet. Preserve the refresh and start a
+                # fully tracked manual run from this claim instead.
+                sync_run = await create_sync_run(
+                    session,
+                    source=source,
+                    business_type="spin_orders",
+                    trigger_type="manual",
+                    requested_at=now,
+                    query_range=manual_query_range,
+                    status="queued",
+                )
+            await mark_sync_run_running(
+                session,
+                run=sync_run,
+                started_at=now,
+                window_start_utc=window_start,
+                window_end_utc=window_end,
+                query_range=manual_query_range,
+                page_size=retention.spin_order_refresh_page_size,
+            )
+        else:
+            sync_run = await create_sync_run(
+                session,
+                source=source,
+                business_type="spin_orders",
+                trigger_type="automatic",
+                requested_at=now,
+                window_start_utc=window_start,
+                window_end_utc=window_end,
+                query_range=retention.spin_order_query_range,
+                page_size=retention.spin_order_refresh_page_size,
+                status="running",
+            )
+        state.pending_sync_run_id = None
+        state.active_sync_run_id = sync_run.id
         await session.commit()
         return _Claim(
             source_id=source.source_id,
@@ -402,8 +488,9 @@ async def _claim_due(
             started_at=now,
             window_start=window_start,
             window_end=window_end,
-            query_range=query_range,
+            query_range=manual_query_range if manual else None,
             page_size=retention.spin_order_refresh_page_size,
+            sync_run_id=sync_run.id,
         )
     await session.commit()
     return None
@@ -552,6 +639,7 @@ async def _persist_success(
     )
     if state is None or _as_utc(state.last_started_at) != claim.started_at:
         return SpinOrderRefreshRunResult(claim.source_id, "superseded")
+    sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
     await ensure_spin_order_statuses(session, source_id=claim.source_id, now=finished_at)
     by_id = {str(order["remote_order_id"]): order for order in fetched.orders}
     existing = await _existing_by_key(
@@ -561,6 +649,8 @@ async def _persist_success(
         values=list(by_id),
         field=SpinOrderSnapshot.remote_order_id,
     )
+    created_count = sum(1 for remote_order_id in by_id if remote_order_id not in existing)
+    updated_count = len(by_id) - created_count
     for remote_order_id, order in by_id.items():
         snapshot = existing.get(remote_order_id)
         if snapshot is None:
@@ -580,6 +670,7 @@ async def _persist_success(
             now=finished_at,
         )
     await session.flush()
+    deleted_count = 0
     if fetched.complete:
         rows = list(
             await session.scalars(
@@ -594,6 +685,7 @@ async def _persist_success(
         for row in rows:
             if row.remote_order_id not in by_id:
                 await session.delete(row)
+                deleted_count += 1
     cached_total = int(
         await session.scalar(
             select(func.count())
@@ -617,11 +709,31 @@ async def _persist_success(
     state.last_unresolved_uid_count = unresolved_uid_count
     state.last_error = None
     state.lease_expires_at = None
+    state.active_sync_run_id = None
     manual_requested_at = _as_utc(state.manual_request_at)
     if manual_requested_at is not None and manual_requested_at <= claim.started_at:
         state.manual_request_at = None
         state.manual_query_range = None
     state.updated_at = finished_at
+    if sync_run is not None:
+        await complete_sync_run(
+            session,
+            run=sync_run,
+            complete=fetched.complete,
+            metrics=SyncRunMetrics(
+                remote_total=fetched.remote_total,
+                cached_total=cached_total,
+                fetched_pages=fetched.fetched_pages,
+                imported_count=len(by_id),
+                created_count=created_count,
+                updated_count=updated_count,
+                duplicate_count=fetched.duplicate_count,
+                resolved_uid_count=resolved_uid_count,
+                unresolved_uid_count=unresolved_uid_count,
+            ),
+            finished_at=finished_at,
+            metadata={"deletedCount": deleted_count},
+        )
     await session.commit()
     return SpinOrderRefreshRunResult(
         claim.source_id,
@@ -642,13 +754,67 @@ async def _failure(
     )
     if state is None or _as_utc(state.last_started_at) != claim.started_at:
         return SpinOrderRefreshRunResult(claim.source_id, state.status if state else "failed")
+    sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
     state.status = "failed"
     state.last_failed_at = finished_at
     state.last_error = "远端转盘订单列表读取或校验失败，请稍后重试。"
     state.lease_expires_at = None
+    state.active_sync_run_id = None
+    if (
+        _as_utc(state.manual_request_at) is not None
+        and _as_utc(state.manual_request_at) <= claim.started_at
+    ):
+        state.manual_request_at = None
+        state.manual_query_range = None
     state.updated_at = finished_at
+    if sync_run is not None:
+        await fail_sync_run(
+            session,
+            run=sync_run,
+            error_code="remote_spin_sync_failed",
+            error_message=state.last_error,
+            finished_at=finished_at,
+        )
     await session.commit()
     return SpinOrderRefreshRunResult(claim.source_id, "failed")
+
+
+async def _cancelled(
+    session: AsyncSession,
+    *,
+    claim: _Claim,
+    cancelled_at: datetime,
+) -> None:
+    """Close the run safely and preserve an interrupted manual request."""
+
+    state = await session.get(
+        SpinOrderRefreshState,
+        claim.source_id,
+        with_for_update=True,
+        populate_existing=True,
+    )
+    if state is None or _as_utc(state.last_started_at) != claim.started_at:
+        return
+    sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
+    if sync_run is not None:
+        await cancel_sync_run(
+            session,
+            run=sync_run,
+            finished_at=cancelled_at,
+            message="后台工作进程在转盘订单同步完成前停止。",
+        )
+    state.status = "queued"
+    state.active_sync_run_id = None
+    state.lease_expires_at = None
+    state.last_error = "后台同步在工作进程停止前中断。"
+    if claim.query_range is not None and (
+        _as_utc(state.manual_request_at) is None
+        or _as_utc(state.manual_request_at) <= claim.started_at
+    ):
+        state.manual_request_at = cancelled_at
+        state.manual_query_range = claim.query_range
+    state.updated_at = cancelled_at
+    await session.commit()
 
 
 async def _execute(
@@ -671,6 +837,15 @@ async def _execute(
             totp_secret=credentials["totp_secret"],
             page_size=claim.page_size,
         ) as client:
+            sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
+            if sync_run is not None:
+                await add_sync_run_event(
+                    session,
+                    run=sync_run,
+                    event_type="remote_fetch_started",
+                    status="running",
+                    message="开始读取远端转盘订单列表。",
+                )
             await _renew(session, claim=claim)
             fetched = await client.fetch_spin_orders(
                 create_start=(
@@ -685,7 +860,31 @@ async def _execute(
                 ),
                 on_page_fetched=lambda: _renew(session, claim=claim),
             )
+            sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
+            if sync_run is not None:
+                await add_sync_run_event(
+                    session,
+                    run=sync_run,
+                    event_type="remote_fetch_completed",
+                    status="running",
+                    message="远端转盘订单读取并校验完成，准备解析渠道来源。",
+                    metadata={
+                        "remoteTotal": fetched.remote_total,
+                        "fetchedPages": fetched.fetched_pages,
+                        "duplicateCount": fetched.duplicate_count,
+                    },
+                )
             await _renew(session, claim=claim)
+            sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
+            if sync_run is not None:
+                await add_sync_run_event(
+                    session,
+                    run=sync_run,
+                    event_type="uid_channel_resolution_started",
+                    status="running",
+                    message="开始解析转盘订单的用户渠道来源。",
+                    metadata={"orderCount": len(fetched.orders)},
+                )
             channels, resolved, unresolved = await _resolve_user_channels(
                 session,
                 source_id=claim.source_id,
@@ -693,9 +892,26 @@ async def _execute(
                 client=client,
                 now=datetime.now(UTC),
             )
+            sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
+            if sync_run is not None:
+                await add_sync_run_event(
+                    session,
+                    run=sync_run,
+                    event_type="uid_channel_resolution_completed",
+                    status="running",
+                    message="用户渠道来源解析完成，准备更新本地缓存。",
+                    metadata={
+                        "resolvedUidCount": resolved,
+                        "unresolvedUidCount": unresolved,
+                    },
+                )
             await _renew(session, claim=claim)
     except asyncio.CancelledError:
         await session.rollback()
+        try:
+            await _cancelled(session, claim=claim, cancelled_at=datetime.now(UTC))
+        except Exception:
+            await session.rollback()
         raise
     except Exception:
         await session.rollback()

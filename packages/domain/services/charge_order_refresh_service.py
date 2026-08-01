@@ -14,6 +14,17 @@ from packages.common.security import decrypt_credentials
 from packages.common.settings import Settings, get_settings
 from packages.domain.models import ChargeOrderRefreshState, ChargeOrderSnapshot, SourceConfig
 from packages.domain.services.auth_service import write_audit
+from packages.domain.services.data_sync_run_service import (
+    SyncRunMetrics,
+    add_sync_run_event,
+    cancel_sync_run,
+    complete_sync_run,
+    create_sync_run,
+    fail_sync_run,
+    get_sync_run_for_update,
+    mark_sync_run_running,
+    supersede_sync_run,
+)
 from packages.domain.services.remote_charge_service import ChargeFetchResult, RajAdminChargeClient
 from packages.domain.services.source_service import get_source
 from packages.domain.services.system_setting_service import get_retention_settings
@@ -60,6 +71,8 @@ class _RefreshClaim:
     started_at: datetime
     window_start: datetime
     window_end: datetime
+    sync_run_id: str
+    query_range: str | None
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -94,7 +107,13 @@ def _parse_wall_time(value: object, *, timezone_name: str) -> datetime | None:
 
 def _is_missing_charge_schema(error: OperationalError | ProgrammingError) -> bool:
     message = str(error).lower()
-    return ("charge_order_snapshots" in message or "charge_order_refresh_states" in message) and (
+    return (
+        "charge_order_snapshots" in message
+        or "charge_order_refresh_states" in message
+        or "data_sync_runs" in message
+        or "pending_sync_run_id" in message
+        or "active_sync_run_id" in message
+    ) and (
         "does not exist" in message or "no such table" in message
     )
 
@@ -235,8 +254,26 @@ async def queue_charge_order_refreshes(
     try:
         for source in sources:
             state = await _state(session, source_id=source.source_id, now=requested_at)
+            if state.pending_sync_run_id:
+                pending_run = await get_sync_run_for_update(
+                    session,
+                    run_id=state.pending_sync_run_id,
+                )
+                if pending_run is not None and pending_run.status == "queued":
+                    await supersede_sync_run(session, run=pending_run, finished_at=requested_at)
             state.manual_request_at = requested_at
             state.manual_query_range = requested_query_range
+            queued_run = await create_sync_run(
+                session,
+                source=source,
+                business_type="charge_orders",
+                trigger_type="manual",
+                requested_by_user_id=actor_user_id,
+                requested_at=requested_at,
+                query_range=requested_query_range,
+                status="queued",
+            )
+            state.pending_sync_run_id = queued_run.id
             if not (
                 state.status == "running"
                 and (_as_utc(state.lease_expires_at) or requested_at) > requested_at
@@ -300,9 +337,10 @@ async def _claim_due(
         ):
             continue
         manual_requested = _manual_request_is_pending(state)
+        requested_query_range = state.manual_query_range or "yesterday"
         export_day = (
             _manual_export_day(
-                query_range=state.manual_query_range or "yesterday",
+                query_range=requested_query_range,
                 timezone_name=source.business_timezone,
                 now=now,
             )
@@ -320,6 +358,44 @@ async def _claim_due(
         state.lease_expires_at = now + REFRESH_LEASE_DURATION
         state.last_error = None
         state.updated_at = now
+        if manual_requested:
+            sync_run = (
+                await get_sync_run_for_update(session, run_id=state.pending_sync_run_id)
+                if state.pending_sync_run_id
+                else None
+            )
+            if sync_run is None:
+                # A pre-log request can still exist during a rolling release.
+                sync_run = await create_sync_run(
+                    session,
+                    source=source,
+                    business_type="charge_orders",
+                    trigger_type="manual",
+                    requested_at=now,
+                    query_range=requested_query_range,
+                    status="queued",
+                )
+            await mark_sync_run_running(
+                session,
+                run=sync_run,
+                started_at=now,
+                window_start_utc=window_start,
+                window_end_utc=window_end,
+                query_range=requested_query_range,
+            )
+        else:
+            sync_run = await create_sync_run(
+                session,
+                source=source,
+                business_type="charge_orders",
+                trigger_type="automatic",
+                requested_at=now,
+                window_start_utc=window_start,
+                window_end_utc=window_end,
+                status="running",
+            )
+        state.pending_sync_run_id = None
+        state.active_sync_run_id = sync_run.id
         await session.commit()
         return _RefreshClaim(
             source_id=source.source_id,
@@ -330,6 +406,8 @@ async def _claim_due(
             started_at=now,
             window_start=window_start,
             window_end=window_end,
+            sync_run_id=sync_run.id,
+            query_range=requested_query_range if manual_requested else None,
         )
     await session.commit()
     return None
@@ -423,12 +501,15 @@ async def _persist_success(
     )
     if state is None or _as_utc(state.last_started_at) != claim.started_at:
         return ChargeOrderRefreshRunResult(claim.source_id, "superseded")
+    sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
     by_id = {
         remote_id: order
         for order in fetched.orders
         if (remote_id := _safe_text(order.get("id"), limit=120))
     }
     existing = await _rows_by_id(session, source_id=claim.source_id, remote_ids=list(by_id))
+    created_count = sum(1 for remote_id in by_id if remote_id not in existing)
+    updated_count = len(by_id) - created_count
     for remote_id, order in by_id.items():
         snapshot = existing.get(remote_id)
         if snapshot is None:
@@ -442,6 +523,7 @@ async def _persist_success(
             session.add(snapshot)
         _apply(snapshot, order=order, claim=claim, now=finished_at)
     await session.flush()
+    deleted_count = 0
     if fetched.complete:
         rows = list(
             await session.scalars(
@@ -456,6 +538,7 @@ async def _persist_success(
         for row in rows:
             if row.remote_order_id not in by_id:
                 await session.delete(row)
+                deleted_count += 1
     cached_total = int(
         await session.scalar(
             select(func.count())
@@ -477,6 +560,7 @@ async def _persist_success(
     state.last_complete = fetched.complete
     state.last_error = None
     state.lease_expires_at = None
+    state.active_sync_run_id = None
     if (
         _as_utc(state.manual_request_at) is not None
         and _as_utc(state.manual_request_at) <= claim.started_at
@@ -484,6 +568,22 @@ async def _persist_success(
         state.manual_request_at = None
         state.manual_query_range = None
     state.updated_at = finished_at
+    if sync_run is not None:
+        await complete_sync_run(
+            session,
+            run=sync_run,
+            complete=fetched.complete,
+            metrics=SyncRunMetrics(
+                remote_total=fetched.remote_total,
+                cached_total=cached_total,
+                fetched_pages=fetched.fetched_pages,
+                imported_count=len(by_id),
+                created_count=created_count,
+                updated_count=updated_count,
+            ),
+            finished_at=finished_at,
+            metadata={"deletedCount": deleted_count},
+        )
     await session.commit()
     return ChargeOrderRefreshRunResult(
         claim.source_id,
@@ -504,10 +604,12 @@ async def _failure(
     )
     if state is None or _as_utc(state.last_started_at) != claim.started_at:
         return ChargeOrderRefreshRunResult(claim.source_id, state.status if state else "failed")
+    sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
     state.status = "failed"
     state.last_failed_at = finished_at
     state.last_error = "远端充值订单读取失败，请稍后重试。"
     state.lease_expires_at = None
+    state.active_sync_run_id = None
     if (
         _as_utc(state.manual_request_at) is not None
         and _as_utc(state.manual_request_at) <= claim.started_at
@@ -515,8 +617,46 @@ async def _failure(
         state.manual_request_at = None
         state.manual_query_range = None
     state.updated_at = finished_at
+    if sync_run is not None:
+        await fail_sync_run(
+            session,
+            run=sync_run,
+            error_code="remote_charge_sync_failed",
+            error_message=state.last_error,
+            finished_at=finished_at,
+        )
     await session.commit()
     return ChargeOrderRefreshRunResult(claim.source_id, "failed")
+
+
+async def _cancelled(
+    session: AsyncSession,
+    *,
+    claim: _RefreshClaim,
+    cancelled_at: datetime,
+) -> None:
+    state = await session.get(
+        ChargeOrderRefreshState,
+        claim.source_id,
+        with_for_update=True,
+        populate_existing=True,
+    )
+    if state is None or _as_utc(state.last_started_at) != claim.started_at:
+        return
+    sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
+    if sync_run is not None:
+        await cancel_sync_run(
+            session,
+            run=sync_run,
+            finished_at=cancelled_at,
+            message="后台工作进程在同步完成前停止，任务将按调度规则重试。",
+        )
+    state.status = "queued"
+    state.active_sync_run_id = None
+    state.lease_expires_at = None
+    state.last_error = "后台同步在工作进程停止前中断，任务将按调度规则重试。"
+    state.updated_at = cancelled_at
+    await session.commit()
 
 
 async def _execute(
@@ -535,6 +675,15 @@ async def _execute(
             password=credentials["password"],
             totp_secret=credentials["totp_secret"],
         ) as client:
+            sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
+            if sync_run is not None:
+                await add_sync_run_event(
+                    session,
+                    run=sync_run,
+                    event_type="remote_export_started",
+                    status="running",
+                    message="开始读取远端充值订单导出。",
+                )
             await _renew(session, claim=claim)
             fetched = await client.export_charge_orders(
                 create_start=claim.window_start.astimezone(
@@ -544,9 +693,26 @@ async def _execute(
                     WALL_TIME_FORMAT
                 ),
             )
+            sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
+            if sync_run is not None:
+                await add_sync_run_event(
+                    session,
+                    run=sync_run,
+                    event_type="remote_export_fetched",
+                    status="running",
+                    message="远端充值订单导出读取完成，准备更新本地缓存。",
+                    metadata={
+                        "remoteTotal": fetched.remote_total,
+                        "fetchedPages": fetched.fetched_pages,
+                    },
+                )
             await _renew(session, claim=claim)
     except asyncio.CancelledError:
         await session.rollback()
+        try:
+            await _cancelled(session, claim=claim, cancelled_at=datetime.now(UTC))
+        except Exception:
+            await session.rollback()
         raise
     except Exception:
         await session.rollback()

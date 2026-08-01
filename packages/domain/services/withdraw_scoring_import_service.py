@@ -14,8 +14,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.domain.models import WithdrawOrderSnapshot, WithdrawScoringSnapshot
 from packages.domain.services.auth_service import write_audit
+from packages.domain.services.data_sync_run_service import (
+    SyncRunMetrics,
+    add_sync_run_event,
+    complete_sync_run,
+    create_sync_run,
+    fail_sync_run,
+    get_sync_run_for_update,
+)
 from packages.domain.services.scoring_reviewed_cases_import_service import (
     ScoringReviewedCase,
+    ScoringReviewedCasesImportError,
     parse_scoring_reviewed_cases_export,
 )
 from packages.domain.services.source_service import get_source
@@ -160,9 +169,61 @@ def _apply_scoring_case(
 
 def _is_missing_scoring_schema(error: OperationalError | ProgrammingError) -> bool:
     message = str(error).lower()
-    return "withdraw_scoring_snapshots" in message and (
-        "does not exist" in message or "no such table" in message
+    return (
+        "withdraw_scoring_snapshots" in message
+        or "data_sync_runs" in message
+        or "data_sync_run_events" in message
+    ) and ("does not exist" in message or "no such table" in message)
+
+
+def _safe_input_filename(value: str | None) -> str | None:
+    """Keep only a display-safe file name, never a browser-provided path."""
+
+    normalized = (value or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
+    normalized = "".join(
+        character for character in normalized if character >= " " and character != "\x7f"
     )
+    return normalized[:255] or None
+
+
+async def _record_excel_import_failure(
+    session: AsyncSession,
+    *,
+    sync_run_id: str,
+    error_code: str,
+    error_message: str,
+) -> None:
+    """Best-effort terminal log after the workbook transaction has rolled back.
+
+    The initial running record is committed before parsing begins.  That lets a
+    malformed workbook remain visible as a failed import without retaining its
+    contents or an exception trace.  Failure logging must not replace the
+    original user-facing import error.
+    """
+
+    await session.rollback()
+    try:
+        run = await get_sync_run_for_update(session, run_id=sync_run_id)
+        if run is None or run.status in {
+            "succeeded",
+            "partial",
+            "failed",
+            "superseded",
+            "cancelled",
+        }:
+            return
+        await fail_sync_run(
+            session,
+            run=run,
+            error_code=error_code,
+            error_message=error_message,
+        )
+        await session.commit()
+    except Exception:
+        # Logging is intentionally best effort.  Do not leak a lower-level
+        # database error in place of the workbook parser's safe validation
+        # message, and do not write raw exception data into the sync log.
+        await session.rollback()
 
 
 async def import_scoring_reviewed_cases_export(
@@ -172,25 +233,124 @@ async def import_scoring_reviewed_cases_export(
     content: bytes,
     actor_user_id: int | None,
     now: datetime | None = None,
+    input_filename: str | None = None,
 ) -> WithdrawScoringImportResult:
-    """Atomically enrich existing source-scoped withdrawal snapshots from XLSX.
+    """Enrich existing source-scoped withdrawal snapshots from one XLSX.
 
     ``案件号`` is treated as a foreign key, not a master-order identifier to
     insert.  A scoring-only row is counted as unmatched and deliberately
     omitted.  Existing scoring supplements are updated in place, while score
     snapshots not present in this import are retained for later incremental
-    imports.
+    imports.  A separate, safe sync-run record is committed before parsing so
+    parse failures are visible without storing the submitted workbook.
     """
 
-    parsed = parse_scoring_reviewed_cases_export(content)
-    return await import_scoring_reviewed_cases(
-        session,
-        source_id=source_id,
-        cases=parsed.cases,
-        source_row_count=parsed.source_row_count,
-        actor_user_id=actor_user_id,
-        now=now,
-    )
+    synced_at = _now(now)
+    try:
+        source = await get_source(session, source_id)
+        sync_run = await create_sync_run(
+            session,
+            source=source,
+            business_type="withdraw_scoring_import",
+            trigger_type="upload",
+            operation_kind="excel_import",
+            requested_by_user_id=actor_user_id,
+            requested_at=synced_at,
+            status="running",
+            input_filename=_safe_input_filename(input_filename),
+            input_size_bytes=len(content),
+        )
+        resolved_source_id = source.source_id
+        sync_run_id = sync_run.id
+        await add_sync_run_event(
+            session,
+            run=sync_run,
+            event_type="excel_parse_started",
+            status="running",
+            message="开始校验评分审核 Excel 文件。",
+            occurred_at=synced_at,
+        )
+        # Persist the initial lifecycle event independently from the data
+        # mutation below so a parse or validation error can be marked failed.
+        await session.commit()
+    except (OperationalError, ProgrammingError) as exc:
+        await session.rollback()
+        if _is_missing_scoring_schema(exc):
+            raise WithdrawScoringCacheSchemaPendingError(
+                "评分审核本地缓存或同步日志正在初始化，请在数据库迁移完成后重试。"
+            ) from exc
+        raise
+
+    try:
+        parsed = parse_scoring_reviewed_cases_export(content)
+        sync_run = await get_sync_run_for_update(session, run_id=sync_run_id)
+        if sync_run is None:
+            raise WithdrawScoringImportError("评分审核导入运行记录不存在。")
+        await add_sync_run_event(
+            session,
+            run=sync_run,
+            event_type="excel_parse_completed",
+            status="running",
+            message="评分审核 Excel 校验完成，准备补充本地提现订单。",
+            metadata={"sourceRowCount": parsed.source_row_count},
+            occurred_at=synced_at,
+        )
+        # Retain the parse-stage projection even when a later local join or
+        # field validation fails. The workbook itself is still never stored.
+        await session.commit()
+        return await import_scoring_reviewed_cases(
+            session,
+            source_id=resolved_source_id,
+            cases=parsed.cases,
+            source_row_count=parsed.source_row_count,
+            actor_user_id=actor_user_id,
+            now=synced_at,
+            sync_run_id=sync_run_id,
+        )
+    except ScoringReviewedCasesImportError as exc:
+        await _record_excel_import_failure(
+            session,
+            sync_run_id=sync_run_id,
+            error_code="withdraw_scoring_excel_validation_failed",
+            error_message=str(exc),
+        )
+        raise
+    except WithdrawScoringCacheSchemaPendingError as exc:
+        await _record_excel_import_failure(
+            session,
+            sync_run_id=sync_run_id,
+            error_code="withdraw_scoring_excel_schema_pending",
+            error_message=str(exc),
+        )
+        raise
+    except WithdrawScoringImportError as exc:
+        await _record_excel_import_failure(
+            session,
+            sync_run_id=sync_run_id,
+            error_code="withdraw_scoring_excel_validation_failed",
+            error_message=str(exc),
+        )
+        raise
+    except (OperationalError, ProgrammingError) as exc:
+        await _record_excel_import_failure(
+            session,
+            sync_run_id=sync_run_id,
+            error_code="withdraw_scoring_excel_import_failed",
+            error_message="评分审核 Excel 导入未完成，请稍后重试。",
+        )
+        if _is_missing_scoring_schema(exc):
+            raise WithdrawScoringCacheSchemaPendingError(
+                "评分审核本地缓存或同步日志正在初始化，请在数据库迁移完成后重试。"
+            ) from exc
+        raise
+    except Exception:
+        await _record_excel_import_failure(
+            session,
+            sync_run_id=sync_run_id,
+            error_code="withdraw_scoring_excel_import_failed",
+            error_message="评分审核 Excel 导入未完成，请稍后重试。",
+        )
+        raise
 
 
 async def import_scoring_reviewed_cases(
@@ -203,6 +363,7 @@ async def import_scoring_reviewed_cases(
     now: datetime | None = None,
     audit_action: str = "withdraw_scoring.import",
     audit_metadata: dict[str, object] | None = None,
+    sync_run_id: str | None = None,
 ) -> WithdrawScoringImportResult:
     """Atomically persist validated score cases from an approved transport.
 
@@ -220,6 +381,19 @@ async def import_scoring_reviewed_cases(
     synced_at = _now(now)
     try:
         source = await get_source(session, source_id)
+        if sync_run_id is not None:
+            sync_run = await get_sync_run_for_update(session, run_id=sync_run_id)
+            if sync_run is None:
+                raise WithdrawScoringImportError("评分审核导入运行记录不存在。")
+            await add_sync_run_event(
+                session,
+                run=sync_run,
+                event_type="import_started",
+                status="running",
+                message="开始将评分审核结果补充到本地提现订单。",
+                metadata={"sourceRowCount": source_row_count},
+                occurred_at=synced_at,
+            )
         masters = await _withdrawals_by_case_id(
             session,
             source_id=source.source_id,
@@ -276,6 +450,28 @@ async def import_scoring_reviewed_cases(
             target_id=source.source_id,
             metadata=metadata,
         )
+        if sync_run_id is not None:
+            sync_run = await get_sync_run_for_update(session, run_id=sync_run_id)
+            if sync_run is None:
+                raise WithdrawScoringImportError("评分审核导入运行记录不存在。")
+            # The workbook parser rejects duplicate case IDs, so every
+            # successful Excel import has zero tolerated duplicates.  The
+            # imported count is the number of validated input rows; matched
+            # and unmatched make explicit which rows enriched a local order.
+            await complete_sync_run(
+                session,
+                run=sync_run,
+                metrics=SyncRunMetrics(
+                    export_row_count=source_row_count,
+                    imported_count=source_row_count,
+                    created_count=created_count,
+                    updated_count=updated_count,
+                    duplicate_count=0,
+                    matched_count=matched_count,
+                    unmatched_count=unmatched_count,
+                ),
+                finished_at=synced_at,
+            )
         await session.commit()
     except (OperationalError, ProgrammingError) as exc:
         await session.rollback()

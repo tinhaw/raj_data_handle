@@ -15,6 +15,17 @@ from packages.common.settings import Settings, get_settings
 from packages.domain.models import SourceConfig, WithdrawOrderRefreshState, WithdrawOrderSnapshot
 from packages.domain.services.auth_service import write_audit
 from packages.domain.services.data_dictionary_service import refresh_withdraw_status_cache
+from packages.domain.services.data_sync_run_service import (
+    SyncRunMetrics,
+    add_sync_run_event,
+    cancel_sync_run,
+    complete_sync_run,
+    create_sync_run,
+    fail_sync_run,
+    get_sync_run_for_update,
+    mark_sync_run_running,
+    supersede_sync_run,
+)
 from packages.domain.services.remote_withdraw_service import (
     RajAdminWithdrawClient,
     WithdrawFetchResult,
@@ -66,6 +77,7 @@ class _RefreshClaim:
     window_start: datetime
     window_end: datetime
     requested_query_range: str
+    sync_run_id: str
 
 
 def _is_missing_refresh_schema(error: OperationalError | ProgrammingError) -> bool:
@@ -73,11 +85,14 @@ def _is_missing_refresh_schema(error: OperationalError | ProgrammingError) -> bo
     missing_table = (
         "withdraw_order_snapshots" in message
         or "withdraw_order_refresh_states" in message
+        or "data_sync_runs" in message
     ) and ("does not exist" in message or "no such table" in message)
     missing_export_metric = (
         "last_export_row_count" in message
         or "last_imported_count" in message
         or "last_duplicate_count" in message
+        or "pending_sync_run_id" in message
+        or "active_sync_run_id" in message
     ) and ("does not exist" in message or "no such column" in message)
     return missing_table or missing_export_metric
 
@@ -249,8 +264,26 @@ async def queue_withdraw_order_refreshes(
     try:
         for source in sources:
             state = await _state(session, source_id=source.source_id, now=requested_at)
+            if state.pending_sync_run_id:
+                pending_run = await get_sync_run_for_update(
+                    session,
+                    run_id=state.pending_sync_run_id,
+                )
+                if pending_run is not None and pending_run.status == "queued":
+                    await supersede_sync_run(session, run=pending_run, finished_at=requested_at)
             state.manual_request_at = requested_at
             state.manual_query_range = requested_query_range
+            queued_run = await create_sync_run(
+                session,
+                source=source,
+                business_type="withdraw_orders",
+                trigger_type="manual",
+                requested_by_user_id=actor_user_id,
+                requested_at=requested_at,
+                query_range=requested_query_range,
+                status="queued",
+            )
+            state.pending_sync_run_id = queued_run.id
             if not (
                 state.status == "running"
                 and (_as_utc(state.lease_expires_at) or requested_at) > requested_at
@@ -336,6 +369,45 @@ async def _claim_due(
         state.lease_expires_at = now + REFRESH_LEASE_DURATION
         state.last_error = None
         state.updated_at = now
+        if manual_requested:
+            sync_run = (
+                await get_sync_run_for_update(session, run_id=state.pending_sync_run_id)
+                if state.pending_sync_run_id
+                else None
+            )
+            if sync_run is None:
+                # Preserve refresh behavior while supporting an upgrade from a
+                # pre-log queued request.
+                sync_run = await create_sync_run(
+                    session,
+                    source=source,
+                    business_type="withdraw_orders",
+                    trigger_type="manual",
+                    requested_at=now,
+                    query_range=requested_query_range,
+                    status="queued",
+                )
+            await mark_sync_run_running(
+                session,
+                run=sync_run,
+                started_at=now,
+                window_start_utc=window_start,
+                window_end_utc=window_end,
+                query_range=requested_query_range,
+            )
+        else:
+            sync_run = await create_sync_run(
+                session,
+                source=source,
+                business_type="withdraw_orders",
+                trigger_type="automatic",
+                requested_at=now,
+                window_start_utc=window_start,
+                window_end_utc=window_end,
+                status="running",
+            )
+        state.pending_sync_run_id = None
+        state.active_sync_run_id = sync_run.id
         await session.commit()
         return _RefreshClaim(
             source_id=source.source_id,
@@ -347,6 +419,7 @@ async def _claim_due(
             window_start=window_start,
             window_end=window_end,
             requested_query_range=requested_query_range,
+            sync_run_id=sync_run.id,
         )
     await session.commit()
     return None
@@ -482,6 +555,7 @@ async def _persist_success(
     )
     if state is None or _as_utc(state.last_started_at) != claim.started_at:
         return WithdrawOrderRefreshRunResult(claim.source_id, "superseded")
+    sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
 
     await refresh_withdraw_status_cache(
         session,
@@ -495,6 +569,8 @@ async def _persist_success(
         if (remote_id := _safe_text(order.get("remote_order_id"), limit=120))
     }
     existing = await _rows_by_id(session, source_id=claim.source_id, remote_ids=list(by_id))
+    created_count = sum(1 for remote_id in by_id if remote_id not in existing)
+    updated_count = len(by_id) - created_count
     for remote_id, order in by_id.items():
         snapshot = existing.get(remote_id)
         if snapshot is None:
@@ -509,6 +585,7 @@ async def _persist_success(
         _apply(snapshot, order=order, claim=claim, now=finished_at)
     await session.flush()
 
+    deleted_count = 0
     if fetched.complete:
         rows = list(
             await session.scalars(
@@ -523,6 +600,7 @@ async def _persist_success(
         for row in rows:
             if row.remote_order_id not in by_id:
                 await session.delete(row)
+                deleted_count += 1
     cached_total = int(
         await session.scalar(
             select(func.count())
@@ -547,6 +625,7 @@ async def _persist_success(
     state.last_duplicate_count = fetched.duplicate_count
     state.last_error = None
     state.lease_expires_at = None
+    state.active_sync_run_id = None
     if (
         _as_utc(state.manual_request_at) is not None
         and _as_utc(state.manual_request_at) <= claim.started_at
@@ -554,6 +633,24 @@ async def _persist_success(
         state.manual_request_at = None
         state.manual_query_range = None
     state.updated_at = finished_at
+    if sync_run is not None:
+        await complete_sync_run(
+            session,
+            run=sync_run,
+            complete=fetched.complete,
+            metrics=SyncRunMetrics(
+                remote_total=fetched.remote_total,
+                export_row_count=fetched.export_row_count,
+                cached_total=cached_total,
+                fetched_pages=fetched.fetched_pages,
+                imported_count=len(by_id),
+                created_count=created_count,
+                updated_count=updated_count,
+                duplicate_count=fetched.duplicate_count,
+            ),
+            finished_at=finished_at,
+            metadata={"deletedCount": deleted_count},
+        )
     await session.commit()
     return WithdrawOrderRefreshRunResult(
         claim.source_id,
@@ -577,10 +674,12 @@ async def _failure(
     )
     if state is None or _as_utc(state.last_started_at) != claim.started_at:
         return WithdrawOrderRefreshRunResult(claim.source_id, state.status if state else "failed")
+    sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
     state.status = "failed"
     state.last_failed_at = finished_at
     state.last_error = "远端提现订单 Excel 导出或校验失败，请稍后重试。"
     state.lease_expires_at = None
+    state.active_sync_run_id = None
     if (
         _as_utc(state.manual_request_at) is not None
         and _as_utc(state.manual_request_at) <= claim.started_at
@@ -588,6 +687,14 @@ async def _failure(
         state.manual_request_at = None
         state.manual_query_range = None
     state.updated_at = finished_at
+    if sync_run is not None:
+        await fail_sync_run(
+            session,
+            run=sync_run,
+            error_code="remote_withdraw_sync_failed",
+            error_message=state.last_error,
+            finished_at=finished_at,
+        )
     await session.commit()
     return WithdrawOrderRefreshRunResult(claim.source_id, "failed")
 
@@ -606,7 +713,16 @@ async def _requeue_cancelled(
     )
     if state is None or _as_utc(state.last_started_at) != claim.started_at:
         return
+    sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
+    if sync_run is not None:
+        await cancel_sync_run(
+            session,
+            run=sync_run,
+            finished_at=cancelled_at,
+            message="后台工作进程在同步完成前停止，任务已重新排队。",
+        )
     state.status = "queued"
+    state.active_sync_run_id = None
     state.lease_expires_at = None
     state.last_error = "后台同步在工作进程停止前中断，已重新排队。"
     if (
@@ -638,9 +754,37 @@ async def _execute(
             password=credentials["password"],
             totp_secret=credentials["totp_secret"],
         ) as client:
+            sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
+            if sync_run is not None:
+                await add_sync_run_event(
+                    session,
+                    run=sync_run,
+                    event_type="withdraw_status_dictionary_started",
+                    status="running",
+                    message="开始读取远端提现状态字典。",
+                )
             await _renew(session, claim=claim)
             remote_statuses = await client.fetch_withdraw_statuses()
+            sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
+            if sync_run is not None:
+                await add_sync_run_event(
+                    session,
+                    run=sync_run,
+                    event_type="withdraw_status_dictionary_fetched",
+                    status="running",
+                    message="远端提现状态字典读取完成。",
+                    metadata={"statusCount": len(remote_statuses)},
+                )
             await _renew(session, claim=claim)
+            sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
+            if sync_run is not None:
+                await add_sync_run_event(
+                    session,
+                    run=sync_run,
+                    event_type="remote_export_started",
+                    status="running",
+                    message="开始读取远端提现订单 Excel 导出。",
+                )
             fetched = await client.export_withdraw_orders(
                 create_start=claim.window_start.astimezone(
                     ZoneInfo(claim.business_timezone)
@@ -650,6 +794,20 @@ async def _execute(
                 ).strftime(WALL_TIME_FORMAT),
             )
             _apply_status_dictionary(fetched.orders, remote_statuses)
+            sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
+            if sync_run is not None:
+                await add_sync_run_event(
+                    session,
+                    run=sync_run,
+                    event_type="remote_export_fetched",
+                    status="running",
+                    message="远端提现订单导出读取并校验完成，准备更新本地缓存。",
+                    metadata={
+                        "remoteTotal": fetched.remote_total,
+                        "exportRowCount": fetched.export_row_count,
+                        "fetchedPages": fetched.fetched_pages,
+                    },
+                )
             await _renew(session, claim=claim)
     except asyncio.CancelledError:
         try:

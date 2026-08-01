@@ -10,6 +10,8 @@ from packages.common.security import encrypt_credentials
 from packages.common.settings import Settings
 from packages.domain.models import (
     Base,
+    DataSyncRun,
+    DataSyncRunEvent,
     SourceConfig,
     SystemRetentionSetting,
     WithdrawOrderRefreshState,
@@ -179,6 +181,15 @@ async def test_daily_excel_refresh_runs_at_000501_and_caches_only_approved_field
             )
         )
         state = await session.get(WithdrawOrderRefreshState, "rajwin")
+        sync_run = await session.scalar(select(DataSyncRun))
+        sync_events = list(
+            await session.scalars(
+                select(DataSyncRunEvent).order_by(
+                    DataSyncRunEvent.occurred_at,
+                    DataSyncRunEvent.id,
+                )
+            )
+        )
 
     assert [item.status for item in result] == ["succeeded"]
     assert FakeWithdrawClient.events == [
@@ -211,6 +222,26 @@ async def test_daily_excel_refresh_runs_at_000501_and_caches_only_approved_field
     assert state.last_export_row_count == 3
     assert state.last_imported_count == 2
     assert state.last_duplicate_count == 1
+    assert sync_run is not None
+    assert (sync_run.business_type, sync_run.trigger_type, sync_run.status) == (
+        "withdraw_orders",
+        "automatic",
+        "succeeded",
+    )
+    assert (
+        sync_run.remote_total,
+        sync_run.export_row_count,
+        sync_run.cached_total,
+        sync_run.duplicate_count,
+    ) == (2, 3, 2, 1)
+    assert [event.event_type for event in sync_events] == [
+        "running",
+        "withdraw_status_dictionary_started",
+        "withdraw_status_dictionary_fetched",
+        "remote_export_started",
+        "remote_export_fetched",
+        "completed",
+    ]
     await engine.dispose()
 
 
@@ -361,10 +392,15 @@ async def test_unmapped_export_status_fails_without_replacing_existing_cache(
         result = await run_due_withdraw_order_refreshes(session, now=due, settings=settings)
         snapshots = list(await session.scalars(select(WithdrawOrderSnapshot)))
         state = await session.get(WithdrawOrderRefreshState, "rajwin")
+        failed_run = await session.scalar(select(DataSyncRun))
 
     assert [item.status for item in result] == ["failed"]
     assert [snapshot.remote_order_id for snapshot in snapshots] == ["old-row"]
     assert state is not None
     assert state.status == "failed"
     assert state.last_error == "远端提现订单 Excel 导出或校验失败，请稍后重试。"
+    assert failed_run is not None
+    assert failed_run.status == "failed"
+    assert failed_run.error_code == "remote_withdraw_sync_failed"
+    assert failed_run.error_message == state.last_error
     await engine.dispose()

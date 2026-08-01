@@ -12,6 +12,8 @@ from packages.domain.models import (
     Base,
     ChargeOrderSnapshot,
     DataDictionaryEntry,
+    DataSyncRun,
+    DataSyncRunEvent,
     SourceConfig,
     SystemRetentionSetting,
 )
@@ -378,6 +380,15 @@ async def test_worker_refreshes_recharge_cache_and_deduplicates_by_source_and_or
 
         outcomes = await run_due_charge_order_refreshes(session, now=now, settings=settings)
         snapshot = await session.scalar(select(ChargeOrderSnapshot))
+        sync_run = await session.scalar(select(DataSyncRun))
+        sync_events = list(
+            await session.scalars(
+                select(DataSyncRunEvent).order_by(
+                    DataSyncRunEvent.occurred_at,
+                    DataSyncRunEvent.id,
+                )
+            )
+        )
 
     assert [item.status for item in outcomes] == ["succeeded"]
     assert FakeChargeClient.calls == [
@@ -393,6 +404,19 @@ async def test_worker_refreshes_recharge_cache_and_deduplicates_by_source_and_or
     assert snapshot.pay_method == "948"
     assert snapshot.create_time_utc is not None
     assert snapshot.create_time_utc.replace(tzinfo=UTC) == datetime(2026, 7, 29, 10, 0, tzinfo=UTC)
+    assert sync_run is not None
+    assert (sync_run.business_type, sync_run.trigger_type, sync_run.status) == (
+        "charge_orders",
+        "automatic",
+        "succeeded",
+    )
+    assert (sync_run.remote_total, sync_run.cached_total, sync_run.imported_count) == (1, 1, 1)
+    assert [event.event_type for event in sync_events] == [
+        "running",
+        "remote_export_started",
+        "remote_export_fetched",
+        "completed",
+    ]
     await engine.dispose()
 
 

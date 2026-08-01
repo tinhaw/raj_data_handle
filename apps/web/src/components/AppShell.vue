@@ -3,6 +3,7 @@ import {
   Bell,
   Collection,
   DataAnalysis,
+  Document,
   Present,
   Setting,
   SwitchButton,
@@ -120,6 +121,10 @@ onBeforeUnmount(() => {
         <el-menu-item index="/spin-orders">
           <el-icon><Present /></el-icon>
           <template #title>转盘订单</template>
+        </el-menu-item>
+        <el-menu-item index="/sync-logs">
+          <el-icon><Document /></el-icon>
+          <template #title>同步日志</template>
         </el-menu-item>
         <el-menu-item index="/settings/system">
           <el-icon><Setting /></el-icon>

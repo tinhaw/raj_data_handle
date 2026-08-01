@@ -98,6 +98,10 @@ class SystemRetentionSetting(Base):
     uploaded_file_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     result_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     remote_cache_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    # Operational sync records are intentionally retained separately from the
+    # cached source data.  They are small, append-only audit projections and
+    # should remain available even after an older order snapshot is purged.
+    sync_log_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     withdraw_order_refresh_interval_hours: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
@@ -350,6 +354,17 @@ class WithdrawOrderRefreshState(Base):
     last_imported_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_duplicate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(String(500))
+    # A manual request is represented by a durable sync-run record.  Keeping
+    # both pointers on the source-scoped state lets the worker update the exact
+    # queued/claimed run instead of trying to infer it from timestamps.
+    pending_sync_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("data_sync_runs.id", ondelete="SET NULL"),
+        index=True,
+    )
+    active_sync_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("data_sync_runs.id", ondelete="SET NULL"),
+        index=True,
+    )
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
@@ -440,6 +455,14 @@ class ChargeOrderRefreshState(Base):
     last_fetched_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_error: Mapped[str | None] = mapped_column(String(500))
+    pending_sync_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("data_sync_runs.id", ondelete="SET NULL"),
+        index=True,
+    )
+    active_sync_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("data_sync_runs.id", ondelete="SET NULL"),
+        index=True,
+    )
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
@@ -544,6 +567,14 @@ class SpinOrderRefreshState(Base):
     last_resolved_uid_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_unresolved_uid_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(String(500))
+    pending_sync_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("data_sync_runs.id", ondelete="SET NULL"),
+        index=True,
+    )
+    active_sync_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("data_sync_runs.id", ondelete="SET NULL"),
+        index=True,
+    )
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
@@ -591,6 +622,111 @@ class SourceConfig(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class DataSyncRun(Base):
+    """One append-only execution record for a local data synchronization.
+
+    The record deliberately stores only operational counters and safe status
+    text.  Remote credentials, request/response payloads, raw workbooks and
+    exception traces must never be copied here.  Source and actor snapshots
+    keep historical records understandable after a source is renamed or an
+    application user is removed.
+    """
+
+    __tablename__ = "data_sync_runs"
+    __table_args__ = (
+        Index("ix_data_sync_runs_source_requested", "source_id", "requested_at"),
+        Index(
+            "ix_data_sync_runs_business_status_requested",
+            "business_type",
+            "status",
+            "requested_at",
+        ),
+        Index("ix_data_sync_runs_finished", "finished_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    source_id: Mapped[str | None] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="SET NULL"),
+        index=True,
+    )
+    source_display_name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    business_timezone: Mapped[str | None] = mapped_column(String(80))
+    source_config_version: Mapped[int | None] = mapped_column(Integer)
+
+    # The values are application-level enums so deployments can add a new
+    # read-only source workflow without a destructive database enum change.
+    business_type: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    operation_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="remote_sync")
+    trigger_type: Mapped[str] = mapped_column(String(32), nullable=False, default="automatic")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
+
+    requested_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL"),
+        index=True,
+    )
+    requested_by_display_name: Mapped[str | None] = mapped_column(String(120))
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    window_start_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    window_end_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    query_range: Mapped[str | None] = mapped_column(String(64))
+    page_size: Mapped[int | None] = mapped_column(Integer)
+
+    remote_total: Mapped[int | None] = mapped_column(Integer)
+    export_row_count: Mapped[int | None] = mapped_column(Integer)
+    cached_total: Mapped[int | None] = mapped_column(Integer)
+    fetched_pages: Mapped[int | None] = mapped_column(Integer)
+    imported_count: Mapped[int | None] = mapped_column(Integer)
+    created_count: Mapped[int | None] = mapped_column(Integer)
+    updated_count: Mapped[int | None] = mapped_column(Integer)
+    duplicate_count: Mapped[int | None] = mapped_column(Integer)
+    matched_count: Mapped[int | None] = mapped_column(Integer)
+    unmatched_count: Mapped[int | None] = mapped_column(Integer)
+    resolved_uid_count: Mapped[int | None] = mapped_column(Integer)
+    unresolved_uid_count: Mapped[int | None] = mapped_column(Integer)
+    complete: Mapped[bool | None] = mapped_column(Boolean)
+
+    # The raw score-review workbook is never stored.  Its optional file name
+    # and size give the operator a useful, non-content trace of an import.
+    input_filename: Mapped[str | None] = mapped_column(String(255))
+    input_size_bytes: Mapped[int | None] = mapped_column(Integer)
+
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_message: Mapped[str | None] = mapped_column(String(500))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class DataSyncRunEvent(Base):
+    """Safe lifecycle event belonging to one :class:`DataSyncRun`."""
+
+    __tablename__ = "data_sync_run_events"
+    __table_args__ = (Index("ix_data_sync_run_events_run_occurred", "run_id", "occurred_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("data_sync_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    status: Mapped[str | None] = mapped_column(String(32))
+    message: Mapped[str | None] = mapped_column(String(500))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
     )
 
 

@@ -26,6 +26,7 @@ const form = reactive({
   uploadedFileRetentionDays: 3,
   resultRetentionDays: 30,
   remoteCacheRetentionDays: 30,
+  syncLogRetentionDays: 30,
   withdrawOrderExportDateMode: 'previous_day' as WithdrawOrderExportDateMode,
   withdrawOrderExportSpecificDate: null as string | null,
   chargeOrderExportDateMode: 'previous_day' as ChargeOrderExportDateMode,
@@ -41,6 +42,7 @@ function applySettings(settings: RetentionSettings): void {
   form.uploadedFileRetentionDays = settings.uploadedFileRetentionDays
   form.resultRetentionDays = settings.resultRetentionDays
   form.remoteCacheRetentionDays = settings.remoteCacheRetentionDays
+  form.syncLogRetentionDays = settings.syncLogRetentionDays
   form.withdrawOrderExportDateMode = settings.withdrawOrderExportDateMode
   form.withdrawOrderExportSpecificDate = settings.withdrawOrderExportSpecificDate
   form.chargeOrderExportDateMode = settings.chargeOrderExportDateMode
@@ -108,7 +110,7 @@ onMounted(load)
       <div class="settings-heading">
         <div>
           <h2>全局配置</h2>
-          <p>登录、充值订单、提现订单、转盘订单与数据保留策略集中维护。</p>
+          <p>登录、充值订单、提现订单、转盘订单、同步日志与数据保留策略集中维护。</p>
         </div>
         <el-tag v-if="current" type="info">配置版本 V{{ current.configVersion }}</el-tag>
       </div>
@@ -298,6 +300,15 @@ onMounted(load)
                 :disabled="!isAdmin"
               />
               <span class="field-help">默认 30 天；活跃批次引用的数据不会被清理。</span>
+            </el-form-item>
+            <el-form-item label="同步运行日志">
+              <el-input-number
+                v-model="form.syncLogRetentionDays"
+                :min="1"
+                :max="3650"
+                :disabled="!isAdmin"
+              />
+              <span class="field-help">默认 30 天；保留同步、导入、失败和部分完成的执行记录，不保留远端请求内容或原始 Excel。</span>
             </el-form-item>
           </div>
         </el-form>

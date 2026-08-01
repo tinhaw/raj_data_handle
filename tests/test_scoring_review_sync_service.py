@@ -10,6 +10,8 @@ from packages.common.security import encrypt_credentials
 from packages.common.settings import Settings
 from packages.domain.models import (
     Base,
+    DataSyncRun,
+    DataSyncRunEvent,
     SecurityAuditLog,
     SourceConfig,
     WithdrawOrderSnapshot,
@@ -167,6 +169,15 @@ async def test_remote_scoring_sync_is_source_scoped_and_only_enriches_existing_o
                 SecurityAuditLog.action == "withdraw_scoring.remote_sync"
             )
         )
+        run = await session.scalar(select(DataSyncRun))
+        run_events = list(
+            await session.scalars(
+                select(DataSyncRunEvent).order_by(
+                    DataSyncRunEvent.occurred_at,
+                    DataSyncRunEvent.id,
+                )
+            )
+        )
 
     assert (result.source_row_count, result.matched_count, result.unmatched_count) == (2, 1, 1)
     assert [(row.source_id, row.withdraw_order_id) for row in snapshots] == [("rajwin", "case-1")]
@@ -184,4 +195,18 @@ async def test_remote_scoring_sync_is_source_scoped_and_only_enriches_existing_o
         "createTimeEnd": "2026-07-31 23:59:59",
         "remotePages": 1,
     }
+    assert run is not None
+    assert run.business_type == "withdraw_scoring_import"
+    assert run.operation_kind == "remote_sync"
+    assert run.trigger_type == "manual"
+    assert run.status == "succeeded"
+    assert run.remote_total == 2
+    assert run.fetched_pages == 1
+    assert (run.imported_count, run.matched_count, run.unmatched_count) == (2, 1, 1)
+    assert [event.event_type for event in run_events] == [
+        "running",
+        "scoring_remote_fetch_started",
+        "scoring_remote_fetch_fetched",
+        "completed",
+    ]
     await engine.dispose()

@@ -40,6 +40,11 @@ const router = createRouter({
       meta: { navKey: '/spin-orders' },
     },
     {
+      path: '/sync-logs',
+      component: () => import('../views/SyncLogsView.vue'),
+      meta: { navKey: '/sync-logs' },
+    },
+    {
       path: '/settings/system',
       component: () => import('../views/SystemSettingsView.vue'),
       meta: { navKey: '/settings/system' },

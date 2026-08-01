@@ -41,6 +41,7 @@ class RetentionSettingsResponse(BaseModel):
     uploaded_file_retention_days: int = Field(alias="uploadedFileRetentionDays")
     result_retention_days: int = Field(alias="resultRetentionDays")
     remote_cache_retention_days: int = Field(alias="remoteCacheRetentionDays")
+    sync_log_retention_days: int = Field(alias="syncLogRetentionDays")
     withdraw_order_refresh_interval_hours: int = Field(
         ge=1,
         le=24,
@@ -94,6 +95,14 @@ class RetentionSettingsUpdateRequest(BaseModel):
     uploaded_file_retention_days: int = Field(ge=1, le=3650, alias="uploadedFileRetentionDays")
     result_retention_days: int = Field(ge=1, le=3650, alias="resultRetentionDays")
     remote_cache_retention_days: int = Field(ge=1, le=3650, alias="remoteCacheRetentionDays")
+    # Optional for a staged rollout: older clients should not reset the
+    # independently managed operational-log retention accidentally.
+    sync_log_retention_days: int | None = Field(
+        default=None,
+        ge=1,
+        le=3650,
+        alias="syncLogRetentionDays",
+    )
     # Kept optional for a compatible API rollout: legacy clients can still
     # save other system settings without resetting this newly introduced value.
     withdraw_order_refresh_interval_hours: int | None = Field(

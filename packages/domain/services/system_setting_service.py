@@ -35,12 +35,13 @@ def _is_missing_refresh_policy_column(
         or "spin_order_refresh_interval_hours" in message
         or "spin_order_refresh_page_size" in message
         or "spin_order_query_range" in message
+        or "sync_log_retention_days" in message
     ) and ("does not exist" in message or "no such column" in message)
 
 
 async def _load_legacy_retention_row(
     session: AsyncSession,
-) -> tuple[object | None, bool, bool, bool, bool, bool, bool]:
+) -> tuple[object | None, bool, bool, bool, bool, bool, bool, bool]:
     """Read a settings row while refresh-policy migrations are pending.
 
     The ORM cannot select a model with a column that has not been migrated yet.
@@ -55,6 +56,22 @@ async def _load_legacy_retention_row(
     )
     projections = (
         (
+            "sync_log_retention_days, withdraw_order_query_range, "
+            "withdraw_order_refresh_page_size, charge_order_refresh_interval_hours, "
+            "charge_order_refresh_page_size, charge_order_query_range, "
+            "charge_order_export_date_mode, charge_order_export_specific_date, "
+            "withdraw_order_export_date_mode, withdraw_order_export_specific_date, "
+            "spin_order_refresh_interval_hours, spin_order_refresh_page_size, "
+            "spin_order_query_range, ",
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+        ),
+        (
             "withdraw_order_query_range, withdraw_order_refresh_page_size, "
             "charge_order_refresh_interval_hours, charge_order_refresh_page_size, "
             "charge_order_query_range, charge_order_export_date_mode, "
@@ -67,6 +84,7 @@ async def _load_legacy_retention_row(
             True,
             True,
             True,
+            False,
         ),
         (
             "withdraw_order_query_range, withdraw_order_refresh_page_size, "
@@ -80,6 +98,7 @@ async def _load_legacy_retention_row(
             True,
             True,
             False,
+            False,
         ),
         (
             "withdraw_order_query_range, withdraw_order_refresh_page_size, "
@@ -88,6 +107,7 @@ async def _load_legacy_retention_row(
             True,
             True,
             True,
+            False,
             False,
             False,
             False,
@@ -100,9 +120,10 @@ async def _load_legacy_retention_row(
             False,
             False,
             False,
+            False,
         ),
-        ("withdraw_order_query_range, ", True, False, False, False, False, False),
-        ("", False, False, False, False, False, False),
+        ("withdraw_order_query_range, ", True, False, False, False, False, False, False),
+        ("", False, False, False, False, False, False, False),
     )
     for (
         extra_columns,
@@ -112,6 +133,7 @@ async def _load_legacy_retention_row(
         has_charge_export_policy,
         has_withdraw_export_policy,
         has_spin_policy,
+        has_sync_log_policy,
     ) in projections:
         try:
             result = await session.execute(
@@ -136,8 +158,9 @@ async def _load_legacy_retention_row(
             has_charge_export_policy,
             has_withdraw_export_policy,
             has_spin_policy,
+            has_sync_log_policy,
         )
-    return None, False, False, False, False, False, False
+    return None, False, False, False, False, False, False, False
 
 
 async def _load_retention_settings(
@@ -169,6 +192,7 @@ async def _load_retention_settings(
             has_charge_export_policy,
             has_withdraw_export_policy,
             has_spin_policy,
+            has_sync_log_policy,
         ) = await _load_legacy_retention_row(session)
         if legacy is None:
             raise SystemSettingsSchemaPendingError(
@@ -180,6 +204,11 @@ async def _load_retention_settings(
                 uploaded_file_retention_days=int(legacy["uploaded_file_retention_days"]),
                 result_retention_days=int(legacy["result_retention_days"]),
                 remote_cache_retention_days=int(legacy["remote_cache_retention_days"]),
+                sync_log_retention_days=(
+                    int(legacy["sync_log_retention_days"])
+                    if has_sync_log_policy
+                    else 30
+                ),
                 withdraw_order_refresh_interval_hours=int(
                     legacy["withdraw_order_refresh_interval_hours"]
                 ),
@@ -258,6 +287,7 @@ async def _load_retention_settings(
         uploaded_file_retention_days=current_defaults.uploaded_file_retention_days,
         result_retention_days=current_defaults.result_retention_days,
         remote_cache_retention_days=current_defaults.remote_cache_retention_days,
+        sync_log_retention_days=30,
         # Legacy pagination-policy columns remain in the schema for a safe
         # rollout but are no longer used by withdrawal export refreshes.
         withdraw_order_refresh_interval_hours=1,
@@ -308,6 +338,7 @@ async def update_retention_settings(
         "uploadedFileRetentionDays": row.uploaded_file_retention_days,
         "resultRetentionDays": row.result_retention_days,
         "remoteCacheRetentionDays": row.remote_cache_retention_days,
+        "syncLogRetentionDays": row.sync_log_retention_days,
         "withdrawOrderRefreshIntervalHours": row.withdraw_order_refresh_interval_hours,
         "withdrawOrderRefreshPageSize": row.withdraw_order_refresh_page_size,
         "withdrawOrderQueryRange": row.withdraw_order_query_range,
@@ -334,6 +365,8 @@ async def update_retention_settings(
     row.uploaded_file_retention_days = payload.uploaded_file_retention_days
     row.result_retention_days = payload.result_retention_days
     row.remote_cache_retention_days = payload.remote_cache_retention_days
+    if payload.sync_log_retention_days is not None:
+        row.sync_log_retention_days = payload.sync_log_retention_days
     if payload.withdraw_order_refresh_interval_hours is not None:
         row.withdraw_order_refresh_interval_hours = payload.withdraw_order_refresh_interval_hours
     if payload.withdraw_order_refresh_page_size is not None:
@@ -385,6 +418,7 @@ async def update_retention_settings(
                     "uploadedFileRetentionDays": row.uploaded_file_retention_days,
                     "resultRetentionDays": row.result_retention_days,
                     "remoteCacheRetentionDays": row.remote_cache_retention_days,
+                    "syncLogRetentionDays": row.sync_log_retention_days,
                     "withdrawOrderRefreshIntervalHours": (
                         row.withdraw_order_refresh_interval_hours
                     ),

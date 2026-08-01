@@ -252,6 +252,7 @@ async def import_scoring_review_workbook(
             source_id=normalized_source_id,
             content=content,
             actor_user_id=auth.user.id,
+            input_filename=filename,
         )
     except SourceNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

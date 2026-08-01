@@ -78,6 +78,7 @@ export interface RetentionSettings {
   uploadedFileRetentionDays: number
   resultRetentionDays: number
   remoteCacheRetentionDays: number
+  syncLogRetentionDays: number
   withdrawOrderRefreshIntervalHours: number
   withdrawOrderRefreshPageSize: WithdrawOrderRefreshPageSize
   withdrawOrderQueryRange: WithdrawOrderQueryRange
@@ -95,6 +96,112 @@ export interface RetentionSettings {
   configVersion: number
   updatedBy: number | null
   updatedAt: string
+}
+
+export type SyncRunBusinessType =
+  | 'charge_orders'
+  | 'withdraw_orders'
+  | 'withdraw_scoring_import'
+  | 'spin_orders'
+
+export type SyncRunTriggerType = 'automatic' | 'manual' | 'upload'
+
+export type SyncRunStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'partial'
+  | 'failed'
+  | 'superseded'
+  | 'cancelled'
+
+export interface SyncRunRecord {
+  id: string
+  sourceId: string | null
+  sourceDisplayName: string
+  businessTimezone: string | null
+  sourceConfigVersion: number | null
+  businessType: SyncRunBusinessType
+  operationKind: 'remote_sync' | 'excel_import'
+  triggerType: SyncRunTriggerType
+  status: SyncRunStatus
+  requestedByUserId: number | null
+  requestedByDisplayName: string | null
+  requestedAt: string
+  startedAt: string | null
+  finishedAt: string | null
+  durationMs: number | null
+  windowStartUtc: string | null
+  windowEndUtc: string | null
+  queryRange: string | null
+  pageSize: number | null
+  remoteTotal: number | null
+  exportRowCount: number | null
+  cachedTotal: number | null
+  fetchedPages: number | null
+  importedCount: number | null
+  createdCount: number | null
+  updatedCount: number | null
+  duplicateCount: number | null
+  matchedCount: number | null
+  unmatchedCount: number | null
+  resolvedUidCount: number | null
+  unresolvedUidCount: number | null
+  complete: boolean | null
+  inputFilename: string | null
+  inputSizeBytes: number | null
+  errorCode: string | null
+  errorMessage: string | null
+  metadata: Record<string, unknown>
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SyncRunEvent {
+  id: number
+  eventType: string
+  status: string | null
+  message: string | null
+  metadata: Record<string, unknown>
+  occurredAt: string
+}
+
+export interface SyncRunDetailResponse {
+  run: SyncRunRecord
+  events: SyncRunEvent[]
+}
+
+export interface SyncLogSummary {
+  total: number
+  queuedCount: number
+  runningCount: number
+  succeededCount: number
+  partialCount: number
+  failedCount: number
+  supersededCount: number
+  cancelledCount: number
+  inProgressCount: number
+  last24HoursSucceededCount: number
+  last24HoursProblemCount: number
+  latestSucceededAt: string | null
+}
+
+export interface SyncLogTrendItem {
+  bucketStart: string
+  queuedCount: number
+  runningCount: number
+  succeededCount: number
+  partialCount: number
+  failedCount: number
+}
+
+export interface SyncLogQueryResponse {
+  items: SyncRunRecord[]
+  total: number
+  page: number
+  pageSize: number
+  summary: SyncLogSummary
+  trend: SyncLogTrendItem[]
 }
 
 export interface PaymentTemplate {

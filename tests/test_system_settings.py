@@ -101,6 +101,7 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
                 uploadedFileRetentionDays=5,
                 resultRetentionDays=45,
                 remoteCacheRetentionDays=60,
+                syncLogRetentionDays=90,
                 withdrawOrderExportDateMode="specific_date",
                 withdrawOrderExportSpecificDate="2026-07-29",
                 chargeOrderExportDateMode="specific_date",
@@ -120,6 +121,7 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
     assert updated.uploaded_file_retention_days == 5
     assert updated.result_retention_days == 45
     assert updated.remote_cache_retention_days == 60
+    assert updated.sync_log_retention_days == 90
     assert updated.withdraw_order_export_date_mode == "specific_date"
     assert updated.withdraw_order_export_specific_date == date(2026, 7, 29)
     assert updated.charge_order_export_date_mode == "specific_date"
@@ -130,6 +132,8 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
     assert updated_session_settings.session_ttl_days == 45
     assert audit is not None
     assert audit.metadata_json["previous"]["withdrawOrderExportDateMode"] == "previous_day"
+    assert audit.metadata_json["previous"]["syncLogRetentionDays"] == 30
+    assert audit.metadata_json["current"]["syncLogRetentionDays"] == 90
     assert audit.metadata_json["previous"]["withdrawOrderExportSpecificDate"] is None
     assert audit.metadata_json["current"]["withdrawOrderExportDateMode"] == "specific_date"
     assert audit.metadata_json["current"]["withdrawOrderExportSpecificDate"] == "2026-07-29"
@@ -154,6 +158,7 @@ def test_system_settings_response_exposes_withdraw_export_policy_in_camel_case()
     )
 
     payload = response.model_dump(by_alias=True)
+    assert payload["syncLogRetentionDays"] == 30
     assert payload["withdrawOrderExportDateMode"] == "specific_date"
     assert payload["withdrawOrderExportSpecificDate"] == date(2026, 7, 29)
     assert payload["chargeOrderExportDateMode"] == "previous_day"

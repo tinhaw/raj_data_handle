@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from packages.domain.models import (
     Base,
+    DataSyncRun,
+    DataSyncRunEvent,
     SecurityAuditLog,
     SourceConfig,
     WithdrawOrderSnapshot,
@@ -17,6 +19,7 @@ from packages.domain.models import (
 )
 from packages.domain.services.scoring_reviewed_cases_import_service import (
     SCORING_REVIEWED_CASES_EXPORT_COLUMNS,
+    ScoringReviewedCasesImportError,
 )
 from packages.domain.services.withdraw_scoring_import_service import (
     WithdrawScoringImportError,
@@ -149,6 +152,101 @@ async def test_import_matches_only_existing_master_in_same_source_and_audits_cou
         "updatedRows": 0,
         "unmatchedRows": 1,
     }
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_excel_import_records_safe_completed_sync_run_with_join_metrics() -> None:
+    engine, factory = await _database()
+    synced_at = datetime(2026, 8, 1, tzinfo=UTC)
+    content = _workbook_bytes([_case("case-1"), _case("score-only")])
+    async with factory() as session:
+        session.add_all([_source("rajwin"), _master("rajwin", "case-1")])
+        await session.commit()
+
+        await import_scoring_reviewed_cases_export(
+            session,
+            source_id="rajwin",
+            content=content,
+            actor_user_id=None,
+            now=synced_at,
+            input_filename="C:\\downloads\\评分审核导出.xlsx",
+        )
+
+        run = await session.scalar(select(DataSyncRun))
+        events = list(
+            await session.scalars(
+                select(DataSyncRunEvent).order_by(DataSyncRunEvent.occurred_at, DataSyncRunEvent.id)
+            )
+        )
+
+    assert run is not None
+    assert run.business_type == "withdraw_scoring_import"
+    assert run.trigger_type == "upload"
+    assert run.operation_kind == "excel_import"
+    assert run.status == "succeeded"
+    assert run.complete is True
+    assert run.input_filename == "评分审核导出.xlsx"
+    assert run.input_size_bytes == len(content)
+    assert run.export_row_count == 2
+    assert run.imported_count == 2
+    assert run.created_count == 1
+    assert run.updated_count == 0
+    assert run.duplicate_count == 0
+    assert run.matched_count == 1
+    assert run.unmatched_count == 1
+    assert [event.event_type for event in events] == [
+        "running",
+        "excel_parse_started",
+        "excel_parse_completed",
+        "import_started",
+        "completed",
+    ]
+    assert events[2].metadata_json == {"sourceRowCount": 2}
+    assert events[3].metadata_json == {"sourceRowCount": 2}
+    assert all("score-uid-must-not-copy" not in str(event.metadata_json) for event in events)
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_invalid_excel_records_safe_failed_sync_run_without_workbook_content() -> None:
+    engine, factory = await _database()
+    content = b"not-an-xlsx-workbook"
+    async with factory() as session:
+        session.add(_source("rajwin"))
+        await session.commit()
+
+        with pytest.raises(ScoringReviewedCasesImportError, match="格式无效"):
+            await import_scoring_reviewed_cases_export(
+                session,
+                source_id="rajwin",
+                content=content,
+                actor_user_id=None,
+                input_filename="invalid.xlsx",
+            )
+
+        run = await session.scalar(select(DataSyncRun))
+        events = list(
+            await session.scalars(
+                select(DataSyncRunEvent).order_by(DataSyncRunEvent.occurred_at, DataSyncRunEvent.id)
+            )
+        )
+
+    assert run is not None
+    assert run.status == "failed"
+    assert run.complete is False
+    assert run.error_code == "withdraw_scoring_excel_validation_failed"
+    assert run.error_message == "评分审核导出文件为空、格式无效或超过大小限制。"
+    assert run.input_filename == "invalid.xlsx"
+    assert run.input_size_bytes == len(content)
+    assert run.metadata_json == {}
+    assert "not-an-xlsx-workbook" not in (run.error_message or "")
+    assert [event.event_type for event in events] == [
+        "running",
+        "excel_parse_started",
+        "failed",
+    ]
+    assert events[-1].message == run.error_message
     await engine.dispose()
 
 

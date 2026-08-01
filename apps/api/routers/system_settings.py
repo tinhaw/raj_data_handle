@@ -31,6 +31,7 @@ def _response(
         uploadedFileRetentionDays=retention.uploaded_file_retention_days,
         resultRetentionDays=retention.result_retention_days,
         remoteCacheRetentionDays=retention.remote_cache_retention_days,
+        syncLogRetentionDays=retention.sync_log_retention_days or 30,
         withdrawOrderRefreshIntervalHours=retention.withdraw_order_refresh_interval_hours or 1,
         withdrawOrderRefreshPageSize=retention.withdraw_order_refresh_page_size or 100,
         withdrawOrderQueryRange=retention.withdraw_order_query_range or "today",
