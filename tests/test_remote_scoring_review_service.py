@@ -25,8 +25,8 @@ async def test_reviewed_case_projection_uses_initial_score_and_discards_sensitiv
                     "summary": "允许缓存的评分摘要",
                     "queue": "processed",
                     "auditFinishedAt": "2026-07-31 10:01:12",
-                    "auditElapsedSeconds": 72,
-                    "queueWaitSeconds": 8,
+                    "auditElapsedSeconds": 72.4,
+                    "queueWaitSeconds": 8.6,
                     "queueEnteredAt": "2026-07-31 10:00:00",
                     "queueExitedAt": "2026-07-31 10:00:08",
                     "playerName": "must-not-project",
@@ -56,7 +56,7 @@ async def test_reviewed_case_projection_uses_initial_score_and_discards_sensitiv
     assert case.scenario_review == "人工复核"
     assert case.decision_stage == "评分审核"
     assert case.review_duration == "00:01:12"
-    assert case.queue_duration == "00:00:08"
+    assert case.queue_duration == "00:00:09"
     assert "player_name" not in case.__dataclass_fields__
     assert "bank_account" not in case.__dataclass_fields__
     assert "remote_request_data" not in case.__dataclass_fields__

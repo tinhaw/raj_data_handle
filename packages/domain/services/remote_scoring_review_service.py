@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
+from math import isfinite
 from typing import Any
 
 import httpx
@@ -53,9 +54,13 @@ def _elapsed(value: object) -> str | None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise RemoteScoringReviewError("评分审核 API 返回了无效的耗时字段。")
-    if value < 0 or int(value) != value or value > 31_536_000:
+    total_seconds = float(value)
+    if not isfinite(total_seconds) or total_seconds < 0 or total_seconds > 31_536_000:
         raise RemoteScoringReviewError("评分审核 API 返回了无效的耗时字段。")
-    seconds = int(value)
+    # The source API keeps one decimal place for sub-second case timing. The
+    # local supplemental fields store elapsed values in ``HH:MM:SS`` only, so
+    # normalize to the nearest whole second instead of rejecting valid data.
+    seconds = int(round(total_seconds))
     hours, remainder = divmod(seconds, 3_600)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
