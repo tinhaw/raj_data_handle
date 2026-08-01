@@ -242,6 +242,8 @@ class RajAdminWithdrawClient(RajAdminChargeClient):
                 headers=headers,
                 json=body,
             )
+        except httpx.TimeoutException as exc:
+            raise RemoteResponseError("远端提现订单导出请求超时。") from exc
         except httpx.HTTPError as exc:
             raise RemoteResponseError("远端提现订单导出请求失败。") from exc
         if response.status_code in AUTH_FAILURE_STATUSES and allow_relogin:

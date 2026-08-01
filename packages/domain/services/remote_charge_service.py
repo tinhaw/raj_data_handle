@@ -40,6 +40,11 @@ REMOTE_POST_PATHS = {
 AUTH_FAILURE_STATUSES = {401, 403, 419, 440}
 MAX_CHARGE_PAGES_PER_CHANNEL = 200
 MAX_CHARGE_EXPORT_BYTES = 128 * 1024 * 1024
+# Excel generation on a remote back office can take substantially longer than
+# a normal JSON query.  Keep connection establishment bounded, while allowing
+# a completed download enough time to arrive.
+REMOTE_CONNECT_TIMEOUT_SECONDS = 10.0
+REMOTE_REQUEST_TIMEOUT_SECONDS = 180.0
 
 CHARGE_EXPORT_COLUMNS = (
     "订单id",
@@ -266,7 +271,7 @@ class RajAdminChargeClient:
         username: str,
         password: str,
         totp_secret: str,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = REMOTE_REQUEST_TIMEOUT_SECONDS,
         page_size: int = 100,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
@@ -277,7 +282,10 @@ class RajAdminChargeClient:
         self.page_size = page_size
         self._token: str | None = None
         self._client = httpx.AsyncClient(
-            timeout=timeout_seconds,
+            timeout=httpx.Timeout(
+                timeout_seconds,
+                connect=min(REMOTE_CONNECT_TIMEOUT_SECONDS, timeout_seconds),
+            ),
             follow_redirects=False,
             transport=transport,
         )
@@ -408,6 +416,8 @@ class RajAdminChargeClient:
                 headers=headers,
                 json=body,
             )
+        except httpx.TimeoutException as exc:
+            raise RemoteResponseError("远端充值订单导出请求超时。") from exc
         except httpx.HTTPError as exc:
             raise RemoteResponseError("远端充值订单导出请求失败。") from exc
         if response.status_code in AUTH_FAILURE_STATUSES and allow_relogin:
