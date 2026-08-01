@@ -26,6 +26,7 @@ export interface UserRecord {
 export interface SourceConfig {
   sourceId: string
   displayName: string
+  displayOrder: number
   baseUrl: string | null
   enabled: boolean
   businessTimezone: string

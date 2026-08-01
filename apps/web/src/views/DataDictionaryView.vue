@@ -230,6 +230,15 @@ async function load(): Promise<void> {
     spinStatuses.value = spins
     userSourceChannels.value = userChannels
     sources.value = availableSources
+    const firstSourceId = availableSources[0]?.sourceId
+    if (firstSourceId) {
+      if (!statusFilters.sourceId) statusFilters.sourceId = firstSourceId
+      if (!chargeStatusFilters.sourceId) chargeStatusFilters.sourceId = firstSourceId
+      if (!paymentChannelFilters.sourceId) paymentChannelFilters.sourceId = firstSourceId
+      if (!channelFilters.sourceId) channelFilters.sourceId = firstSourceId
+      if (!spinStatusFilters.sourceId) spinStatusFilters.sourceId = firstSourceId
+      if (!userSourceChannelFilters.sourceId) userSourceChannelFilters.sourceId = firstSourceId
+    }
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '数据字典加载失败。'))
   } finally {

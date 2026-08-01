@@ -555,6 +555,7 @@ class SourceConfig(Base):
 
     source_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     base_url: Mapped[str | None] = mapped_column(String(500))
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     business_timezone: Mapped[str] = mapped_column(

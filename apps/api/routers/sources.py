@@ -9,6 +9,7 @@ from packages.domain.models import SourceConfig
 from packages.domain.schemas.source import (
     SourceConnectionTestResponse,
     SourceCreateRequest,
+    SourceOrderRequest,
     SourcePatchRequest,
     SourceResponse,
     SourceUpsertRequest,
@@ -22,6 +23,7 @@ from packages.domain.services.source_service import (
     create_source,
     delete_source,
     list_sources,
+    reorder_sources,
     upsert_source,
 )
 from packages.domain.services.source_service import (
@@ -35,6 +37,7 @@ def _source_response(source: SourceConfig) -> SourceResponse:
     return SourceResponse(
         source_id=source.source_id,
         display_name=source.display_name,
+        display_order=source.display_order,
         base_url=source.base_url,
         enabled=source.enabled,
         business_timezone=source.business_timezone,
@@ -87,6 +90,23 @@ async def post_source(
     except SourceValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return _source_response(source)
+
+
+@router.put("/settings/sources/order", response_model=list[SourceResponse])
+async def put_source_order(
+    payload: SourceOrderRequest,
+    auth: AuthContext = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[SourceResponse]:
+    try:
+        sources = await reorder_sources(
+            session,
+            source_ids=payload.source_ids,
+            actor_user_id=auth.user.id,
+        )
+    except SourceValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return [_source_response(source) for source in sources]
 
 
 @router.put("/settings/sources/{source_id}", response_model=SourceResponse)

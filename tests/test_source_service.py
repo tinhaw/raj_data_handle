@@ -17,7 +17,9 @@ from packages.domain.services.source_service import (
     SourceValidationError,
     create_source,
     delete_source,
+    list_sources,
     normalize_base_url,
+    reorder_sources,
     validate_source_id,
     validate_timezone,
 )
@@ -156,6 +158,54 @@ async def test_new_source_accepts_initial_credentials_before_database_flush() ->
 
     assert created.credential_version == 1
     assert created.encrypted_credentials is not None
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sources_can_be_reordered_and_are_listed_in_persisted_order() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with factory() as session:
+        session.add_all(
+            [
+                SourceConfig(
+                    source_id="rajwin",
+                    display_name="RajWin",
+                    business_timezone="Asia/Kolkata",
+                    currency="INR",
+                ),
+                SourceConfig(
+                    source_id="rajluck",
+                    display_name="RajLuck",
+                    business_timezone="Asia/Kolkata",
+                    currency="INR",
+                ),
+            ]
+        )
+        await session.commit()
+
+        reordered = await reorder_sources(
+            session,
+            source_ids=["rajwin", "rajluck"],
+            actor_user_id=1,
+        )
+        assert [source.source_id for source in reordered] == ["rajwin", "rajluck"]
+        assert [source.source_id for source in await list_sources(session)] == [
+            "rajwin",
+            "rajluck",
+        ]
+        assert [source.display_order for source in reordered] == [1, 2]
+
+        with pytest.raises(SourceValidationError, match="重复"):
+            await reorder_sources(
+                session,
+                source_ids=["rajwin", "rajwin"],
+                actor_user_id=1,
+            )
+
     await engine.dispose()
 
 

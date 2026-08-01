@@ -294,6 +294,12 @@ async function submit(): Promise<void> {
 onMounted(async () => {
   try {
     sources.value = await fetchEnabledSources()
+    const firstSource = sources.value[0]
+    if (firstSource) {
+      form.sourceId = firstSource.sourceId
+      form.currency = firstSource.currency
+      await loadChannels()
+    }
   } catch {
     sources.value = []
   }

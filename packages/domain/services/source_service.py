@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -102,11 +102,45 @@ def _credentials_dict(request: object) -> dict[str, str | None]:
 
 
 async def list_sources(session: AsyncSession, enabled: bool | None = None) -> list[SourceConfig]:
-    statement = select(SourceConfig).order_by(SourceConfig.source_id.asc())
+    statement = select(SourceConfig).order_by(
+        SourceConfig.display_order.asc(), SourceConfig.source_id.asc()
+    )
     if enabled is not None:
         statement = statement.where(SourceConfig.enabled.is_(enabled))
     result = await session.scalars(statement)
     return list(result)
+
+
+async def reorder_sources(
+    session: AsyncSession,
+    *,
+    source_ids: list[str],
+    actor_user_id: int,
+) -> list[SourceConfig]:
+    normalized_ids = [validate_source_id(source_id) for source_id in source_ids]
+    if len(normalized_ids) != len(set(normalized_ids)):
+        raise SourceValidationError("盘口顺序不能包含重复项。")
+
+    sources = list(await session.scalars(select(SourceConfig)))
+    current_ids = {source.source_id for source in sources}
+    if set(normalized_ids) != current_ids:
+        raise SourceValidationError("盘口顺序必须包含全部盘口，且不能包含不存在的盘口。")
+
+    source_by_id = {source.source_id: source for source in sources}
+    for display_order, source_id in enumerate(normalized_ids, start=1):
+        source = source_by_id[source_id]
+        source.display_order = display_order
+        source.updated_by = actor_user_id
+
+    await write_audit(
+        session,
+        action="source.reorder",
+        actor_user_id=actor_user_id,
+        target_type="source",
+        metadata={"source_ids": normalized_ids},
+    )
+    await session.commit()
+    return [source_by_id[source_id] for source_id in normalized_ids]
 
 
 async def get_source(session: AsyncSession, source_id: str) -> SourceConfig:
@@ -156,9 +190,11 @@ async def upsert_source(
     if source is None:
         if not isinstance(request, SourceUpsertRequest):
             raise SourceValidationError("盘口配置不存在。")
+        max_display_order = await session.scalar(select(func.max(SourceConfig.display_order)))
         source = SourceConfig(
             source_id=source_id,
             display_name=request.display_name,
+            display_order=(max_display_order or 0) + 1,
             business_timezone=current_settings.default_business_timezone,
             currency=current_settings.default_currency,
             credential_version=0,

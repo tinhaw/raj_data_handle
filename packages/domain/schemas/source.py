@@ -53,9 +53,14 @@ class SourcePatchRequest(ApiSchema):
         return normalized
 
 
+class SourceOrderRequest(ApiSchema):
+    source_ids: list[str] = Field(min_length=1, max_length=200)
+
+
 class SourceResponse(ApiSchema):
     source_id: str
     display_name: str
+    display_order: int
     base_url: str | None
     enabled: bool
     business_timezone: str

@@ -102,6 +102,7 @@ async function load(): Promise<void> {
 onMounted(async () => {
   try {
     sources.value = await fetchEnabledSources()
+    if (sources.value[0]) filters.sourceId = sources.value[0].sourceId
   } catch {
     sources.value = []
   }

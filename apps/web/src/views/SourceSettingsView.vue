@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Connection, Delete, Edit, Plus, Refresh } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, Connection, Delete, Edit, Plus, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { onMounted, reactive, ref } from 'vue'
 
@@ -9,6 +9,7 @@ import {
   createSource,
   deleteSource,
   fetchAllSources,
+  reorderSources,
   testSourceConnection,
   updateSource,
 } from '../api/sources'
@@ -19,6 +20,7 @@ const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
 const rows = ref<SourceConfig[]>([])
+const reordering = ref(false)
 const dialogVisible = ref(false)
 const editingId = ref<string | null>(null)
 const credentialsConfigured = ref(false)
@@ -207,6 +209,24 @@ async function clearCredentials(row: SourceConfig): Promise<void> {
   }
 }
 
+async function moveSource(index: number, offset: -1 | 1): Promise<void> {
+  const targetIndex = index + offset
+  if (targetIndex < 0 || targetIndex >= rows.value.length || reordering.value) return
+  const sourceIds = rows.value.map((row) => row.sourceId)
+  const [movedSource] = sourceIds.splice(index, 1)
+  if (!movedSource) return
+  sourceIds.splice(targetIndex, 0, movedSource)
+  reordering.value = true
+  try {
+    rows.value = await reorderSources(sourceIds)
+    ElMessage.success('盘口展示顺序已保存。')
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '盘口展示顺序保存失败。'))
+  } finally {
+    reordering.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -216,7 +236,7 @@ onMounted(load)
       <div>
         <span class="page-eyebrow">Admin settings</span>
         <h1>盘口配置</h1>
-        <p>集中维护远端盘口的连接地址、访问凭据、业务时区与启用状态。</p>
+        <p>集中维护远端盘口的连接地址、访问凭据、业务时区、启用状态与展示顺序。</p>
       </div>
       <div class="header-actions">
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
@@ -234,6 +254,27 @@ onMounted(load)
 
     <section class="surface-card table-card">
       <el-table v-loading="loading" :data="rows">
+        <el-table-column label="展示顺序" width="140" align="center">
+          <template #default="{ $index }">
+            <el-button-group>
+              <el-button
+                text
+                :icon="ArrowUp"
+                :disabled="$index === 0 || reordering"
+                aria-label="上移盘口"
+                @click="moveSource($index, -1)"
+              />
+              <el-button
+                text
+                :icon="ArrowDown"
+                :disabled="$index === rows.length - 1 || reordering"
+                aria-label="下移盘口"
+                @click="moveSource($index, 1)"
+              />
+            </el-button-group>
+            <span class="order-number">{{ $index + 1 }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="来源 ID" min-width="150">
           <template #default="{ row }">
             <span>{{ row.sourceId }}</span>
