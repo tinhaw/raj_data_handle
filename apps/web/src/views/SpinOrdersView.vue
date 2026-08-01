@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { Refresh, Search } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElTag, TableV2FixedDir } from 'element-plus'
+import type { Column } from 'element-plus'
 import type { EChartsOption } from 'echarts'
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 
 import { apiErrorMessage } from '../api/client'
 import { fetchEnabledSources } from '../api/sources'
@@ -177,6 +178,117 @@ function statusTagType(status: string): 'success' | 'warning' | 'danger' | 'info
   if (status === '2') return 'danger'
   return 'info'
 }
+
+function virtualCellText(value: unknown): ReturnType<typeof h> {
+  const text = value === null || value === undefined || value === '' ? '—' : String(value)
+  return h('span', { class: 'spin-virtual-cell', title: text }, text)
+}
+
+function spinConfigCell(row: SpinOrder): ReturnType<typeof h> {
+  const label = row.spinConfigLabel || '—'
+  return h('div', { class: 'spin-virtual-cell-stack' }, [
+    h('strong', { class: 'spin-virtual-cell-primary', title: label }, label),
+    h('small', { class: 'spin-virtual-cell-code' }, row.spinConfigId || '—'),
+  ])
+}
+
+function channelCell(row: SpinOrder): ReturnType<typeof h> {
+  const label = row.channelName || '—'
+  const children = [
+    h('strong', { class: 'spin-virtual-cell-primary', title: label }, label),
+  ]
+  if (row.channelId) children.push(h('small', { class: 'spin-virtual-cell-code' }, row.channelId))
+  return h('div', { class: 'spin-virtual-cell-stack' }, children)
+}
+
+const spinOrderTableColumns = computed<Column<SpinOrder>[]>(() => [
+  {
+    key: 'id',
+    dataKey: 'id',
+    title: '订单 ID',
+    width: 162,
+    fixed: true,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.id),
+  },
+  {
+    key: 'uid',
+    dataKey: 'uid',
+    title: '用户 UID',
+    width: 142,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.uid),
+  },
+  {
+    key: 'spinConfig',
+    title: '转盘配置',
+    width: 168,
+    cellRenderer: ({ rowData }) => spinConfigCell(rowData),
+  },
+  {
+    key: 'channel',
+    title: '渠道来源',
+    width: 184,
+    cellRenderer: ({ rowData }) => channelCell(rowData),
+  },
+  {
+    key: 'roundNumber',
+    dataKey: 'roundNumber',
+    title: '参与轮次',
+    width: 112,
+    align: 'right',
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.roundNumber),
+  },
+  {
+    key: 'inviteCount',
+    dataKey: 'inviteCount',
+    title: '邀请人数',
+    width: 122,
+    align: 'right',
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.inviteCount),
+  },
+  {
+    key: 'agentTotalCount',
+    dataKey: 'agentTotalCount',
+    title: '代理总人数',
+    width: 138,
+    align: 'right',
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.agentTotalCount),
+  },
+  {
+    key: 'amount',
+    dataKey: 'amount',
+    title: '提现金额（分）',
+    width: 142,
+    align: 'right',
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.amount),
+  },
+  {
+    key: 'createTime',
+    dataKey: 'createTime',
+    title: '申请时间',
+    width: 184,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.createTime),
+  },
+  {
+    key: 'auditTime',
+    dataKey: 'auditTime',
+    title: '审核时间',
+    width: 184,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.auditTime),
+  },
+  {
+    key: 'status',
+    title: '审核状态',
+    width: 144,
+    fixed: TableV2FixedDir.RIGHT,
+    align: 'center',
+    cellRenderer: ({ rowData }) =>
+      h(
+        ElTag,
+        { type: statusTagType(rowData.status), effect: 'light', size: 'small' },
+        { default: () => rowData.statusLabel },
+      ),
+  },
+])
 
 function todayRange(source: SourceConfig | undefined): [string, string] {
   return businessFullDayRange(source?.businessTimezone || 'Asia/Kolkata', 0)
@@ -398,20 +510,32 @@ onBeforeUnmount(clearLocalCachePoll)
           </section>
 
           <section class="surface-card table-card">
-            <div class="section-heading"><div><h2>转盘订单列表</h2><p>共 {{ total.toLocaleString() }} 条；远端本次累计读取 {{ response?.remoteTotal || 0 }} 条，已解析渠道 UID {{ response?.resolvedUidCount || 0 }} 个，待重试 {{ response?.unresolvedUidCount || 0 }} 个。</p></div><el-tag :type="refreshStatusTagType" effect="plain">{{ refreshStatusLabel }}</el-tag></div>
-            <el-table v-loading="loading" :data="rows" empty-text="当前本地数据中暂无转盘订单">
-              <el-table-column label="订单 ID" prop="id" min-width="150" fixed="left" />
-              <el-table-column label="用户 UID" prop="uid" min-width="130" />
-              <el-table-column label="转盘配置" min-width="155"><template #default="{ row }"><strong>{{ row.spinConfigLabel }}</strong><small class="code-note">{{ row.spinConfigId }}</small></template></el-table-column>
-              <el-table-column label="渠道来源" min-width="170" prop="channelName" show-overflow-tooltip><template #default="{ row }">{{ row.channelName }}<small v-if="row.channelId" class="code-note">{{ row.channelId }}</small></template></el-table-column>
-              <el-table-column label="参与轮次" prop="roundNumber" min-width="100" align="right" />
-              <el-table-column label="邀请人数" prop="inviteCount" min-width="110" align="right" />
-              <el-table-column label="代理总人数" prop="agentTotalCount" min-width="120" align="right" />
-              <el-table-column label="提现金额（分）" prop="amount" min-width="130" align="right" />
-              <el-table-column label="申请时间" prop="createTime" min-width="178" />
-              <el-table-column label="审核时间" prop="auditTime" min-width="178" />
-              <el-table-column label="审核状态" min-width="140" fixed="right"><template #default="{ row }"><el-tag :type="statusTagType(row.status)" effect="light">{{ row.statusLabel }}</el-tag></template></el-table-column>
-            </el-table>
+            <div class="section-heading"><div><h2>转盘订单列表</h2><p>共 {{ total.toLocaleString() }} 条；远端本次累计读取 {{ response?.remoteTotal || 0 }} 条，已解析渠道 UID {{ response?.resolvedUidCount || 0 }} 个，待重试 {{ response?.unresolvedUidCount || 0 }} 个。表格固定高度，仅在表格内滚动。</p></div><el-tag :type="refreshStatusTagType" effect="plain">{{ refreshStatusLabel }}</el-tag></div>
+            <div
+              v-loading="loading"
+              class="spin-virtual-orders-table"
+              aria-label="转盘订单明细虚拟化表格"
+            >
+              <el-auto-resizer>
+                <template #default="{ height, width }">
+                  <el-table-v2
+                    :columns="spinOrderTableColumns"
+                    :data="rows"
+                    :height="height"
+                    :width="width"
+                    :header-height="52"
+                    :row-height="58"
+                    row-key="id"
+                    fixed
+                    scrollbar-always-on
+                  >
+                    <template #empty>
+                      <el-empty description="当前本地数据中暂无转盘订单" />
+                    </template>
+                  </el-table-v2>
+                </template>
+              </el-auto-resizer>
+            </div>
             <div class="table-pagination"><el-pagination background layout="total, sizes, prev, pager, next, jumper" :total="total" :current-page="page" :page-size="pageSize" :page-sizes="[20, 50, 100]" @update:current-page="handlePageChange" @update:page-size="handlePageSizeChange" /></div>
           </section>
         </div>
@@ -458,6 +582,13 @@ onBeforeUnmount(clearLocalCachePoll)
 .query-card { padding: 18px; }.query-card__grid { display: grid; grid-template-columns: minmax(170px, 0.8fr) minmax(300px, 2fr) repeat(3, minmax(160px, 0.8fr)); gap: 14px; }.query-field { display: grid; gap: 7px; color: var(--ink); font-size: 12px; font-weight: 800; }.query-field :deep(.el-select) { width: 100%; }.query-field--time-range { grid-column: span 2; }.query-card__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 16px; color: var(--ink-muted); font-size: 12px; }
 .metric-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }.metric-card { min-width: 0; display: grid; gap: 7px; padding: 16px; }.metric-card span, .metric-card small { color: var(--ink-muted); font-size: 12px; }.metric-card strong { overflow: hidden; color: var(--ink-strong); font-size: 22px; text-overflow: ellipsis; white-space: nowrap; }.metric-card--orders { border-top: 3px solid var(--teal); }
 .table-card, .spin-chart-card { overflow: hidden; }.section-heading { padding: 18px 20px; }.table-pagination { display: flex; justify-content: flex-end; padding: 16px 20px; }.code-note { display: block; margin-top: 3px; color: var(--ink-muted); font-size: 11px; font-weight: 500; }.spin-chart-card { padding-bottom: 10px; background: linear-gradient(180deg, #fff 0%, #f8fcfc 100%); }.refresh-range-list { display: grid; gap: 12px; margin-top: 18px; }.refresh-range-list :deep(.el-radio) { height: auto; align-items: flex-start; margin-right: 0; }.refresh-range-list strong, .refresh-range-list small { display: block; }.refresh-range-list small { margin-top: 4px; color: var(--ink-muted); line-height: 1.5; }.queued-note { text-align: right; }
+.spin-virtual-orders-table { width: 100%; min-height: 360px; height: clamp(360px, calc(100vh - 430px), 720px); overflow: hidden; border: 1px solid #dce6ee; border-radius: 8px; background: #ffffff; --el-table-border-color: #dce6ee; --el-table-header-bg-color: #f5f8fb; --el-table-row-hover-bg-color: #f7fbfb; --el-table-text-color: #43576a; --el-table-header-text-color: #183955; }
+.spin-virtual-orders-table :deep(.el-table-v2__header-cell) { padding: 0 14px; color: #183955; font-size: 12px; font-weight: 750; }
+.spin-virtual-orders-table :deep(.el-table-v2__row-cell) { padding: 0 14px; color: #43576a; font-size: 12px; }
+.spin-virtual-orders-table :deep(.el-table-v2__header-cell + .el-table-v2__header-cell), .spin-virtual-orders-table :deep(.el-table-v2__row-cell + .el-table-v2__row-cell) { border-left: 1px solid #dce6ee; }
+.spin-virtual-orders-table :deep(.el-table-v2__row-cell .el-tag) { font-weight: 650; }
+.spin-virtual-cell { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spin-virtual-cell-stack { display: grid; min-width: 0; gap: 2px; }.spin-virtual-cell-primary, .spin-virtual-cell-code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.spin-virtual-cell-primary { color: var(--ink); font-size: 12px; }.spin-virtual-cell-code { color: var(--ink-muted); font-size: 11px; font-weight: 500; }
 @media (max-width: 1260px) { .metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }.query-card__grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }.query-field--time-range { grid-column: span 2; } }
-@media (max-width: 820px) { .tab-pane-header, .header-actions, .section-heading, .query-card__footer { align-items: stretch; flex-direction: column; }.header-actions { width: 100%; }.query-card__grid, .metric-grid { grid-template-columns: 1fr; }.query-field--time-range { grid-column: auto; }.table-pagination { justify-content: flex-start; overflow-x: auto; } }
+@media (max-width: 820px) { .tab-pane-header, .header-actions, .section-heading, .query-card__footer { align-items: stretch; flex-direction: column; }.header-actions { width: 100%; }.query-card__grid, .metric-grid { grid-template-columns: 1fr; }.query-field--time-range { grid-column: auto; }.spin-virtual-orders-table { min-height: 320px; height: min(56vh, 520px); }.table-pagination { justify-content: flex-start; overflow-x: auto; } }
 </style>

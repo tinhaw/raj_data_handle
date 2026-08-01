@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { Refresh, Search } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { ElMessage, ElTag } from 'element-plus'
+import type { Column } from 'element-plus'
+import { computed, h, onMounted, reactive, ref } from 'vue'
 
 import { apiErrorMessage } from '../api/client'
 import { fetchEnabledSources } from '../api/sources'
@@ -99,6 +100,143 @@ function amountText(value: string | null | undefined): string {
 function statusLabel(value: string): string {
   return statusNames.value.get(value) || `状态 ${value}`
 }
+
+function virtualCellText(value: unknown): ReturnType<typeof h> {
+  const text = value === null || value === undefined || value === '' ? '—' : String(value)
+  return h('span', { class: 'charge-virtual-cell', title: text }, text)
+}
+
+const chargeOrderTableColumns = computed<Column<ChargeOrder>[]>(() => [
+  {
+    key: 'id',
+    dataKey: 'id',
+    title: '订单id',
+    width: 150,
+    fixed: true,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.id),
+  },
+  {
+    key: 'uid',
+    dataKey: 'uid',
+    title: '用户uid',
+    width: 132,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.uid),
+  },
+  {
+    key: 'orderNum',
+    dataKey: 'orderNum',
+    title: '我方订单号',
+    width: 204,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.orderNum),
+  },
+  {
+    key: 'chargeProductId',
+    dataKey: 'chargeProductId',
+    title: '充值商品id',
+    width: 150,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.chargeProductId),
+  },
+  {
+    key: 'productName',
+    dataKey: 'productName',
+    title: '商品名称',
+    width: 178,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.productName),
+  },
+  {
+    key: 'payChannelName',
+    dataKey: 'payChannelName',
+    title: '支付渠道名称',
+    width: 188,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.payChannelName),
+  },
+  {
+    key: 'payMethod',
+    dataKey: 'payMethod',
+    title: '支付渠道',
+    width: 154,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.payMethod),
+  },
+  {
+    key: 'payType',
+    dataKey: 'payType',
+    title: '支付方式',
+    width: 154,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.payType),
+  },
+  {
+    key: 'outTradeNo',
+    dataKey: 'outTradeNo',
+    title: '三方支付订单号',
+    width: 204,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.outTradeNo),
+  },
+  {
+    key: 'amount',
+    title: '支付金额',
+    width: 144,
+    align: 'right',
+    cellRenderer: ({ rowData }) => virtualCellText(amountText(rowData.amount)),
+  },
+  {
+    key: 'balance',
+    title: '发放金额',
+    width: 144,
+    align: 'right',
+    cellRenderer: ({ rowData }) => virtualCellText(amountText(rowData.balance)),
+  },
+  {
+    key: 'extra',
+    title: '赠送金额',
+    width: 144,
+    align: 'right',
+    cellRenderer: ({ rowData }) => virtualCellText(amountText(rowData.extra)),
+  },
+  {
+    key: 'status',
+    title: '订单状态',
+    width: 136,
+    align: 'center',
+    cellRenderer: ({ rowData }) =>
+      h(
+        ElTag,
+        { type: 'info', effect: 'light', size: 'small' },
+        { default: () => statusLabel(rowData.status) },
+      ),
+  },
+  {
+    key: 'createTime',
+    title: '创建时间',
+    width: 184,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.createTime),
+  },
+  {
+    key: 'payTime',
+    title: '支付时间',
+    width: 184,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.payTime),
+  },
+  {
+    key: 'updateTime',
+    title: '完成时间',
+    width: 184,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.updateTime),
+  },
+  {
+    key: 'firstPay',
+    dataKey: 'firstPay',
+    title: '是否首充',
+    width: 112,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.firstPay),
+  },
+  {
+    key: 'channel',
+    dataKey: 'channel',
+    title: '用户渠道',
+    width: 154,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.channel),
+  },
+])
 
 async function load(resetPage = false): Promise<void> {
   if (!filters.sourceId) return
@@ -263,29 +401,30 @@ onMounted(async () => {
 
     <section class="surface-card charge-table">
       <div class="charge-table__heading">
-        <div><h2>充值订单列表</h2><p>共 {{ total.toLocaleString() }} 条；本地数据更新时间：{{ localUpdatedText }}。</p></div>
+        <div><h2>充值订单列表</h2><p>共 {{ total.toLocaleString() }} 条；本地数据更新时间：{{ localUpdatedText }}。表格固定高度，仅在表格内滚动。</p></div>
         <el-tag effect="plain" type="info">{{ refreshLabel }}</el-tag>
       </div>
-      <el-table v-loading="loading" :data="rows" empty-text="当前本地数据中暂无充值订单">
-        <el-table-column label="订单id" prop="id" fixed="left" min-width="132" />
-        <el-table-column label="用户uid" prop="uid" min-width="118" />
-        <el-table-column label="我方订单号" prop="orderNum" min-width="180" show-overflow-tooltip />
-        <el-table-column label="充值商品id" prop="chargeProductId" min-width="132" show-overflow-tooltip />
-        <el-table-column label="商品名称" prop="productName" min-width="160" show-overflow-tooltip />
-        <el-table-column label="支付渠道名称" prop="payChannelName" min-width="170" show-overflow-tooltip />
-        <el-table-column label="支付渠道" prop="payMethod" min-width="140" show-overflow-tooltip />
-        <el-table-column label="支付方式" prop="payType" min-width="140" show-overflow-tooltip />
-        <el-table-column label="三方支付订单号" prop="outTradeNo" min-width="180" show-overflow-tooltip />
-        <el-table-column label="支付金额" min-width="132" align="right"><template #default="{ row }">{{ amountText(row.amount) }}</template></el-table-column>
-        <el-table-column label="发放金额" min-width="132" align="right"><template #default="{ row }">{{ amountText(row.balance) }}</template></el-table-column>
-        <el-table-column label="赠送金额" min-width="132" align="right"><template #default="{ row }">{{ amountText(row.extra) }}</template></el-table-column>
-        <el-table-column label="订单状态" min-width="120"><template #default="{ row }"><el-tag type="info">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
-        <el-table-column label="创建时间" min-width="172"><template #default="{ row }">{{ row.createTime || '—' }}</template></el-table-column>
-        <el-table-column label="支付时间" min-width="172"><template #default="{ row }">{{ row.payTime || '—' }}</template></el-table-column>
-        <el-table-column label="完成时间" min-width="172"><template #default="{ row }">{{ row.updateTime || '—' }}</template></el-table-column>
-        <el-table-column label="是否首充" prop="firstPay" min-width="100" />
-        <el-table-column label="用户渠道" prop="channel" min-width="140" show-overflow-tooltip />
-      </el-table>
+      <div v-loading="loading" class="charge-virtual-table" aria-label="充值订单明细虚拟化表格">
+        <el-auto-resizer>
+          <template #default="{ height, width }">
+            <el-table-v2
+              :columns="chargeOrderTableColumns"
+              :data="rows"
+              :height="height"
+              :width="width"
+              :header-height="52"
+              :row-height="56"
+              row-key="id"
+              fixed
+              scrollbar-always-on
+            >
+              <template #empty>
+                <el-empty description="当前本地数据中暂无充值订单" />
+              </template>
+            </el-table-v2>
+          </template>
+        </el-auto-resizer>
+      </div>
       <div class="charge-pagination">
         <el-pagination background layout="total, sizes, prev, pager, next, jumper" :total="total" :current-page="page" :page-size="pageSize" :page-sizes="[20, 50, 100]" @update:current-page="handlePageChange" @update:page-size="handlePageSizeChange" />
       </div>
@@ -328,8 +467,37 @@ onMounted(async () => {
 .charge-metrics strong { color: var(--ink-strong); font-size: 27px; line-height: 1.15; }
 .charge-table { overflow: hidden; }
 .charge-table__heading { padding: 18px 20px; }
+.charge-virtual-table {
+  width: 100%;
+  min-height: 360px;
+  height: clamp(360px, calc(100vh - 430px), 720px);
+  overflow: hidden;
+  border: 1px solid #dce6ee;
+  border-radius: 8px;
+  background: #ffffff;
+  --el-table-border-color: #dce6ee;
+  --el-table-header-bg-color: #f5f8fb;
+  --el-table-row-hover-bg-color: #f7fbfb;
+  --el-table-text-color: #43576a;
+  --el-table-header-text-color: #183955;
+}
+.charge-virtual-table :deep(.el-table-v2__header-cell) {
+  padding: 0 14px;
+  color: #183955;
+  font-size: 12px;
+  font-weight: 750;
+}
+.charge-virtual-table :deep(.el-table-v2__row-cell) {
+  padding: 0 14px;
+  color: #43576a;
+  font-size: 12px;
+}
+.charge-virtual-table :deep(.el-table-v2__header-cell + .el-table-v2__header-cell),
+.charge-virtual-table :deep(.el-table-v2__row-cell + .el-table-v2__row-cell) { border-left: 1px solid #dce6ee; }
+.charge-virtual-table :deep(.el-table-v2__row-cell .el-tag) { font-weight: 650; }
+.charge-virtual-cell { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .charge-pagination { display: flex; justify-content: flex-end; padding: 16px 20px; }
 .manual-refresh-dialog__field { display: grid; gap: 7px; margin-top: 14px; color: var(--ink); font-size: 13px; font-weight: 800; }
 @media (max-width: 980px) { .charge-query__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .charge-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .charge-header, .charge-header__actions, .charge-query__footer { align-items: flex-start; flex-direction: column; } .sync-state { text-align: left; } }
-@media (max-width: 640px) { .charge-query__grid, .charge-metrics { grid-template-columns: 1fr; } .charge-query__time { grid-column: span 1; } .charge-pagination { overflow-x: auto; justify-content: flex-start; } }
+@media (max-width: 640px) { .charge-query__grid, .charge-metrics { grid-template-columns: 1fr; } .charge-query__time { grid-column: span 1; } .charge-virtual-table { min-height: 320px; height: min(56vh, 520px); } .charge-pagination { overflow-x: auto; justify-content: flex-start; } }
 </style>

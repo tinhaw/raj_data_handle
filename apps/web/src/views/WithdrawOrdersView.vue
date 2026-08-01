@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { Refresh, Search, UploadFilled } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElButton, ElMessage, ElTag, TableV2FixedDir } from 'element-plus'
+import type { Column } from 'element-plus'
 import type { EChartsOption } from 'echarts'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, h, onMounted, reactive, ref } from 'vue'
 
 import { apiErrorMessage } from '../api/client'
 import { fetchEnabledSources } from '../api/sources'
@@ -135,6 +136,8 @@ const rows = ref<WithdrawOrder[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(50)
+const scoringDetailsVisible = ref(false)
+const selectedScoringDetailRow = ref<WithdrawOrder | null>(null)
 const queuedAt = ref<string | null>(null)
 const knownStatuses = ref<string[]>([])
 const filters = reactive({
@@ -768,6 +771,175 @@ function scoringText(value: string | null | undefined): string {
 function hasScoringSupplement(row: WithdrawOrder): boolean {
   return row.scoringRecordImported
 }
+
+function virtualCellText(value: unknown): ReturnType<typeof h> {
+  const text = value === null || value === undefined || value === '' ? '—' : String(value)
+  return h('span', { class: 'withdraw-virtual-cell', title: text }, text)
+}
+
+function openScoringDetails(row: WithdrawOrder): void {
+  selectedScoringDetailRow.value = row
+  scoringDetailsVisible.value = true
+}
+
+const withdrawOrderTableColumns = computed<Column<WithdrawOrder>[]>(() => [
+  {
+    key: 'scoringDetails',
+    title: '评分详情',
+    width: 112,
+    fixed: true,
+    align: 'center',
+    cellRenderer: ({ rowData }) =>
+      h(
+        ElButton,
+        {
+          text: true,
+          type: 'primary',
+          size: 'small',
+          onClick: () => openScoringDetails(rowData),
+        },
+        { default: () => (hasScoringSupplement(rowData) ? '查看评分' : '评分详情') },
+      ),
+  },
+  {
+    key: 'id',
+    dataKey: 'id',
+    title: '订单 ID',
+    width: 162,
+    fixed: true,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.id),
+  },
+  {
+    key: 'uid',
+    dataKey: 'uid',
+    title: '用户 UID',
+    width: 142,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.uid),
+  },
+  {
+    key: 'orderNum',
+    dataKey: 'orderNum',
+    title: '我方提现订单号',
+    width: 204,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.orderNum),
+  },
+  {
+    key: 'outTradeNo',
+    dataKey: 'outTradeNo',
+    title: '三方支付订单号',
+    width: 204,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.outTradeNo),
+  },
+  {
+    key: 'payChannelName',
+    dataKey: 'payChannelName',
+    title: '支付渠道名称',
+    width: 182,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.payChannelName),
+  },
+  {
+    key: 'payChannel',
+    dataKey: 'payChannel',
+    title: '支付渠道代码',
+    width: 162,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.payChannel),
+  },
+  {
+    key: 'amount',
+    title: '提现金额',
+    width: 150,
+    align: 'right',
+    cellRenderer: ({ rowData }) => virtualCellText(amountText(rowData.amount)),
+  },
+  {
+    key: 'realAmount',
+    title: '实际到账',
+    width: 150,
+    align: 'right',
+    cellRenderer: ({ rowData }) => virtualCellText(amountText(rowData.realAmount)),
+  },
+  {
+    key: 'fee',
+    title: '提现手续费',
+    width: 150,
+    align: 'right',
+    cellRenderer: ({ rowData }) => virtualCellText(amountText(rowData.fee)),
+  },
+  {
+    key: 'createTime',
+    dataKey: 'createTime',
+    title: '创建时间',
+    width: 184,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.createTime),
+  },
+  {
+    key: 'submitTime',
+    dataKey: 'submitTime',
+    title: '提交时间',
+    width: 184,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.submitTime),
+  },
+  {
+    key: 'updateTime',
+    dataKey: 'updateTime',
+    title: '完成时间',
+    width: 184,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.updateTime),
+  },
+  {
+    key: 'isFirst',
+    title: '是否首提',
+    width: 112,
+    cellRenderer: ({ rowData }) => virtualCellText(firstWithdrawText(rowData.isFirst)),
+  },
+  {
+    key: 'channel',
+    dataKey: 'channel',
+    title: '用户渠道',
+    width: 162,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.channel),
+  },
+  {
+    key: 'auditAdmin',
+    dataKey: 'auditAdmin',
+    title: '操作人员',
+    width: 152,
+    cellRenderer: ({ rowData }) => virtualCellText(rowData.auditAdmin),
+  },
+  {
+    key: 'scoringScore',
+    title: '评分审核',
+    width: 126,
+    align: 'center',
+    cellRenderer: ({ rowData }) =>
+      hasScoringSupplement(rowData)
+        ? h(
+            ElTag,
+            { type: 'success', effect: 'plain', size: 'small' },
+            { default: () => scoringText(rowData.scoringScore) },
+          )
+        : h('span', { class: 'withdraw-virtual-score-empty' }, '未匹配'),
+  },
+  {
+    key: 'scoringFinalSuggestion',
+    title: '最终审核建议',
+    width: 192,
+    cellRenderer: ({ rowData }) => virtualCellText(scoringText(rowData.scoringFinalSuggestion)),
+  },
+  {
+    key: 'status',
+    title: '状态',
+    width: 136,
+    fixed: TableV2FixedDir.RIGHT,
+    align: 'center',
+    cellRenderer: ({ rowData }) =>
+      h(
+        ElTag,
+        { type: 'info', effect: 'light', size: 'small' },
+        { default: () => orderStatusLabel(rowData) },
+      ),
+  },
+])
 
 function operatorSummaryStatusLabel(status: string): string {
   return operatorSummaryStatusEntryByCode.value.get(status.trim())?.label?.trim() || '未配置状态'
@@ -1419,158 +1591,38 @@ onMounted(async () => {
               <div>
                 <h2>提现订单列表</h2>
                 <p>
-                  共 {{ total.toLocaleString() }} 条；本地数据更新时间：{{ localUpdatedText }}。展开“评分详情”可查看仅由评分审核 Excel 补充的字段。
+                  共 {{ total.toLocaleString() }} 条；本地数据更新时间：{{ localUpdatedText }}。表格固定高度，仅在表格内滚动；点击“评分详情”可查看仅由评分审核 Excel 补充的字段。
                 </p>
               </div>
               <el-tag :type="refreshStatusTagType" effect="plain">
                 {{ refreshStatusLabel }}
               </el-tag>
             </div>
-            <el-table v-loading="loading" :data="rows" empty-text="当前本地数据中暂无提现订单">
-              <el-table-column type="expand" width="76" label="评分详情" fixed="left">
-                <template #default="{ row }">
-                  <section class="withdraw-scoring-details">
-                    <header class="withdraw-scoring-details__heading">
-                      <div>
-                        <strong>评分审核补充信息</strong>
-                        <span>按评分 Excel 的案件号关联本提现订单主键；不会覆盖提现主表字段。</span>
-                      </div>
-                      <el-tag :type="hasScoringSupplement(row) ? 'success' : 'info'" effect="plain">
-                        {{ hasScoringSupplement(row) ? '已匹配评分记录' : '未匹配评分记录' }}
-                      </el-tag>
-                    </header>
-                    <p v-if="!hasScoringSupplement(row)" class="withdraw-scoring-details__empty">
-                      当前提现订单没有可关联的评分审核补充记录。
-                    </p>
-                    <dl v-else class="withdraw-scoring-details__grid">
-                      <div>
-                        <dt>全局硬性条件</dt>
-                        <dd>{{ scoringText(row.scoringGlobalGate) }}</dd>
-                      </div>
-                      <div>
-                        <dt>场景审核</dt>
-                        <dd>{{ scoringText(row.scoringSceneReview) }}</dd>
-                      </div>
-                      <div>
-                        <dt>评分审核</dt>
-                        <dd>{{ scoringText(row.scoringScore) }}</dd>
-                      </div>
-                      <div>
-                        <dt>决断阶段</dt>
-                        <dd>{{ scoringText(row.scoringDecisionStage) }}</dd>
-                      </div>
-                      <div>
-                        <dt>最终审核建议</dt>
-                        <dd>{{ scoringText(row.scoringFinalSuggestion) }}</dd>
-                      </div>
-                      <div>
-                        <dt>操作结果</dt>
-                        <dd>{{ scoringText(row.scoringOperationResult) }}</dd>
-                      </div>
-                      <div class="withdraw-scoring-details__wide">
-                        <dt>摘要</dt>
-                        <dd>{{ scoringText(row.scoringSummary) }}</dd>
-                      </div>
-                      <div>
-                        <dt>当前状态</dt>
-                        <dd>{{ scoringText(row.scoringCurrentStatus) }}</dd>
-                      </div>
-                      <div>
-                        <dt>审核完成时间</dt>
-                        <dd>{{ scoringText(row.scoringReviewedAt) }}</dd>
-                      </div>
-                      <div>
-                        <dt>审核耗时</dt>
-                        <dd>{{ scoringText(row.scoringReviewElapsed) }}</dd>
-                      </div>
-                      <div>
-                        <dt>队列中耗时</dt>
-                        <dd>{{ scoringText(row.scoringQueueElapsed) }}</dd>
-                      </div>
-                      <div>
-                        <dt>进入队列时间</dt>
-                        <dd>{{ scoringText(row.scoringQueueEnteredAt) }}</dd>
-                      </div>
-                      <div>
-                        <dt>退出队列时间</dt>
-                        <dd>{{ scoringText(row.scoringQueueExitedAt) }}</dd>
-                      </div>
-                    </dl>
-                  </section>
+            <div
+              v-loading="loading"
+              class="withdraw-virtual-table"
+              aria-label="提现订单明细虚拟化表格"
+            >
+              <el-auto-resizer>
+                <template #default="{ height, width }">
+                  <el-table-v2
+                    :columns="withdrawOrderTableColumns"
+                    :data="rows"
+                    :height="height"
+                    :width="width"
+                    :header-height="52"
+                    :row-height="58"
+                    row-key="id"
+                    fixed
+                    scrollbar-always-on
+                  >
+                    <template #empty>
+                      <el-empty description="当前本地数据中暂无提现订单" />
+                    </template>
+                  </el-table-v2>
                 </template>
-              </el-table-column>
-              <el-table-column label="订单 ID" min-width="150" prop="id" fixed="left" />
-              <el-table-column label="用户 UID" min-width="140" prop="uid" />
-              <el-table-column
-                label="我方提现订单号"
-                min-width="190"
-                prop="orderNum"
-                show-overflow-tooltip
-              />
-              <el-table-column
-                label="三方支付订单号"
-                min-width="190"
-                prop="outTradeNo"
-                show-overflow-tooltip
-              />
-              <el-table-column
-                label="支付渠道名称"
-                min-width="172"
-                prop="payChannelName"
-                show-overflow-tooltip
-              />
-              <el-table-column
-                label="支付渠道代码"
-                min-width="150"
-                prop="payChannel"
-                show-overflow-tooltip
-              />
-              <el-table-column label="提现金额" min-width="140" align="right">
-                <template #default="{ row }">{{ amountText(row.amount) }}</template>
-              </el-table-column>
-              <el-table-column label="实际到账" min-width="140" align="right">
-                <template #default="{ row }">{{ amountText(row.realAmount) }}</template>
-              </el-table-column>
-              <el-table-column label="提现手续费" min-width="140" align="right">
-                <template #default="{ row }">{{ amountText(row.fee) }}</template>
-              </el-table-column>
-              <el-table-column label="创建时间" min-width="178">
-                <template #default="{ row }">{{ row.createTime || '—' }}</template>
-              </el-table-column>
-              <el-table-column label="提交时间" min-width="178">
-                <template #default="{ row }">{{ row.submitTime || '—' }}</template>
-              </el-table-column>
-              <el-table-column label="完成时间" min-width="178">
-                <template #default="{ row }">{{ row.updateTime || '—' }}</template>
-              </el-table-column>
-              <el-table-column label="是否首提" min-width="108">
-                <template #default="{ row }">{{ firstWithdrawText(row.isFirst) }}</template>
-              </el-table-column>
-              <el-table-column label="用户渠道" min-width="145" prop="channel" show-overflow-tooltip>
-                <template #default="{ row }">{{ row.channel || '—' }}</template>
-              </el-table-column>
-              <el-table-column label="操作人员" min-width="140">
-                <template #default="{ row }">{{ row.auditAdmin || '—' }}</template>
-              </el-table-column>
-              <el-table-column label="评分审核" min-width="124" align="center">
-                <template #default="{ row }">
-                  <el-tag v-if="hasScoringSupplement(row)" type="success" effect="plain">
-                    {{ scoringText(row.scoringScore) }}
-                  </el-tag>
-                  <span v-else class="withdraw-scoring-cell-empty">未匹配</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="最终审核建议" min-width="180" show-overflow-tooltip>
-                <template #default="{ row }">{{ scoringText(row.scoringFinalSuggestion) }}</template>
-              </el-table-column>
-              <el-table-column label="状态" min-width="130" fixed="right">
-                <template #default="{ row }">
-                  <el-tag type="info" effect="light">
-                    {{ orderStatusLabel(row) }}
-                  </el-tag>
-                </template>
-              </el-table-column>
-            </el-table>
+              </el-auto-resizer>
+            </div>
             <div class="table-pagination">
               <el-pagination
                 background
@@ -2110,6 +2162,86 @@ onMounted(async () => {
       </el-tab-pane>
     </el-tabs>
 
+    <el-drawer
+      v-model="scoringDetailsVisible"
+      title="评分审核补充信息"
+      direction="rtl"
+      size="min(520px, calc(100vw - 24px))"
+      class="withdraw-scoring-drawer"
+    >
+      <template v-if="selectedScoringDetailRow">
+        <div class="withdraw-scoring-drawer__heading">
+          <div>
+            <strong>订单 ID：{{ selectedScoringDetailRow.id }}</strong>
+            <span>按评分 Excel 的案件号关联提现订单主键；不会覆盖提现主表字段。</span>
+          </div>
+          <el-tag
+            :type="hasScoringSupplement(selectedScoringDetailRow) ? 'success' : 'info'"
+            effect="plain"
+          >
+            {{ hasScoringSupplement(selectedScoringDetailRow) ? '已匹配评分记录' : '未匹配评分记录' }}
+          </el-tag>
+        </div>
+        <p v-if="!hasScoringSupplement(selectedScoringDetailRow)" class="withdraw-scoring-details__empty">
+          当前提现订单没有可关联的评分审核补充记录。
+        </p>
+        <dl v-else class="withdraw-scoring-details__grid">
+          <div>
+            <dt>全局硬性条件</dt>
+            <dd>{{ scoringText(selectedScoringDetailRow.scoringGlobalGate) }}</dd>
+          </div>
+          <div>
+            <dt>场景审核</dt>
+            <dd>{{ scoringText(selectedScoringDetailRow.scoringSceneReview) }}</dd>
+          </div>
+          <div>
+            <dt>评分审核</dt>
+            <dd>{{ scoringText(selectedScoringDetailRow.scoringScore) }}</dd>
+          </div>
+          <div>
+            <dt>决断阶段</dt>
+            <dd>{{ scoringText(selectedScoringDetailRow.scoringDecisionStage) }}</dd>
+          </div>
+          <div>
+            <dt>最终审核建议</dt>
+            <dd>{{ scoringText(selectedScoringDetailRow.scoringFinalSuggestion) }}</dd>
+          </div>
+          <div>
+            <dt>操作结果</dt>
+            <dd>{{ scoringText(selectedScoringDetailRow.scoringOperationResult) }}</dd>
+          </div>
+          <div class="withdraw-scoring-details__wide">
+            <dt>摘要</dt>
+            <dd>{{ scoringText(selectedScoringDetailRow.scoringSummary) }}</dd>
+          </div>
+          <div>
+            <dt>当前状态</dt>
+            <dd>{{ scoringText(selectedScoringDetailRow.scoringCurrentStatus) }}</dd>
+          </div>
+          <div>
+            <dt>审核完成时间</dt>
+            <dd>{{ scoringText(selectedScoringDetailRow.scoringReviewedAt) }}</dd>
+          </div>
+          <div>
+            <dt>审核耗时</dt>
+            <dd>{{ scoringText(selectedScoringDetailRow.scoringReviewElapsed) }}</dd>
+          </div>
+          <div>
+            <dt>队列中耗时</dt>
+            <dd>{{ scoringText(selectedScoringDetailRow.scoringQueueElapsed) }}</dd>
+          </div>
+          <div>
+            <dt>进入队列时间</dt>
+            <dd>{{ scoringText(selectedScoringDetailRow.scoringQueueEnteredAt) }}</dd>
+          </div>
+          <div>
+            <dt>退出队列时间</dt>
+            <dd>{{ scoringText(selectedScoringDetailRow.scoringQueueExitedAt) }}</dd>
+          </div>
+        </dl>
+      </template>
+    </el-drawer>
+
     <el-dialog
       v-model="manualRefreshDialogVisible"
       title="选择本次提现订单刷新条件"
@@ -2466,38 +2598,84 @@ onMounted(async () => {
   white-space: nowrap;
 }
 
-.withdraw-scoring-cell-empty {
+.withdraw-virtual-table {
+  width: 100%;
+  min-height: 360px;
+  height: clamp(360px, calc(100vh - 430px), 720px);
+  overflow: hidden;
+  border: 1px solid #dce6ee;
+  border-radius: 8px;
+  background: #ffffff;
+  --el-table-border-color: #dce6ee;
+  --el-table-header-bg-color: #f5f8fb;
+  --el-table-row-hover-bg-color: #f7fbfb;
+  --el-table-text-color: #43576a;
+  --el-table-header-text-color: #183955;
+}
+
+.withdraw-virtual-table :deep(.el-table-v2__header-cell) {
+  padding: 0 14px;
+  color: #183955;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.withdraw-virtual-table :deep(.el-table-v2__row-cell) {
+  padding: 0 14px;
+  color: #43576a;
+  font-size: 12px;
+}
+
+.withdraw-virtual-table :deep(.el-table-v2__header-cell + .el-table-v2__header-cell),
+.withdraw-virtual-table :deep(.el-table-v2__row-cell + .el-table-v2__row-cell) {
+  border-left: 1px solid #dce6ee;
+}
+
+.withdraw-virtual-table :deep(.el-table-v2__row-cell .el-tag) {
+  font-weight: 650;
+}
+
+.withdraw-virtual-cell {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.withdraw-virtual-score-empty {
   color: var(--ink-muted);
   font-size: 12px;
 }
 
-.withdraw-scoring-details {
-  margin: 2px 20px 12px;
-  padding: 14px 16px 16px;
+.withdraw-scoring-drawer :deep(.el-drawer__body) {
+  overflow-y: auto;
+  padding: 4px 20px 24px;
+}
+
+.withdraw-scoring-drawer__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
   border: 1px solid #dce9ed;
   border-radius: 10px;
   background: linear-gradient(135deg, #f8fcfd 0%, #f7faff 100%);
 }
 
-.withdraw-scoring-details__heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 12px;
-}
-
-.withdraw-scoring-details__heading > div {
+.withdraw-scoring-drawer__heading > div {
   display: grid;
   gap: 4px;
 }
 
-.withdraw-scoring-details__heading strong {
+.withdraw-scoring-drawer__heading strong {
   color: var(--ink-strong);
   font-size: 14px;
 }
 
-.withdraw-scoring-details__heading span,
+.withdraw-scoring-drawer__heading span,
 .withdraw-scoring-details__empty {
   margin: 0;
   color: var(--ink-muted);
@@ -2507,7 +2685,7 @@ onMounted(async () => {
 
 .withdraw-scoring-details__grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 9px;
   margin: 0;
 }
@@ -2537,10 +2715,6 @@ onMounted(async () => {
 
 .withdraw-scoring-details__grid .withdraw-scoring-details__wide {
   grid-column: span 2;
-}
-
-.table-card :deep(.el-table) {
-  cursor: default;
 }
 
 .table-pagination {
@@ -2769,7 +2943,7 @@ onMounted(async () => {
 
   .query-card__footer-actions,
   .scoring-review-import-picker,
-  .withdraw-scoring-details__heading {
+  .withdraw-scoring-drawer__heading {
     align-items: stretch;
     flex-direction: column;
   }
@@ -2778,9 +2952,9 @@ onMounted(async () => {
     white-space: normal;
   }
 
-  .withdraw-scoring-details {
-    margin-right: 8px;
-    margin-left: 8px;
+  .withdraw-virtual-table {
+    min-height: 320px;
+    height: min(56vh, 520px);
   }
 
   .withdraw-scoring-details__grid {
