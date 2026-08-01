@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 
 import pytest
 from sqlalchemy import select
@@ -243,6 +243,63 @@ async def test_daily_excel_refresh_runs_at_000501_and_caches_only_approved_field
         "remote_export_started",
         "remote_export_fetched",
         "completed",
+    ]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_daily_excel_refresh_uses_the_configured_export_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    engine, factory = await _database()
+    source = _source(settings)
+    retention = _retention()
+    retention.withdraw_order_export_time = time(2, 3, 4)
+    FakeWithdrawClient.statuses = [{"code": "success-custom", "label": "代付成功"}]
+    FakeWithdrawClient.export_outcomes = {
+        source.base_url or "": WithdrawFetchResult(
+            orders=[_order("configured-time")],
+            fetched_pages=1,
+            remote_total=1,
+            complete=True,
+            export_row_count=1,
+        )
+    }
+    FakeWithdrawClient.events = []
+    monkeypatch.setattr(
+        "packages.domain.services.withdraw_order_refresh_service.RajAdminWithdrawClient",
+        FakeWithdrawClient,
+    )
+
+    # Asia/Kolkata 02:03:03 / 02:03:04 on 2026-07-31.
+    before_due = datetime(2026, 7, 30, 20, 33, 3, tzinfo=UTC)
+    due = datetime(2026, 7, 30, 20, 33, 4, tzinfo=UTC)
+    async with factory() as session:
+        session.add_all([source, retention])
+        await session.commit()
+
+        assert (
+            await run_due_withdraw_order_refreshes(
+                session,
+                now=before_due,
+                settings=settings,
+            )
+            == []
+        )
+        outcomes = await run_due_withdraw_order_refreshes(session, now=due, settings=settings)
+
+    assert [item.status for item in outcomes] == ["succeeded"]
+    assert FakeWithdrawClient.events == [
+        ("statuses", "https://rajwin.example.test"),
+        (
+            "export",
+            {
+                "base_url": "https://rajwin.example.test",
+                "create_start": "2026-07-30 00:00:00",
+                "create_end": "2026-07-30 23:59:59",
+            },
+        ),
     ]
     await engine.dispose()
 

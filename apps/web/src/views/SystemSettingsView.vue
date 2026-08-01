@@ -29,8 +29,10 @@ const form = reactive({
   syncLogRetentionDays: 30,
   withdrawOrderExportDateMode: 'previous_day' as WithdrawOrderExportDateMode,
   withdrawOrderExportSpecificDate: null as string | null,
+  withdrawOrderExportTime: '00:05:01',
   chargeOrderExportDateMode: 'previous_day' as ChargeOrderExportDateMode,
   chargeOrderExportSpecificDate: null as string | null,
+  chargeOrderExportTime: '00:00:01',
   spinOrderRefreshIntervalHours: 2 as SpinOrderRefreshIntervalHours,
   spinOrderRefreshPageSize: 100 as SpinOrderRefreshPageSize,
   spinOrderQueryRange: 'previous_business_day_to_completed_slot' as SpinOrderQueryRange,
@@ -45,8 +47,10 @@ function applySettings(settings: RetentionSettings): void {
   form.syncLogRetentionDays = settings.syncLogRetentionDays
   form.withdrawOrderExportDateMode = settings.withdrawOrderExportDateMode
   form.withdrawOrderExportSpecificDate = settings.withdrawOrderExportSpecificDate
+  form.withdrawOrderExportTime = settings.withdrawOrderExportTime
   form.chargeOrderExportDateMode = settings.chargeOrderExportDateMode
   form.chargeOrderExportSpecificDate = settings.chargeOrderExportSpecificDate
+  form.chargeOrderExportTime = settings.chargeOrderExportTime
   form.spinOrderRefreshIntervalHours = settings.spinOrderRefreshIntervalHours
   form.spinOrderRefreshPageSize = settings.spinOrderRefreshPageSize
   form.spinOrderQueryRange = settings.spinOrderQueryRange
@@ -196,8 +200,15 @@ onMounted(load)
         <el-form label-position="top">
           <div class="form-grid">
             <el-form-item label="自动导出时间（盘口业务时区）">
-              <el-input model-value="每日 00:00:01" disabled />
-              <span class="field-help">每天按各盘口业务时区的 00:00:01 开始导出；工作进程轮询触发时会自动补跑。</span>
+              <el-time-picker
+                v-model="form.chargeOrderExportTime"
+                value-format="HH:mm:ss"
+                format="HH:mm:ss"
+                :clearable="false"
+                :disabled="!isAdmin"
+                style="width: 100%"
+              />
+              <span class="field-help">每天按各盘口业务时区的该时刻开始导出；工作进程每 30 秒轮询，会自动补跑。</span>
             </el-form-item>
             <el-form-item label="自动导出日期">
               <el-select v-model="form.chargeOrderExportDateMode" :disabled="!isAdmin">
@@ -237,8 +248,15 @@ onMounted(load)
         <el-form label-position="top">
           <div class="form-grid">
             <el-form-item label="自动导出时间（盘口业务时区）">
-              <el-input model-value="每日 00:05:01" disabled />
-              <span class="field-help">每天按各盘口业务时区的 00:05:01 开始导出；工作进程轮询触发时会自动补跑。</span>
+              <el-time-picker
+                v-model="form.withdrawOrderExportTime"
+                value-format="HH:mm:ss"
+                format="HH:mm:ss"
+                :clearable="false"
+                :disabled="!isAdmin"
+                style="width: 100%"
+              />
+              <span class="field-help">每天按各盘口业务时区的该时刻开始导出；若对应盘口的评分审核 API 已配置并测试通过，完成后会继续同步评分审核 Excel。</span>
             </el-form-item>
             <el-form-item label="自动导出日期">
               <el-select v-model="form.withdrawOrderExportDateMode" :disabled="!isAdmin">

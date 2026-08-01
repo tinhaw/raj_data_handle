@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from typing import Any
 
 from sqlalchemy import (
@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    Time,
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -123,6 +124,11 @@ class SystemRetentionSetting(Base):
         default="previous_day",
     )
     withdraw_order_export_specific_date: Mapped[date | None] = mapped_column(Date)
+    withdraw_order_export_time: Mapped[time] = mapped_column(
+        Time,
+        nullable=False,
+        default=time(0, 5, 1),
+    )
     charge_order_refresh_interval_hours: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
@@ -144,6 +150,11 @@ class SystemRetentionSetting(Base):
         default="previous_day",
     )
     charge_order_export_specific_date: Mapped[date | None] = mapped_column(Date)
+    charge_order_export_time: Mapped[time] = mapped_column(
+        Time,
+        nullable=False,
+        default=time(0, 0, 1),
+    )
     spin_order_refresh_interval_hours: Mapped[int] = mapped_column(
         Integer,
         nullable=False,

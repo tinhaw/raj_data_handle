@@ -84,11 +84,13 @@ export interface RetentionSettings {
   withdrawOrderQueryRange: WithdrawOrderQueryRange
   withdrawOrderExportDateMode: WithdrawOrderExportDateMode
   withdrawOrderExportSpecificDate: string | null
+  withdrawOrderExportTime: string
   chargeOrderRefreshIntervalHours: number
   chargeOrderRefreshPageSize: ChargeOrderRefreshPageSize
   chargeOrderQueryRange: ChargeOrderQueryRange
   chargeOrderExportDateMode: ChargeOrderExportDateMode
   chargeOrderExportSpecificDate: string | null
+  chargeOrderExportTime: string
   spinOrderRefreshIntervalHours: SpinOrderRefreshIntervalHours
   spinOrderRefreshPageSize: SpinOrderRefreshPageSize
   spinOrderQueryRange: SpinOrderQueryRange

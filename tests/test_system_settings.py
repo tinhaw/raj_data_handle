@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 
 import pytest
 from pydantic import ValidationError
@@ -31,6 +31,48 @@ def test_withdraw_export_settings_default_to_previous_business_day() -> None:
 
     assert settings.withdraw_order_export_date_mode == "previous_day"
     assert settings.withdraw_order_export_specific_date is None
+
+
+def test_order_export_time_defaults_preserve_the_staggered_schedule() -> None:
+    settings = _settings()
+
+    assert settings.charge_order_export_time == time(0, 0, 1)
+    assert settings.withdraw_order_export_time == time(0, 5, 1)
+
+    with pytest.raises(ValidationError, match="timezone or UTC offset"):
+        _settings(charge_order_export_time="01:02:03+05:30")
+
+
+def test_order_export_times_accept_seconds_and_reject_microseconds() -> None:
+    payload = RetentionSettingsUpdateRequest(
+        uploadedFileRetentionDays=3,
+        resultRetentionDays=30,
+        remoteCacheRetentionDays=30,
+        chargeOrderExportTime="01:02:03",
+        withdrawOrderExportTime="04:05:06",
+        sessionTtlDays=30,
+    )
+
+    assert payload.charge_order_export_time == time(1, 2, 3)
+    assert payload.withdraw_order_export_time == time(4, 5, 6)
+
+    with pytest.raises(ValidationError, match="自动导出时间必须精确到秒"):
+        RetentionSettingsUpdateRequest(
+            uploadedFileRetentionDays=3,
+            resultRetentionDays=30,
+            remoteCacheRetentionDays=30,
+            chargeOrderExportTime="01:02:03.123456",
+            sessionTtlDays=30,
+        )
+
+    with pytest.raises(ValidationError, match="自动导出时间不能包含时区或 UTC 偏移"):
+        RetentionSettingsUpdateRequest(
+            uploadedFileRetentionDays=3,
+            resultRetentionDays=30,
+            remoteCacheRetentionDays=30,
+            chargeOrderExportTime="01:02:03+05:30",
+            sessionTtlDays=30,
+        )
 
 
 def test_spin_refresh_settings_use_safe_backfill_defaults() -> None:
@@ -92,6 +134,8 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
 
         assert current.withdraw_order_export_date_mode == "previous_day"
         assert current.withdraw_order_export_specific_date is None
+        assert current.charge_order_export_time == time(0, 0, 1)
+        assert current.withdraw_order_export_time == time(0, 5, 1)
         assert session_settings is not None
         assert session_settings.session_ttl_days == 30
 
@@ -104,8 +148,10 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
                 syncLogRetentionDays=90,
                 withdrawOrderExportDateMode="specific_date",
                 withdrawOrderExportSpecificDate="2026-07-29",
+                withdrawOrderExportTime="02:03:04",
                 chargeOrderExportDateMode="specific_date",
                 chargeOrderExportSpecificDate="2026-07-28",
+                chargeOrderExportTime="01:02:03",
                 spinOrderRefreshIntervalHours=4,
                 spinOrderRefreshPageSize=50,
                 spinOrderQueryRange="business_day_to_completed_slot",
@@ -124,8 +170,10 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
     assert updated.sync_log_retention_days == 90
     assert updated.withdraw_order_export_date_mode == "specific_date"
     assert updated.withdraw_order_export_specific_date == date(2026, 7, 29)
+    assert updated.withdraw_order_export_time == time(2, 3, 4)
     assert updated.charge_order_export_date_mode == "specific_date"
     assert updated.charge_order_export_specific_date == date(2026, 7, 28)
+    assert updated.charge_order_export_time == time(1, 2, 3)
     assert updated.spin_order_refresh_interval_hours == 4
     assert updated.spin_order_refresh_page_size == 50
     assert updated.spin_order_query_range == "business_day_to_completed_slot"
@@ -135,8 +183,12 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
     assert audit.metadata_json["previous"]["syncLogRetentionDays"] == 30
     assert audit.metadata_json["current"]["syncLogRetentionDays"] == 90
     assert audit.metadata_json["previous"]["withdrawOrderExportSpecificDate"] is None
+    assert audit.metadata_json["previous"]["withdrawOrderExportTime"] == "00:05:01"
     assert audit.metadata_json["current"]["withdrawOrderExportDateMode"] == "specific_date"
     assert audit.metadata_json["current"]["withdrawOrderExportSpecificDate"] == "2026-07-29"
+    assert audit.metadata_json["current"]["withdrawOrderExportTime"] == "02:03:04"
+    assert audit.metadata_json["previous"]["chargeOrderExportTime"] == "00:00:01"
+    assert audit.metadata_json["current"]["chargeOrderExportTime"] == "01:02:03"
     assert audit.metadata_json["previous"]["spinOrderRefreshIntervalHours"] == 2
     assert audit.metadata_json["current"]["spinOrderRefreshIntervalHours"] == 4
     await engine.dispose()
@@ -151,6 +203,8 @@ def test_system_settings_response_exposes_withdraw_export_policy_in_camel_case()
             remote_cache_retention_days=30,
             withdraw_order_export_date_mode="specific_date",
             withdraw_order_export_specific_date=date(2026, 7, 29),
+            withdraw_order_export_time=time(2, 3, 4),
+            charge_order_export_time=time(1, 2, 3),
             config_version=1,
             updated_at=datetime.now(UTC),
         ),
@@ -161,8 +215,10 @@ def test_system_settings_response_exposes_withdraw_export_policy_in_camel_case()
     assert payload["syncLogRetentionDays"] == 30
     assert payload["withdrawOrderExportDateMode"] == "specific_date"
     assert payload["withdrawOrderExportSpecificDate"] == date(2026, 7, 29)
+    assert payload["withdrawOrderExportTime"] == time(2, 3, 4)
     assert payload["chargeOrderExportDateMode"] == "previous_day"
     assert payload["chargeOrderExportSpecificDate"] is None
+    assert payload["chargeOrderExportTime"] == time(1, 2, 3)
     assert payload["spinOrderRefreshIntervalHours"] == 2
     assert payload["spinOrderRefreshPageSize"] == 100
     assert payload["spinOrderQueryRange"] == "previous_business_day_to_completed_slot"

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import time
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,11 +39,13 @@ def _response(
         withdrawOrderQueryRange=retention.withdraw_order_query_range or "today",
         withdrawOrderExportDateMode=retention.withdraw_order_export_date_mode or "previous_day",
         withdrawOrderExportSpecificDate=retention.withdraw_order_export_specific_date,
+        withdrawOrderExportTime=retention.withdraw_order_export_time or time(0, 5, 1),
         chargeOrderRefreshIntervalHours=retention.charge_order_refresh_interval_hours or 1,
         chargeOrderRefreshPageSize=retention.charge_order_refresh_page_size or 100,
         chargeOrderQueryRange=retention.charge_order_query_range or "today",
         chargeOrderExportDateMode=retention.charge_order_export_date_mode or "previous_day",
         chargeOrderExportSpecificDate=retention.charge_order_export_specific_date,
+        chargeOrderExportTime=retention.charge_order_export_time or time(0, 0, 1),
         spinOrderRefreshIntervalHours=retention.spin_order_refresh_interval_hours or 2,
         spinOrderRefreshPageSize=retention.spin_order_refresh_page_size or 100,
         spinOrderQueryRange=(

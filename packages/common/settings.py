@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     # is first initialized.
     withdraw_order_export_date_mode: Literal["previous_day", "specific_date"] = "previous_day"
     withdraw_order_export_specific_date: date | None = None
+    withdraw_order_export_time: time = time(0, 5, 1)
     charge_order_refresh_interval_hours: int = Field(default=1, ge=1, le=24)
     charge_order_refresh_page_size: int = Field(default=100)
     charge_order_query_range: Literal[
@@ -86,6 +87,7 @@ class Settings(BaseSettings):
         "last_24_hours",
         "last_48_hours",
     ] = "today"
+    charge_order_export_time: time = time(0, 0, 1)
     # The turntable cache is refreshed in completed time slots.  Database-backed
     # system settings replace these bootstrap values after migration.
     spin_order_refresh_interval_hours: int = Field(default=2)
@@ -149,6 +151,15 @@ class Settings(BaseSettings):
     def validate_spin_order_refresh_page_size(cls, value: int) -> int:
         if value not in CHARGE_ORDER_REFRESH_PAGE_SIZES:
             raise ValueError("spin_order_refresh_page_size must be 10, 20, 30, 50, or 100")
+        return value
+
+    @field_validator("charge_order_export_time", "withdraw_order_export_time")
+    @classmethod
+    def validate_order_export_time(cls, value: time) -> time:
+        if value.tzinfo is not None:
+            raise ValueError("order export time must not include a timezone or UTC offset")
+        if value.microsecond:
+            raise ValueError("order export time must be precise to seconds")
         return value
 
     @property

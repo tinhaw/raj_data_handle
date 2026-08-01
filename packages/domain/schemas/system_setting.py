@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 WithdrawOrderQueryRange = Literal[
     "today",
@@ -59,6 +59,7 @@ class RetentionSettingsResponse(BaseModel):
     withdraw_order_export_specific_date: date | None = Field(
         alias="withdrawOrderExportSpecificDate",
     )
+    withdraw_order_export_time: time = Field(alias="withdrawOrderExportTime")
     charge_order_refresh_interval_hours: int = Field(
         ge=1,
         le=24,
@@ -76,6 +77,7 @@ class RetentionSettingsResponse(BaseModel):
     charge_order_export_specific_date: date | None = Field(
         alias="chargeOrderExportSpecificDate",
     )
+    charge_order_export_time: time = Field(alias="chargeOrderExportTime")
     spin_order_refresh_interval_hours: SpinOrderRefreshIntervalHours = Field(
         alias="spinOrderRefreshIntervalHours",
     )
@@ -131,6 +133,10 @@ class RetentionSettingsUpdateRequest(BaseModel):
         default=None,
         alias="withdrawOrderExportSpecificDate",
     )
+    withdraw_order_export_time: time | None = Field(
+        default=None,
+        alias="withdrawOrderExportTime",
+    )
     charge_order_refresh_interval_hours: int | None = Field(
         default=None,
         ge=1,
@@ -153,6 +159,10 @@ class RetentionSettingsUpdateRequest(BaseModel):
         default=None,
         alias="chargeOrderExportSpecificDate",
     )
+    charge_order_export_time: time | None = Field(
+        default=None,
+        alias="chargeOrderExportTime",
+    )
     spin_order_refresh_interval_hours: SpinOrderRefreshIntervalHours | None = Field(
         default=None,
         alias="spinOrderRefreshIntervalHours",
@@ -166,6 +176,15 @@ class RetentionSettingsUpdateRequest(BaseModel):
         alias="spinOrderQueryRange",
     )
     session_ttl_days: int = Field(ge=1, le=365, alias="sessionTtlDays")
+
+    @field_validator("charge_order_export_time", "withdraw_order_export_time")
+    @classmethod
+    def validate_export_time_precision(cls, value: time | None) -> time | None:
+        if value is not None and value.tzinfo is not None:
+            raise ValueError("自动导出时间不能包含时区或 UTC 偏移。")
+        if value is not None and value.microsecond:
+            raise ValueError("自动导出时间必须精确到秒。")
+        return value
 
     @model_validator(mode="after")
     def validate_export_dates(self) -> RetentionSettingsUpdateRequest:

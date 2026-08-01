@@ -32,10 +32,7 @@ from packages.domain.services.system_setting_service import get_retention_settin
 WALL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 REFRESH_LEASE_DURATION = timedelta(minutes=30)
 FAILED_EXPORT_RETRY_DELAY = timedelta(minutes=5)
-CHARGE_ORDER_MANUAL_REFRESH_RANGES = frozenset(
-    {"day_before_yesterday", "yesterday", "today"}
-)
-CHARGE_ORDER_EXPORT_TIME = time(0, 0, 1)
+CHARGE_ORDER_MANUAL_REFRESH_RANGES = frozenset({"day_before_yesterday", "yesterday", "today"})
 
 
 class ChargeOrderRefreshValidationError(ValueError):
@@ -113,9 +110,7 @@ def _is_missing_charge_schema(error: OperationalError | ProgrammingError) -> boo
         or "data_sync_runs" in message
         or "pending_sync_run_id" in message
         or "active_sync_run_id" in message
-    ) and (
-        "does not exist" in message or "no such table" in message
-    )
+    ) and ("does not exist" in message or "no such table" in message)
 
 
 def _eligible(source: SourceConfig) -> bool:
@@ -171,9 +166,7 @@ def _manual_export_day(*, query_range: str, timezone_name: str, now: datetime) -
         "yesterday": 1,
         "today": 0,
     }
-    return now.astimezone(ZoneInfo(timezone_name)).date() - timedelta(
-        days=offsets[query_range]
-    )
+    return now.astimezone(ZoneInfo(timezone_name)).date() - timedelta(days=offsets[query_range])
 
 
 def _automatic_export_day(
@@ -194,6 +187,7 @@ def _due(
     now: datetime,
     automatic_window_start: datetime,
     timezone_name: str,
+    automatic_export_time: time,
 ) -> bool:
     lease = _as_utc(state.lease_expires_at)
     if lease is not None and lease > now:
@@ -203,7 +197,7 @@ def _due(
     if _manual_request_is_pending(state):
         return True
     local_now = now.astimezone(ZoneInfo(timezone_name))
-    if local_now.time() < CHARGE_ORDER_EXPORT_TIME:
+    if local_now.time() < automatic_export_time:
         return False
     if (
         state.status == "succeeded"
@@ -334,6 +328,7 @@ async def _claim_due(
             now=now,
             automatic_window_start=automatic_window_start,
             timezone_name=source.business_timezone,
+            automatic_export_time=retention.charge_order_export_time or time(0, 0, 1),
         ):
             continue
         manual_requested = _manual_request_is_pending(state)

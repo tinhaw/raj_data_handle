@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 
 import pytest
 from sqlalchemy import select
@@ -416,6 +416,76 @@ async def test_worker_refreshes_recharge_cache_and_deduplicates_by_source_and_or
         "remote_export_started",
         "remote_export_fetched",
         "completed",
+    ]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_worker_refreshes_charge_cache_at_the_configured_export_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        secret_key="test-secret-key-that-is-longer-than-32-characters",
+        database_url="sqlite+aiosqlite:///:memory:",
+    )
+    engine = create_async_engine(settings.database_url)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr(
+        "packages.domain.services.charge_order_refresh_service.RajAdminChargeClient",
+        FakeChargeClient,
+    )
+    FakeChargeClient.calls = []
+    source = SourceConfig(
+        source_id="rajwin",
+        display_name="RajWin",
+        base_url="https://rajwin.example.test",
+        enabled=True,
+        business_timezone="Asia/Kolkata",
+        currency="INR",
+        credential_version=1,
+    )
+    source.encrypted_credentials = encrypt_credentials(
+        {"username": "reader", "password": "test-password", "totp_secret": "JBSWY3DPEHPK3PXP"},
+        source_id=source.source_id,
+        credential_version=source.credential_version,
+        settings=settings,
+    )
+    retention = SystemRetentionSetting(
+        id=1,
+        uploaded_file_retention_days=3,
+        result_retention_days=30,
+        remote_cache_retention_days=30,
+        charge_order_export_date_mode="previous_day",
+        charge_order_export_time=time(2, 3, 4),
+    )
+    # Asia/Kolkata 02:03:03 / 02:03:04 on 2026-07-31.
+    before_due = datetime(2026, 7, 30, 20, 33, 3, tzinfo=UTC)
+    due = datetime(2026, 7, 30, 20, 33, 4, tzinfo=UTC)
+
+    async with factory() as session:
+        session.add_all([source, retention])
+        await session.commit()
+
+        assert (
+            await run_due_charge_order_refreshes(
+                session,
+                now=before_due,
+                settings=settings,
+            )
+            == []
+        )
+        outcomes = await run_due_charge_order_refreshes(session, now=due, settings=settings)
+
+    assert [item.status for item in outcomes] == ["succeeded"]
+    assert FakeChargeClient.calls == [
+        {
+            "base_url": "https://rajwin.example.test",
+            "page_size": 100,
+            "create_start": "2026-07-30 00:00:00",
+            "create_end": "2026-07-30 23:59:59",
+        }
     ]
     await engine.dispose()
 

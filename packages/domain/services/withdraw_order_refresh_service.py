@@ -40,10 +40,7 @@ from packages.domain.services.withdraw_order_service import WithdrawOrderCacheSc
 WALL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 REFRESH_LEASE_DURATION = timedelta(minutes=30)
 FAILED_EXPORT_RETRY_DELAY = timedelta(minutes=5)
-WITHDRAW_ORDER_MANUAL_REFRESH_RANGES = frozenset(
-    {"day_before_yesterday", "yesterday", "today"}
-)
-WITHDRAW_ORDER_EXPORT_TIME = time(0, 5, 1)
+WITHDRAW_ORDER_MANUAL_REFRESH_RANGES = frozenset({"day_before_yesterday", "yesterday", "today"})
 
 
 class WithdrawOrderRefreshValidationError(ValueError):
@@ -182,9 +179,7 @@ def _calendar_day_window(*, day: date, timezone_name: str) -> tuple[datetime, da
 
 def _manual_export_day(*, query_range: str, timezone_name: str, now: datetime) -> date:
     offsets = {"day_before_yesterday": 2, "yesterday": 1, "today": 0}
-    return now.astimezone(ZoneInfo(timezone_name)).date() - timedelta(
-        days=offsets[query_range]
-    )
+    return now.astimezone(ZoneInfo(timezone_name)).date() - timedelta(days=offsets[query_range])
 
 
 def _automatic_export_day(
@@ -205,6 +200,7 @@ def _due(
     now: datetime,
     automatic_window_start: datetime,
     timezone_name: str,
+    automatic_export_time: time,
 ) -> bool:
     lease = _as_utc(state.lease_expires_at)
     if lease is not None and lease > now:
@@ -213,7 +209,7 @@ def _due(
         return True
     if _manual_request_is_pending(state):
         return True
-    if now.astimezone(ZoneInfo(timezone_name)).time() < WITHDRAW_ORDER_EXPORT_TIME:
+    if now.astimezone(ZoneInfo(timezone_name)).time() < automatic_export_time:
         return False
     if (
         state.status == "succeeded"
@@ -348,6 +344,7 @@ async def _claim_due(
             now=now,
             automatic_window_start=automatic_window_start,
             timezone_name=source.business_timezone,
+            automatic_export_time=retention.withdraw_order_export_time or time(0, 5, 1),
         ):
             continue
         manual_requested = _manual_request_is_pending(state)
@@ -883,9 +880,9 @@ async def _execute(
                 create_start=claim.window_start.astimezone(
                     ZoneInfo(claim.business_timezone)
                 ).strftime(WALL_TIME_FORMAT),
-                create_end=claim.window_end.astimezone(
-                    ZoneInfo(claim.business_timezone)
-                ).strftime(WALL_TIME_FORMAT),
+                create_end=claim.window_end.astimezone(ZoneInfo(claim.business_timezone)).strftime(
+                    WALL_TIME_FORMAT
+                ),
             )
             _apply_status_dictionary(fetched.orders, remote_statuses)
             sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
