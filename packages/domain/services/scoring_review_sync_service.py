@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from math import ceil
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy.exc import OperationalError, ProgrammingError
@@ -129,6 +130,7 @@ async def sync_scoring_reviewed_cases_from_remote(
     create_time_end: str,
     actor_user_id: int | None,
     settings: Settings | None = None,
+    trigger_type: Literal["automatic", "manual"] = "manual",
 ) -> WithdrawScoringImportResult:
     """Fetch one bounded source/date range then atomically persist its projection.
 
@@ -171,7 +173,7 @@ async def sync_scoring_reviewed_cases_from_remote(
             source=source,
             business_type="withdraw_scoring_import",
             operation_kind="remote_sync",
-            trigger_type="manual",
+            trigger_type=trigger_type,
             requested_by_user_id=actor_user_id,
             requested_at=requested_at,
             window_start_utc=start_at.astimezone(UTC),
@@ -255,7 +257,11 @@ async def sync_scoring_reviewed_cases_from_remote(
             cases=cases,
             source_row_count=first_page.total,
             actor_user_id=actor_user_id,
-            audit_action="withdraw_scoring.remote_sync",
+            audit_action=(
+                "withdraw_scoring.auto_sync"
+                if trigger_type == "automatic"
+                else "withdraw_scoring.remote_sync"
+            ),
             audit_metadata={
                 "createTimeStart": create_time_start,
                 "createTimeEnd": create_time_end,

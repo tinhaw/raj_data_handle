@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from packages.common.security import encrypt_credentials
 from packages.common.settings import Settings
@@ -22,6 +22,7 @@ from packages.domain.services.withdraw_order_refresh_service import (
     queue_withdraw_order_refreshes,
     run_due_withdraw_order_refreshes,
 )
+from packages.domain.services.withdraw_scoring_import_service import WithdrawScoringImportResult
 
 
 class FakeWithdrawClient:
@@ -241,6 +242,122 @@ async def test_daily_excel_refresh_runs_at_000501_and_caches_only_approved_field
         "remote_export_started",
         "remote_export_fetched",
         "completed",
+    ]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_withdraw_refresh_skips_scoring_sync_without_a_tested_scoring_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    engine, factory = await _database()
+    source = _source(settings)
+    FakeWithdrawClient.statuses = [{"code": "success", "label": "代付成功"}]
+    FakeWithdrawClient.export_outcomes = {
+        source.base_url or "": WithdrawFetchResult(
+            orders=[_order("without-scoring")],
+            fetched_pages=1,
+            remote_total=1,
+            complete=True,
+            export_row_count=1,
+        )
+    }
+
+    async def unexpected_scoring_sync(**_: object) -> WithdrawScoringImportResult:
+        raise AssertionError("未配置或未测试评分 API 时不应请求评分审核接口")
+
+    monkeypatch.setattr(
+        "packages.domain.services.withdraw_order_refresh_service.RajAdminWithdrawClient",
+        FakeWithdrawClient,
+    )
+    monkeypatch.setattr(
+        "packages.domain.services.withdraw_order_refresh_service.sync_scoring_reviewed_cases_from_remote",
+        unexpected_scoring_sync,
+    )
+    async with factory() as session:
+        session.add_all([source, _retention()])
+        await session.commit()
+        result = await run_due_withdraw_order_refreshes(
+            session,
+            now=datetime(2026, 7, 30, 18, 35, 1, tzinfo=UTC),
+            settings=settings,
+        )
+
+    assert [item.status for item in result] == ["succeeded"]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_withdraw_refresh_automatically_syncs_scores_for_a_tested_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    engine, factory = await _database()
+    source = _source(settings)
+    source.scoring_api_base_url = "https://scoring.rajwin.example/api"
+    source.encrypted_scoring_api_key = "configured-key"
+    source.scoring_api_last_test_status = "passed"
+    FakeWithdrawClient.statuses = [{"code": "success", "label": "代付成功"}]
+    FakeWithdrawClient.export_outcomes = {
+        source.base_url or "": WithdrawFetchResult(
+            orders=[_order("with-scoring")],
+            fetched_pages=1,
+            remote_total=1,
+            complete=True,
+            export_row_count=1,
+        )
+    }
+    calls: list[dict[str, object]] = []
+
+    async def fake_scoring_sync(
+        session: AsyncSession,
+        **kwargs: object,
+    ) -> WithdrawScoringImportResult:
+        assert await session.scalar(
+            select(WithdrawOrderSnapshot).where(
+                WithdrawOrderSnapshot.source_id == "rajwin",
+                WithdrawOrderSnapshot.remote_order_id == "with-scoring",
+            )
+        )
+        calls.append(kwargs)
+        return WithdrawScoringImportResult(
+            source_id="rajwin",
+            source_row_count=1,
+            matched_count=1,
+            created_count=1,
+            updated_count=0,
+            unmatched_count=0,
+            synced_at=datetime.now(UTC),
+        )
+
+    monkeypatch.setattr(
+        "packages.domain.services.withdraw_order_refresh_service.RajAdminWithdrawClient",
+        FakeWithdrawClient,
+    )
+    monkeypatch.setattr(
+        "packages.domain.services.withdraw_order_refresh_service.sync_scoring_reviewed_cases_from_remote",
+        fake_scoring_sync,
+    )
+    async with factory() as session:
+        session.add_all([source, _retention()])
+        await session.commit()
+        result = await run_due_withdraw_order_refreshes(
+            session,
+            now=datetime(2026, 7, 30, 18, 35, 1, tzinfo=UTC),
+            settings=settings,
+        )
+
+    assert [item.status for item in result] == ["succeeded"]
+    assert calls == [
+        {
+            "source_id": "rajwin",
+            "create_time_start": "2026-07-30 00:00:00",
+            "create_time_end": "2026-07-30 23:59:59",
+            "actor_user_id": None,
+            "settings": settings,
+            "trigger_type": "automatic",
+        }
     ]
     await engine.dispose()
 

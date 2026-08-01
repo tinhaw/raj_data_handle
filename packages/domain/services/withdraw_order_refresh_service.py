@@ -30,6 +30,9 @@ from packages.domain.services.remote_withdraw_service import (
     RajAdminWithdrawClient,
     WithdrawFetchResult,
 )
+from packages.domain.services.scoring_review_sync_service import (
+    sync_scoring_reviewed_cases_from_remote,
+)
 from packages.domain.services.source_service import get_source
 from packages.domain.services.system_setting_service import get_retention_settings
 from packages.domain.services.withdraw_order_service import WithdrawOrderCacheSchemaPendingError
@@ -539,6 +542,17 @@ def _apply_status_dictionary(
         order["status"] = mapped
 
 
+def _scoring_review_sync_enabled(source: SourceConfig | None) -> bool:
+    """Whether this source has a separately tested scoring API integration."""
+
+    return bool(
+        source
+        and source.scoring_api_base_url
+        and source.encrypted_scoring_api_key
+        and source.scoring_api_last_test_status == "passed"
+    )
+
+
 async def _persist_success(
     session: AsyncSession,
     *,
@@ -699,6 +713,98 @@ async def _failure(
     return WithdrawOrderRefreshRunResult(claim.source_id, "failed")
 
 
+async def _scoring_sync_failure(
+    session: AsyncSession,
+    *,
+    claim: _RefreshClaim,
+    finished_at: datetime,
+) -> WithdrawOrderRefreshRunResult:
+    """Mark a post-refresh scoring failure retriable without leaking API details."""
+
+    state = await session.get(
+        WithdrawOrderRefreshState,
+        claim.source_id,
+        with_for_update=True,
+        populate_existing=True,
+    )
+    if state is None or _as_utc(state.last_started_at) != claim.started_at:
+        return WithdrawOrderRefreshRunResult(claim.source_id, state.status if state else "failed")
+    state.status = "failed"
+    state.last_failed_at = finished_at
+    state.last_error = "提现订单已刷新，但评分审核订单同步失败，将稍后重试。"
+    state.lease_expires_at = None
+    state.updated_at = finished_at
+    await write_audit(
+        session,
+        action="withdraw_scoring.auto_sync_failed",
+        target_type="source",
+        target_id=claim.source_id,
+        result="failure",
+        metadata={
+            "createTimeStart": claim.window_start.astimezone(
+                ZoneInfo(claim.business_timezone)
+            ).strftime(WALL_TIME_FORMAT),
+            "createTimeEnd": claim.window_end.astimezone(
+                ZoneInfo(claim.business_timezone)
+            ).strftime(WALL_TIME_FORMAT),
+        },
+    )
+    await session.commit()
+    return WithdrawOrderRefreshRunResult(claim.source_id, "failed")
+
+
+async def _sync_scoring_reviews_after_withdraw_refresh(
+    session: AsyncSession,
+    *,
+    claim: _RefreshClaim,
+    settings: Settings,
+    withdraw_result: WithdrawOrderRefreshRunResult,
+) -> WithdrawOrderRefreshRunResult:
+    """Enrich a refreshed withdrawal window only when scoring API setup is valid.
+
+    No scoring base URL, key, or successful independent connection test means
+    the withdrawal cache remains the complete outcome of this refresh.  A
+    configured scoring API is deliberately invoked only *after* the master
+    withdrawal rows are committed, so new cases can join immediately.
+    """
+
+    if withdraw_result.status != "succeeded":
+        return withdraw_result
+    source = await session.get(SourceConfig, claim.source_id)
+    if not _scoring_review_sync_enabled(source):
+        return withdraw_result
+    timezone = ZoneInfo(claim.business_timezone)
+    try:
+        await sync_scoring_reviewed_cases_from_remote(
+            session,
+            source_id=claim.source_id,
+            create_time_start=claim.window_start.astimezone(timezone).strftime(WALL_TIME_FORMAT),
+            create_time_end=claim.window_end.astimezone(timezone).strftime(WALL_TIME_FORMAT),
+            actor_user_id=None,
+            settings=settings,
+            trigger_type="automatic",
+        )
+    except asyncio.CancelledError:
+        await session.rollback()
+        await _scoring_sync_failure(
+            session,
+            claim=claim,
+            finished_at=datetime.now(UTC),
+        )
+        raise
+    except Exception:
+        # ``sync_scoring_reviewed_cases_from_remote`` intentionally exposes
+        # only safe business errors.  Do not persist or log an exception text,
+        # because a transport failure could include upstream request details.
+        await session.rollback()
+        return await _scoring_sync_failure(
+            session,
+            claim=claim,
+            finished_at=datetime.now(UTC),
+        )
+    return withdraw_result
+
+
 async def _requeue_cancelled(
     session: AsyncSession,
     *,
@@ -823,12 +929,18 @@ async def _execute(
     except Exception:
         await session.rollback()
         return await _failure(session, claim=claim, finished_at=datetime.now(UTC))
-    return await _persist_success(
+    withdraw_result = await _persist_success(
         session,
         claim=claim,
         fetched=fetched,
         remote_statuses=remote_statuses,
         finished_at=datetime.now(UTC),
+    )
+    return await _sync_scoring_reviews_after_withdraw_refresh(
+        session,
+        claim=claim,
+        settings=settings,
+        withdraw_result=withdraw_result,
     )
 
 

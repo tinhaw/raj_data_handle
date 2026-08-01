@@ -917,24 +917,73 @@ const withdrawOrderTableColumns = computed<Column<WithdrawOrder>[]>(() => [
     cellRenderer: ({ rowData }) => virtualCellText(rowData.auditAdmin),
   },
   {
+    key: 'scoringGlobalGate',
+    title: '全局硬性条件',
+    width: 156,
+    cellRenderer: ({ rowData }) => virtualCellText(scoringText(rowData.scoringGlobalGate)),
+  },
+  {
+    key: 'scoringSceneReview',
+    title: '场景审核',
+    width: 142,
+    cellRenderer: ({ rowData }) => virtualCellText(scoringText(rowData.scoringSceneReview)),
+  },
+  {
     key: 'scoringScore',
     title: '评分审核',
     width: 126,
     align: 'center',
-    cellRenderer: ({ rowData }) =>
-      hasScoringSupplement(rowData)
-        ? h(
-            ElTag,
-            { type: 'success', effect: 'plain', size: 'small' },
-            { default: () => scoringText(rowData.scoringScore) },
-          )
-        : h('span', { class: 'withdraw-virtual-score-empty' }, '未匹配'),
+    cellRenderer: ({ rowData }) => virtualCellText(scoringText(rowData.scoringScore)),
+  },
+  {
+    key: 'scoringDecisionStage',
+    title: '决断阶段',
+    width: 148,
+    cellRenderer: ({ rowData }) => virtualCellText(scoringText(rowData.scoringDecisionStage)),
   },
   {
     key: 'scoringFinalSuggestion',
     title: '最终审核建议',
     width: 192,
     cellRenderer: ({ rowData }) => virtualCellText(scoringText(rowData.scoringFinalSuggestion)),
+  },
+  {
+    key: 'scoringOperationResult',
+    title: '操作结果',
+    width: 148,
+    cellRenderer: ({ rowData }) => virtualCellText(scoringText(rowData.scoringOperationResult)),
+  },
+  {
+    key: 'scoringReviewedAt',
+    title: '审核完成时间',
+    width: 184,
+    cellRenderer: ({ rowData }) => virtualCellText(scoringText(rowData.scoringReviewedAt)),
+  },
+  {
+    key: 'scoringReviewElapsed',
+    title: '审核耗时',
+    width: 132,
+    align: 'center',
+    cellRenderer: ({ rowData }) => virtualCellText(scoringText(rowData.scoringReviewElapsed)),
+  },
+  {
+    key: 'scoringQueueElapsed',
+    title: '队列中耗时',
+    width: 144,
+    align: 'center',
+    cellRenderer: ({ rowData }) => virtualCellText(scoringText(rowData.scoringQueueElapsed)),
+  },
+  {
+    key: 'scoringQueueEnteredAt',
+    title: '进入队列时间',
+    width: 184,
+    cellRenderer: ({ rowData }) => virtualCellText(scoringText(rowData.scoringQueueEnteredAt)),
+  },
+  {
+    key: 'scoringQueueExitedAt',
+    title: '退出队列时间',
+    width: 184,
+    cellRenderer: ({ rowData }) => virtualCellText(scoringText(rowData.scoringQueueExitedAt)),
   },
   {
     key: 'status',
@@ -1636,7 +1685,7 @@ onMounted(async () => {
               <div>
                 <h2>提现订单列表</h2>
                 <p>
-                  共 {{ total.toLocaleString() }} 条；本地数据更新时间：{{ localUpdatedText }}。表格固定高度，仅在表格内滚动；点击“评分详情”可查看仅由评分审核 Excel 补充的字段。
+                  共 {{ total.toLocaleString() }} 条；本地数据更新时间：{{ localUpdatedText }}。表格固定高度，仅在表格内滚动；评分审核的 11 个补充字段已直接展示，点击“评分详情”可查看摘要和当前状态。
                 </p>
               </div>
               <el-tag :type="refreshStatusTagType" effect="plain">
@@ -2115,7 +2164,7 @@ onMounted(async () => {
             </div>
             <div class="query-card__footer">
               <span>
-                远端同步使用所选盘口配置的评分审核 API，并按“案件号 → 提现主键”补充已缓存订单；不会将 API Key 或完整远端响应发送到浏览器。Excel 导入保留为备用方式，未匹配案件不会新增提现订单。
+                已配置并通过测试的评分审核 API 会在提现订单刷新成功后按相同时间范围自动同步；此处可按需补同步。评分数据按“案件号 → 提现主键”补充已缓存订单；不会将 API Key 或完整远端响应发送到浏览器。Excel 导入保留为备用方式，未匹配案件不会新增提现订单。
               </span>
               <div class="query-card__footer-actions">
                 <el-tooltip
@@ -2701,11 +2750,6 @@ onMounted(async () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.withdraw-virtual-score-empty {
-  color: var(--ink-muted);
-  font-size: 12px;
 }
 
 .withdraw-scoring-drawer :deep(.el-drawer__body) {
