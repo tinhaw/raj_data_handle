@@ -645,6 +645,7 @@ async def test_unmapped_export_status_fails_without_replacing_existing_cache(
     assert [snapshot.remote_order_id for snapshot in snapshots] == ["old-row"]
     assert state is not None
     assert state.status == "failed"
+    assert state.automatic_failure_count == 1
     assert state.last_error == "远端提现订单 Excel 导出或校验失败，请稍后重试。"
     assert failed_run is not None
     assert failed_run.status == "failed"

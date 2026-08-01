@@ -30,6 +30,8 @@ const form = reactive({
   withdrawOrderExportDateMode: 'previous_day' as WithdrawOrderExportDateMode,
   withdrawOrderExportSpecificDate: null as string | null,
   withdrawOrderExportTime: '00:05:01',
+  automaticSyncRetryLimit: 3,
+  automaticSyncRetryIntervalMinutes: 5,
   chargeOrderExportDateMode: 'previous_day' as ChargeOrderExportDateMode,
   chargeOrderExportSpecificDate: null as string | null,
   chargeOrderExportTime: '00:00:01',
@@ -48,6 +50,8 @@ function applySettings(settings: RetentionSettings): void {
   form.withdrawOrderExportDateMode = settings.withdrawOrderExportDateMode
   form.withdrawOrderExportSpecificDate = settings.withdrawOrderExportSpecificDate
   form.withdrawOrderExportTime = settings.withdrawOrderExportTime
+  form.automaticSyncRetryLimit = settings.automaticSyncRetryLimit
+  form.automaticSyncRetryIntervalMinutes = settings.automaticSyncRetryIntervalMinutes
   form.chargeOrderExportDateMode = settings.chargeOrderExportDateMode
   form.chargeOrderExportSpecificDate = settings.chargeOrderExportSpecificDate
   form.chargeOrderExportTime = settings.chargeOrderExportTime
@@ -135,6 +139,37 @@ onMounted(load)
                 :disabled="!isAdmin"
               />
               <span class="field-help">默认 30 天；到期后需重新登录。</span>
+            </el-form-item>
+          </div>
+        </el-form>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-heading">
+          <h2>自动同步失败重试</h2>
+          <p>适用于充值、提现和转盘订单的自动任务；不影响管理员手动刷新。</p>
+        </div>
+        <el-form label-position="top">
+          <div class="form-grid">
+            <el-form-item label="失败后最大重试次数">
+              <el-input-number
+                v-model="form.automaticSyncRetryLimit"
+                :min="0"
+                :max="10"
+                :precision="0"
+                :disabled="!isAdmin"
+              />
+              <span class="field-help">不包含首次自动同步；设为 0 表示当天窗口失败后不再自动重试。</span>
+            </el-form-item>
+            <el-form-item label="重试间隔（分钟）">
+              <el-input-number
+                v-model="form.automaticSyncRetryIntervalMinutes"
+                :min="1"
+                :max="1440"
+                :precision="0"
+                :disabled="!isAdmin"
+              />
+              <span class="field-help">默认每 5 分钟重试一次；达到次数上限后，等待下一个自动同步窗口。</span>
             </el-form-item>
           </div>
         </el-form>

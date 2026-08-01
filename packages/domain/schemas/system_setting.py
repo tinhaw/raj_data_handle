@@ -60,6 +60,12 @@ class RetentionSettingsResponse(BaseModel):
         alias="withdrawOrderExportSpecificDate",
     )
     withdraw_order_export_time: time = Field(alias="withdrawOrderExportTime")
+    automatic_sync_retry_limit: int = Field(ge=0, le=10, alias="automaticSyncRetryLimit")
+    automatic_sync_retry_interval_minutes: int = Field(
+        ge=1,
+        le=1440,
+        alias="automaticSyncRetryIntervalMinutes",
+    )
     charge_order_refresh_interval_hours: int = Field(
         ge=1,
         le=24,
@@ -136,6 +142,18 @@ class RetentionSettingsUpdateRequest(BaseModel):
     withdraw_order_export_time: time | None = Field(
         default=None,
         alias="withdrawOrderExportTime",
+    )
+    automatic_sync_retry_limit: int | None = Field(
+        default=None,
+        ge=0,
+        le=10,
+        alias="automaticSyncRetryLimit",
+    )
+    automatic_sync_retry_interval_minutes: int | None = Field(
+        default=None,
+        ge=1,
+        le=1440,
+        alias="automaticSyncRetryIntervalMinutes",
     )
     charge_order_refresh_interval_hours: int | None = Field(
         default=None,

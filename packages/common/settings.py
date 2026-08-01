@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     withdraw_order_export_date_mode: Literal["previous_day", "specific_date"] = "previous_day"
     withdraw_order_export_specific_date: date | None = None
     withdraw_order_export_time: time = time(0, 5, 1)
+    # Applies to automatic order-cache syncs only. The initial scheduled run
+    # does not consume this limit; 0 means do not retry a failed window.
+    automatic_sync_retry_limit: int = Field(default=3, ge=0, le=10)
+    automatic_sync_retry_interval_minutes: int = Field(default=5, ge=1, le=1440)
     charge_order_refresh_interval_hours: int = Field(default=1, ge=1, le=24)
     charge_order_refresh_page_size: int = Field(default=100)
     charge_order_query_range: Literal[

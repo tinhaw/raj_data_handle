@@ -38,6 +38,8 @@ def test_order_export_time_defaults_preserve_the_staggered_schedule() -> None:
 
     assert settings.charge_order_export_time == time(0, 0, 1)
     assert settings.withdraw_order_export_time == time(0, 5, 1)
+    assert settings.automatic_sync_retry_limit == 3
+    assert settings.automatic_sync_retry_interval_minutes == 5
 
     with pytest.raises(ValidationError, match="timezone or UTC offset"):
         _settings(charge_order_export_time="01:02:03+05:30")
@@ -71,6 +73,37 @@ def test_order_export_times_accept_seconds_and_reject_microseconds() -> None:
             resultRetentionDays=30,
             remoteCacheRetentionDays=30,
             chargeOrderExportTime="01:02:03+05:30",
+            sessionTtlDays=30,
+        )
+
+
+def test_automatic_sync_retry_settings_are_bounded() -> None:
+    payload = RetentionSettingsUpdateRequest(
+        uploadedFileRetentionDays=3,
+        resultRetentionDays=30,
+        remoteCacheRetentionDays=30,
+        automaticSyncRetryLimit=0,
+        automaticSyncRetryIntervalMinutes=60,
+        sessionTtlDays=30,
+    )
+
+    assert payload.automatic_sync_retry_limit == 0
+    assert payload.automatic_sync_retry_interval_minutes == 60
+
+    with pytest.raises(ValidationError):
+        RetentionSettingsUpdateRequest(
+            uploadedFileRetentionDays=3,
+            resultRetentionDays=30,
+            remoteCacheRetentionDays=30,
+            automaticSyncRetryLimit=11,
+            sessionTtlDays=30,
+        )
+    with pytest.raises(ValidationError):
+        RetentionSettingsUpdateRequest(
+            uploadedFileRetentionDays=3,
+            resultRetentionDays=30,
+            remoteCacheRetentionDays=30,
+            automaticSyncRetryIntervalMinutes=0,
             sessionTtlDays=30,
         )
 
@@ -136,6 +169,8 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
         assert current.withdraw_order_export_specific_date is None
         assert current.charge_order_export_time == time(0, 0, 1)
         assert current.withdraw_order_export_time == time(0, 5, 1)
+        assert current.automatic_sync_retry_limit == 3
+        assert current.automatic_sync_retry_interval_minutes == 5
         assert session_settings is not None
         assert session_settings.session_ttl_days == 30
 
@@ -149,6 +184,8 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
                 withdrawOrderExportDateMode="specific_date",
                 withdrawOrderExportSpecificDate="2026-07-29",
                 withdrawOrderExportTime="02:03:04",
+                automaticSyncRetryLimit=2,
+                automaticSyncRetryIntervalMinutes=15,
                 chargeOrderExportDateMode="specific_date",
                 chargeOrderExportSpecificDate="2026-07-28",
                 chargeOrderExportTime="01:02:03",
@@ -171,6 +208,8 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
     assert updated.withdraw_order_export_date_mode == "specific_date"
     assert updated.withdraw_order_export_specific_date == date(2026, 7, 29)
     assert updated.withdraw_order_export_time == time(2, 3, 4)
+    assert updated.automatic_sync_retry_limit == 2
+    assert updated.automatic_sync_retry_interval_minutes == 15
     assert updated.charge_order_export_date_mode == "specific_date"
     assert updated.charge_order_export_specific_date == date(2026, 7, 28)
     assert updated.charge_order_export_time == time(1, 2, 3)
@@ -184,6 +223,10 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
     assert audit.metadata_json["current"]["syncLogRetentionDays"] == 90
     assert audit.metadata_json["previous"]["withdrawOrderExportSpecificDate"] is None
     assert audit.metadata_json["previous"]["withdrawOrderExportTime"] == "00:05:01"
+    assert audit.metadata_json["previous"]["automaticSyncRetryLimit"] == 3
+    assert audit.metadata_json["current"]["automaticSyncRetryLimit"] == 2
+    assert audit.metadata_json["previous"]["automaticSyncRetryIntervalMinutes"] == 5
+    assert audit.metadata_json["current"]["automaticSyncRetryIntervalMinutes"] == 15
     assert audit.metadata_json["current"]["withdrawOrderExportDateMode"] == "specific_date"
     assert audit.metadata_json["current"]["withdrawOrderExportSpecificDate"] == "2026-07-29"
     assert audit.metadata_json["current"]["withdrawOrderExportTime"] == "02:03:04"
@@ -219,6 +262,8 @@ def test_system_settings_response_exposes_withdraw_export_policy_in_camel_case()
     assert payload["chargeOrderExportDateMode"] == "previous_day"
     assert payload["chargeOrderExportSpecificDate"] is None
     assert payload["chargeOrderExportTime"] == time(1, 2, 3)
+    assert payload["automaticSyncRetryLimit"] == 3
+    assert payload["automaticSyncRetryIntervalMinutes"] == 5
     assert payload["spinOrderRefreshIntervalHours"] == 2
     assert payload["spinOrderRefreshPageSize"] == 100
     assert payload["spinOrderQueryRange"] == "previous_business_day_to_completed_slot"

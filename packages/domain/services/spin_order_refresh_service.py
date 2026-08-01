@@ -19,6 +19,9 @@ from packages.domain.models import (
     UserChannelCache,
 )
 from packages.domain.services.auth_service import write_audit
+from packages.domain.services.automatic_refresh_retry import (
+    can_retry_failed_automatic_window,
+)
 from packages.domain.services.data_dictionary_service import ensure_spin_order_statuses
 from packages.domain.services.data_sync_run_service import (
     SyncRunMetrics,
@@ -38,7 +41,6 @@ from packages.domain.services.system_setting_service import get_retention_settin
 
 WALL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 REFRESH_LEASE_DURATION = timedelta(minutes=45)
-FAILED_REFRESH_RETRY_DELAY = timedelta(minutes=5)
 CHANNEL_RETRY_DELAY = timedelta(minutes=30)
 CHANNEL_LOOKUP_CONCURRENCY = 8
 SPIN_MANUAL_REFRESH_RANGES = frozenset({"day_before_yesterday", "yesterday", "today"})
@@ -136,6 +138,7 @@ def _missing_schema(error: OperationalError | ProgrammingError) -> bool:
     missing_pointer = (
         "pending_sync_run_id" in message
         or "active_sync_run_id" in message
+        or "automatic_failure_count" in message
     ) and (
         "does not exist" in message
         or "no such table" in message
@@ -284,7 +287,14 @@ def _manual_window(
     return start, min(end, now) if query_range == "today" else end
 
 
-def _due(state: SpinOrderRefreshState, *, now: datetime, window_end: datetime) -> bool:
+def _due(
+    state: SpinOrderRefreshState,
+    *,
+    now: datetime,
+    window_end: datetime,
+    retry_limit: int,
+    retry_interval_minutes: int,
+) -> bool:
     lease = _as_utc(state.lease_expires_at)
     if lease is not None and lease > now:
         return False
@@ -295,11 +305,15 @@ def _due(state: SpinOrderRefreshState, *, now: datetime, window_end: datetime) -
     previous_end = _as_utc(state.last_window_end_utc)
     if state.status == "succeeded" and previous_end == window_end:
         return False
-    if (
-        state.status == "failed"
-        and previous_end == window_end
-        and (failed_at := _as_utc(state.last_failed_at)) is not None
-        and now < failed_at + FAILED_REFRESH_RETRY_DELAY
+    if not can_retry_failed_automatic_window(
+        status=state.status,
+        previous_window_marker=previous_end,
+        automatic_window_marker=window_end,
+        last_failed_at=_as_utc(state.last_failed_at),
+        automatic_failure_count=state.automatic_failure_count,
+        retry_limit=retry_limit,
+        retry_interval_minutes=retry_interval_minutes,
+        now=now,
     ):
         return False
     return True
@@ -416,7 +430,15 @@ async def _claim_due(
             interval_hours=retention.spin_order_refresh_interval_hours,
             query_range=retention.spin_order_query_range,
         )
-        if not _due(state, now=now, window_end=automatic_end):
+        if not manual and _as_utc(state.last_window_end_utc) != automatic_end:
+            state.automatic_failure_count = 0
+        if not _due(
+            state,
+            now=now,
+            window_end=automatic_end,
+            retry_limit=retention.automatic_sync_retry_limit,
+            retry_interval_minutes=retention.automatic_sync_retry_interval_minutes,
+        ):
             continue
         manual_query_range = state.manual_query_range or "today"
         window_start, window_end = (
@@ -705,6 +727,7 @@ async def _persist_success(
     state.last_cached_total = cached_total
     state.last_fetched_pages = fetched.fetched_pages
     state.last_complete = fetched.complete
+    state.automatic_failure_count = 0
     state.last_resolved_uid_count = resolved_uid_count
     state.last_unresolved_uid_count = unresolved_uid_count
     state.last_error = None
@@ -757,6 +780,8 @@ async def _failure(
     sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
     state.status = "failed"
     state.last_failed_at = finished_at
+    if claim.query_range is None:
+        state.automatic_failure_count += 1
     state.last_error = "远端转盘订单列表读取或校验失败，请稍后重试。"
     state.lease_expires_at = None
     state.active_sync_run_id = None

@@ -40,6 +40,16 @@ def _response(
         withdrawOrderExportDateMode=retention.withdraw_order_export_date_mode or "previous_day",
         withdrawOrderExportSpecificDate=retention.withdraw_order_export_specific_date,
         withdrawOrderExportTime=retention.withdraw_order_export_time or time(0, 5, 1),
+        automaticSyncRetryLimit=(
+            retention.automatic_sync_retry_limit
+            if retention.automatic_sync_retry_limit is not None
+            else 3
+        ),
+        automaticSyncRetryIntervalMinutes=(
+            retention.automatic_sync_retry_interval_minutes
+            if retention.automatic_sync_retry_interval_minutes is not None
+            else 5
+        ),
         chargeOrderRefreshIntervalHours=retention.charge_order_refresh_interval_hours or 1,
         chargeOrderRefreshPageSize=retention.charge_order_refresh_page_size or 100,
         chargeOrderQueryRange=retention.charge_order_query_range or "today",

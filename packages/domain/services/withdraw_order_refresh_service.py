@@ -14,6 +14,9 @@ from packages.common.security import decrypt_credentials
 from packages.common.settings import Settings, get_settings
 from packages.domain.models import SourceConfig, WithdrawOrderRefreshState, WithdrawOrderSnapshot
 from packages.domain.services.auth_service import write_audit
+from packages.domain.services.automatic_refresh_retry import (
+    can_retry_failed_automatic_window,
+)
 from packages.domain.services.data_dictionary_service import refresh_withdraw_status_cache
 from packages.domain.services.data_sync_run_service import (
     SyncRunMetrics,
@@ -39,7 +42,6 @@ from packages.domain.services.withdraw_order_service import WithdrawOrderCacheSc
 
 WALL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 REFRESH_LEASE_DURATION = timedelta(minutes=30)
-FAILED_EXPORT_RETRY_DELAY = timedelta(minutes=5)
 WITHDRAW_ORDER_MANUAL_REFRESH_RANGES = frozenset({"day_before_yesterday", "yesterday", "today"})
 
 
@@ -77,6 +79,7 @@ class _RefreshClaim:
     window_start: datetime
     window_end: datetime
     requested_query_range: str
+    automatic: bool
     sync_run_id: str
 
 
@@ -93,6 +96,7 @@ def _is_missing_refresh_schema(error: OperationalError | ProgrammingError) -> bo
         or "last_duplicate_count" in message
         or "pending_sync_run_id" in message
         or "active_sync_run_id" in message
+        or "automatic_failure_count" in message
     ) and ("does not exist" in message or "no such column" in message)
     return missing_table or missing_export_metric
 
@@ -201,6 +205,8 @@ def _due(
     automatic_window_start: datetime,
     timezone_name: str,
     automatic_export_time: time,
+    retry_limit: int,
+    retry_interval_minutes: int,
 ) -> bool:
     lease = _as_utc(state.lease_expires_at)
     if lease is not None and lease > now:
@@ -216,11 +222,15 @@ def _due(
         and _as_utc(state.last_window_start_utc) == automatic_window_start
     ):
         return False
-    if (
-        state.status == "failed"
-        and _as_utc(state.last_window_start_utc) == automatic_window_start
-        and (failed_at := _as_utc(state.last_failed_at)) is not None
-        and now < failed_at + FAILED_EXPORT_RETRY_DELAY
+    if not can_retry_failed_automatic_window(
+        status=state.status,
+        previous_window_marker=_as_utc(state.last_window_start_utc),
+        automatic_window_marker=automatic_window_start,
+        last_failed_at=_as_utc(state.last_failed_at),
+        automatic_failure_count=state.automatic_failure_count,
+        retry_limit=retry_limit,
+        retry_interval_minutes=retry_interval_minutes,
+        now=now,
     ):
         return False
     return True
@@ -339,15 +349,22 @@ async def _claim_due(
             day=automatic_day,
             timezone_name=source.business_timezone,
         )
+        manual_requested = _manual_request_is_pending(state)
+        if (
+            not manual_requested
+            and _as_utc(state.last_window_start_utc) != automatic_window_start
+        ):
+            state.automatic_failure_count = 0
         if not _due(
             state,
             now=now,
             automatic_window_start=automatic_window_start,
             timezone_name=source.business_timezone,
             automatic_export_time=retention.withdraw_order_export_time or time(0, 5, 1),
+            retry_limit=retention.automatic_sync_retry_limit,
+            retry_interval_minutes=retention.automatic_sync_retry_interval_minutes,
         ):
             continue
-        manual_requested = _manual_request_is_pending(state)
         requested_query_range = state.manual_query_range or "yesterday"
         export_day = (
             _manual_export_day(
@@ -419,6 +436,7 @@ async def _claim_due(
             window_start=window_start,
             window_end=window_end,
             requested_query_range=requested_query_range,
+            automatic=not manual_requested,
             sync_run_id=sync_run.id,
         )
     await session.commit()
@@ -631,6 +649,7 @@ async def _persist_success(
     state.last_cached_total = cached_total
     state.last_fetched_pages = fetched.fetched_pages
     state.last_complete = fetched.complete
+    state.automatic_failure_count = 0
     state.last_export_row_count = fetched.export_row_count
     state.last_imported_count = len(by_id)
     state.last_duplicate_count = fetched.duplicate_count
@@ -688,6 +707,8 @@ async def _failure(
     sync_run = await get_sync_run_for_update(session, run_id=claim.sync_run_id)
     state.status = "failed"
     state.last_failed_at = finished_at
+    if claim.automatic:
+        state.automatic_failure_count += 1
     state.last_error = "远端提现订单 Excel 导出或校验失败，请稍后重试。"
     state.lease_expires_at = None
     state.active_sync_run_id = None

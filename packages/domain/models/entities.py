@@ -129,6 +129,12 @@ class SystemRetentionSetting(Base):
         nullable=False,
         default=time(0, 5, 1),
     )
+    automatic_sync_retry_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    automatic_sync_retry_interval_minutes: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=5,
+    )
     charge_order_refresh_interval_hours: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
@@ -361,6 +367,7 @@ class WithdrawOrderRefreshState(Base):
     last_cached_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_fetched_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    automatic_failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_export_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_imported_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_duplicate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -465,6 +472,7 @@ class ChargeOrderRefreshState(Base):
     last_cached_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_fetched_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    automatic_failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(String(500))
     pending_sync_run_id: Mapped[str | None] = mapped_column(
         ForeignKey("data_sync_runs.id", ondelete="SET NULL"),
@@ -575,6 +583,7 @@ class SpinOrderRefreshState(Base):
     last_cached_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_fetched_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    automatic_failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_resolved_uid_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_unresolved_uid_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(String(500))

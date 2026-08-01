@@ -85,6 +85,8 @@ export interface RetentionSettings {
   withdrawOrderExportDateMode: WithdrawOrderExportDateMode
   withdrawOrderExportSpecificDate: string | null
   withdrawOrderExportTime: string
+  automaticSyncRetryLimit: number
+  automaticSyncRetryIntervalMinutes: number
   chargeOrderRefreshIntervalHours: number
   chargeOrderRefreshPageSize: ChargeOrderRefreshPageSize
   chargeOrderQueryRange: ChargeOrderQueryRange
