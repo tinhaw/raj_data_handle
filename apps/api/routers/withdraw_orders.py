@@ -18,6 +18,8 @@ from packages.domain.schemas.withdraw_order import (
     WithdrawOrderRefreshRequest,
     WithdrawOrderRefreshResponse,
     WithdrawScoringImportResponse,
+    WithdrawScoringSummaryRequest,
+    WithdrawScoringSummaryResponse,
 )
 from packages.domain.services.auth_service import AuthContext
 from packages.domain.services.scoring_review_summary_service import (
@@ -48,6 +50,9 @@ from packages.domain.services.withdraw_scoring_import_service import (
     WithdrawScoringCacheSchemaPendingError,
     WithdrawScoringImportError,
     import_scoring_reviewed_cases_export,
+)
+from packages.domain.services.withdraw_scoring_summary_service import (
+    query_withdraw_scoring_summary,
 )
 
 router = APIRouter(prefix="/withdraw-orders", tags=["withdraw-orders"])
@@ -215,6 +220,43 @@ async def scoring_review_operator_summary(
         local_updated_at=result.local_updated_at,
         rows=result.rows,
         totals=result.totals,
+    )
+
+
+@router.post("/scoring-summary", response_model=WithdrawScoringSummaryResponse)
+async def withdraw_scoring_summary(
+    payload: WithdrawScoringSummaryRequest,
+    _: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_db_session),
+) -> WithdrawScoringSummaryResponse:
+    """Summarize score-table-backed withdrawals by management-side operator."""
+
+    try:
+        result = await query_withdraw_scoring_summary(session, request=payload)
+    except SourceNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except WithdrawOrderValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except (WithdrawOrderCacheSchemaPendingError, SystemSettingsSchemaPendingError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    return WithdrawScoringSummaryResponse(
+        source_id=result.source_id,
+        source_display_name=result.source_display_name,
+        business_timezone=result.business_timezone,
+        start_at=result.start_at,
+        end_at=result.end_at,
+        generated_at=result.generated_at,
+        local_updated_at=result.local_updated_at,
+        rows=result.rows,
+        totals=result.totals,
+        status_columns=result.status_columns,
+        status_dictionary=result.status_dictionary,
+        management_order_count=result.management_order_count,
+        scoring_record_order_count=result.scoring_record_order_count,
+        missing_scoring_record_count=result.missing_scoring_record_count,
     )
 
 

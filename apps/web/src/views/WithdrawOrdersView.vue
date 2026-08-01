@@ -12,6 +12,7 @@ import {
   queryWithdrawChannelSummary,
   queryWithdrawOperatorSummary,
   queryWithdrawOrders,
+  queryWithdrawScoringSummary,
   queryScoringReviewOperatorSummary,
   startWithdrawOrderRefresh,
   syncScoringReviewedCases,
@@ -30,11 +31,13 @@ import type {
   WithdrawOrderQueryResponse,
   WithdrawOrderRefreshRange,
   WithdrawOrderSummary,
+  WithdrawScoringSummaryItem,
+  WithdrawScoringSummaryResponse,
   WithdrawStatusDictionaryEntry,
 } from '../types'
 import { businessFullDayRange, formatDateTime, yesterdayFullDayRange } from '../ui'
 
-type WithdrawTab = 'orders' | 'channels' | 'operators' | 'scoring-review'
+type WithdrawTab = 'orders' | 'channels' | 'operators' | 'withdraw-summary' | 'scoring-review'
 type WithdrawChannelChartMetric = 'successfulOrderShare' | 'successfulAmountShare' | 'stuckRate'
 type ChartDisplayType = 'bar' | 'pie' | 'line'
 
@@ -187,10 +190,17 @@ const scoringReviewSummaryFilters = reactive({
   sourceId: '',
   createTimeRange: yesterdayFullDayRange('Asia/Kolkata') as [string, string] | null,
 })
+const withdrawSummaryLoading = ref(false)
+const withdrawSummaryResponse = ref<WithdrawScoringSummaryResponse | null>(null)
+const withdrawSummaryFilters = reactive({
+  sourceId: '',
+  createTimeRange: yesterdayFullDayRange('Asia/Kolkata') as [string, string] | null,
+})
 let orderQueryRequestId = 0
 let channelSummaryRequestId = 0
 let operatorSummaryRequestId = 0
 let scoringReviewSummaryRequestId = 0
+let withdrawSummaryRequestId = 0
 
 const selectedOrderSource = computed(() =>
   sources.value.find((source) => source.sourceId === filters.sourceId),
@@ -203,6 +213,9 @@ const selectedChannelSummarySource = computed(() =>
 )
 const selectedScoringReviewSummarySource = computed(() =>
   sources.value.find((source) => source.sourceId === scoringReviewSummaryFilters.sourceId),
+)
+const selectedWithdrawSummarySource = computed(() =>
+  sources.value.find((source) => source.sourceId === withdrawSummaryFilters.sourceId),
 )
 const scoringReviewApiReady = computed(() => {
   const source = selectedScoringReviewSummarySource.value
@@ -295,6 +308,38 @@ const scoringReviewSummaryRangeText = computed(() => {
   if (!result) return '尚未查询'
   return `${result.startAt.replace('T', ' ')} 至 ${result.endAt.replace('T', ' ')}`
 })
+const withdrawSummaryRows = computed(() => withdrawSummaryResponse.value?.rows || [])
+const withdrawSummaryTotals = computed(
+  () => withdrawSummaryResponse.value?.totals || emptyScoringReviewSummaryCounts,
+)
+const withdrawSummaryTimezone = computed(
+  () =>
+    withdrawSummaryResponse.value?.businessTimezone ||
+    selectedWithdrawSummarySource.value?.businessTimezone ||
+    '盘口业务时区',
+)
+const withdrawSummarySourceName = computed(
+  () =>
+    withdrawSummaryResponse.value?.sourceDisplayName ||
+    selectedWithdrawSummarySource.value?.displayName ||
+    '所选盘口',
+)
+const withdrawSummaryLocalUpdatedText = computed(() =>
+  withdrawSummaryResponse.value
+    ? formatDateTime(withdrawSummaryResponse.value.localUpdatedAt)
+    : '尚未查询',
+)
+const withdrawSummaryRangeText = computed(() => {
+  const result = withdrawSummaryResponse.value
+  if (!result) return '尚未查询'
+  return `${result.startAt.replace('T', ' ')} 至 ${result.endAt.replace('T', ' ')}`
+})
+const withdrawSummaryStatusEntryByCode = computed(
+  () => new Map((withdrawSummaryResponse.value?.statusDictionary || []).map((entry) => [entry.code, entry])),
+)
+const withdrawSummaryStatusColumns = computed(
+  () => withdrawSummaryResponse.value?.statusColumns || [],
+)
 const scoringReviewImportFileLabel = computed(() => {
   const file = scoringReviewImportFile.value
   if (!file) return '尚未选择评分审核 .xlsx 文件'
@@ -520,6 +565,9 @@ const operatorSummaryDateRangeShortcuts = computed(() =>
 const scoringReviewSummaryDateRangeShortcuts = computed(() =>
   dateRangeShortcutsFor(selectedScoringReviewSummarySource.value),
 )
+const withdrawSummaryDateRangeShortcuts = computed(() =>
+  dateRangeShortcutsFor(selectedWithdrawSummarySource.value),
+)
 const localUpdatedText = computed(() =>
   response.value ? formatDateTime(response.value.localUpdatedAt) : '尚未查询',
 )
@@ -676,6 +724,17 @@ function statusLabel(status: string): string {
 
 function orderStatusLabel(row: WithdrawOrder): string {
   return row.statusLabel?.trim() || statusLabel(row.status)
+}
+
+function withdrawOrderStatusTagType(
+  row: WithdrawOrder,
+): 'success' | 'warning' | 'danger' | 'info' | 'primary' {
+  const label = orderStatusLabel(row).trim()
+  if (label === '代付成功') return 'success'
+  if (['待审核', '待审查'].includes(label)) return 'warning'
+  if (['已提交代付', '提交中'].includes(label)) return 'primary'
+  if (['审核拒绝', '代付失败', '提交三方失败'].includes(label)) return 'danger'
+  return 'info'
 }
 
 function ratioText(value: string | null | undefined): string {
@@ -994,7 +1053,7 @@ const withdrawOrderTableColumns = computed<Column<WithdrawOrder>[]>(() => [
     cellRenderer: ({ rowData }) =>
       h(
         ElTag,
-        { type: 'info', effect: 'light', size: 'small' },
+        { type: withdrawOrderStatusTagType(rowData), effect: 'light', size: 'small' },
         { default: () => orderStatusLabel(rowData) },
       ),
   },
@@ -1002,6 +1061,23 @@ const withdrawOrderTableColumns = computed<Column<WithdrawOrder>[]>(() => [
 
 function operatorSummaryStatusLabel(status: string): string {
   return operatorSummaryStatusEntryByCode.value.get(status.trim())?.label?.trim() || '未配置状态'
+}
+
+function withdrawSummaryStatusLabel(status: string): string {
+  const normalized = status.trim()
+  return (
+    withdrawSummaryStatusEntryByCode.value.get(normalized)?.label?.trim() ||
+    normalized ||
+    '未填写状态'
+  )
+}
+
+function withdrawSummaryStatusCount(item: WithdrawScoringSummaryItem, status: string): number {
+  return item.statusCounts.find((entry) => entry.status === status)?.count || 0
+}
+
+function withdrawSummaryOperatorDisplayName(item: WithdrawScoringSummaryItem): string {
+  return item.auditAdminMissing || !item.auditAdmin.trim() ? '未记录操作人' : item.auditAdmin
 }
 
 function statusOptionsLabel(entry: WithdrawStatusDictionaryEntry): string {
@@ -1174,6 +1250,35 @@ async function loadScoringReviewSummary(): Promise<void> {
   }
 }
 
+async function loadWithdrawSummary(): Promise<void> {
+  if (!withdrawSummaryFilters.sourceId) {
+    ElMessage.warning('请先选择需要汇总的盘口。')
+    return
+  }
+  const [createTimeStart, createTimeEnd] = withdrawSummaryFilters.createTimeRange || []
+  if (!createTimeStart || !createTimeEnd) {
+    ElMessage.warning('请先选择提现订单汇总的创建时间范围。')
+    return
+  }
+  const requestId = ++withdrawSummaryRequestId
+  withdrawSummaryLoading.value = true
+  try {
+    const result = await queryWithdrawScoringSummary({
+      sourceId: withdrawSummaryFilters.sourceId,
+      createTimeStart,
+      createTimeEnd,
+    })
+    if (requestId !== withdrawSummaryRequestId) return
+    withdrawSummaryResponse.value = result
+  } catch (error) {
+    if (requestId === withdrawSummaryRequestId) {
+      ElMessage.error(apiErrorMessage(error, '提现订单汇总加载失败。'))
+    }
+  } finally {
+    if (requestId === withdrawSummaryRequestId) withdrawSummaryLoading.value = false
+  }
+}
+
 function openScoringReviewImportFilePicker(): void {
   if (!scoringReviewSummaryFilters.sourceId) {
     ElMessage.warning('请先选择评分审核数据所属的盘口。')
@@ -1221,6 +1326,9 @@ async function importScoringReviewWorkbook(): Promise<void> {
     if (scoringReviewSummaryFilters.sourceId === result.sourceId) {
       await loadScoringReviewSummary()
     }
+    if (withdrawSummaryFilters.sourceId === result.sourceId) {
+      await loadWithdrawSummary()
+    }
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '评分审核 Excel 导入失败。'))
   } finally {
@@ -1255,6 +1363,9 @@ async function syncScoringReviewFromRemote(): Promise<void> {
     }
     if (scoringReviewSummaryFilters.sourceId === result.sourceId) {
       await loadScoringReviewSummary()
+    }
+    if (withdrawSummaryFilters.sourceId === result.sourceId) {
+      await loadWithdrawSummary()
     }
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '评分审核远端同步失败。'))
@@ -1314,6 +1425,11 @@ function resetScoringReviewSummaryResult(): void {
   scoringReviewSummaryResponse.value = null
 }
 
+function resetWithdrawSummaryResult(): void {
+  withdrawSummaryRequestId += 1
+  withdrawSummaryResponse.value = null
+}
+
 function handleSourceChange(): void {
   page.value = 1
   filters.createTimeRange = yesterdayFullDayRange(
@@ -1355,6 +1471,13 @@ function handleScoringReviewSummarySourceChange(): void {
   scoringReviewImportFile.value = null
   if (scoringReviewUploadInput.value) scoringReviewUploadInput.value.value = ''
   resetScoringReviewSummaryResult()
+}
+
+function handleWithdrawSummarySourceChange(): void {
+  withdrawSummaryFilters.createTimeRange = yesterdayFullDayRange(
+    selectedWithdrawSummarySource.value?.businessTimezone || 'Asia/Kolkata',
+  )
+  resetWithdrawSummaryResult()
 }
 
 function handlePageChange(nextPage: number): void {
@@ -1408,6 +1531,13 @@ function handleTabChange(nextTab: string | number): void {
     scoringReviewSummaryFilters.sourceId
   ) {
     void loadScoringReviewSummary()
+  }
+  if (
+    nextTab === 'withdraw-summary' &&
+    withdrawSummaryResponse.value?.sourceId !== withdrawSummaryFilters.sourceId &&
+    withdrawSummaryFilters.sourceId
+  ) {
+    void loadWithdrawSummary()
   }
 }
 
@@ -1529,6 +1659,8 @@ onMounted(async () => {
       operatorSummaryFilters.createTimeRange = yesterdayFullDayRange(firstSource.businessTimezone)
       scoringReviewSummaryFilters.sourceId = firstSourceId
       scoringReviewSummaryFilters.createTimeRange = yesterdayFullDayRange(firstSource.businessTimezone)
+      withdrawSummaryFilters.sourceId = firstSourceId
+      withdrawSummaryFilters.createTimeRange = yesterdayFullDayRange(firstSource.businessTimezone)
       await load(true)
     }
   } catch (error) {
@@ -1545,7 +1677,7 @@ onMounted(async () => {
       <div>
         <span class="page-eyebrow">WITHDRAWAL MONITOR</span>
         <h1>提现订单</h1>
-        <p>从远端后台按日导出、解析并缓存提现订单；支持订单明细、支付渠道和操作人员汇总。</p>
+        <p>从远端后台按日导出、解析并缓存提现订单；支持订单明细、渠道、操作人员和评分关联汇总。</p>
       </div>
     </header>
 
@@ -2092,6 +2224,158 @@ onMounted(async () => {
                 @update:page-size="handleOperatorSummaryPageSizeChange"
               />
             </div>
+          </section>
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="提现订单汇总" name="withdraw-summary">
+        <div class="tab-stack">
+          <header class="tab-pane-header">
+            <div>
+              <h2>提现订单汇总</h2>
+              <p>按远端管理后台的操作人员汇总已关联评分审核记录的提现订单，并展示评分区间和订单状态。</p>
+            </div>
+          </header>
+
+          <section class="query-card surface-card">
+            <div class="query-card__grid">
+              <label class="query-field">
+                <span>盘口</span>
+                <el-select
+                  v-model="withdrawSummaryFilters.sourceId"
+                  :loading="sourcesLoading"
+                  placeholder="选择已启用盘口"
+                  @change="handleWithdrawSummarySourceChange"
+                >
+                  <el-option
+                    v-for="source in sources"
+                    :key="source.sourceId"
+                    :label="source.displayName"
+                    :value="source.sourceId"
+                  />
+                </el-select>
+              </label>
+              <label class="query-field query-field--time-range">
+                <span>订单创建时间（{{ withdrawSummaryTimezone }}）</span>
+                <el-date-picker
+                  v-model="withdrawSummaryFilters.createTimeRange"
+                  type="datetimerange"
+                  :shortcuts="withdrawSummaryDateRangeShortcuts"
+                  value-format="YYYY-MM-DD HH:mm:ss"
+                  format="YYYY-MM-DD HH:mm:ss"
+                  range-separator="至"
+                  start-placeholder="开始时间"
+                  end-placeholder="结束时间"
+                  clearable
+                  :disabled="!withdrawSummaryFilters.sourceId"
+                  style="width: 100%"
+                />
+              </label>
+            </div>
+            <div class="query-card__footer">
+              <span>仅查询本地缓存；时间范围按所选盘口业务时区，以提现订单创建时间计算。</span>
+              <el-button
+                type="primary"
+                :icon="Search"
+                :loading="withdrawSummaryLoading"
+                :disabled="!withdrawSummaryFilters.sourceId"
+                @click="loadWithdrawSummary"
+              >
+                查询汇总
+              </el-button>
+            </div>
+          </section>
+
+          <el-alert
+            v-if="withdrawSummaryResponse"
+            class="withdraw-summary-coverage-alert"
+            type="warning"
+            :closable="false"
+            show-icon
+          >
+            <template #title>
+              本表仅统计评分审核订单数据表中有记录且可关联到本地提现订单的订单。当前查询口径下，管理后台有
+              {{ withdrawSummaryResponse.managementOrderCount.toLocaleString() }} 单，其中评分审核有记录
+              {{ withdrawSummaryResponse.scoringRecordOrderCount.toLocaleString() }} 单；评分审核无记录
+              {{ withdrawSummaryResponse.missingScoringRecordCount.toLocaleString() }} 单，不计入本表。
+            </template>
+          </el-alert>
+
+          <section class="metric-grid scoring-review-metric-grid" aria-label="提现订单评分汇总指标">
+            <article class="surface-card metric-card metric-card--orders">
+              <span>评分审核有记录订单</span>
+              <strong>{{ withdrawSummaryTotals.totalCount.toLocaleString() }}</strong>
+              <small>三个评分档合计</small>
+            </article>
+            <article class="surface-card metric-card">
+              <span>未进入评分/无分值</span>
+              <strong>{{ withdrawSummaryTotals.notEnteredScoringCount.toLocaleString() }}</strong>
+              <small>已计入 ≤30 分</small>
+            </article>
+            <article class="surface-card metric-card">
+              <span>≤30 分</span>
+              <strong>{{ withdrawSummaryTotals.scoreLte30Count.toLocaleString() }}</strong>
+              <small>含评分字段未填写订单</small>
+            </article>
+            <article class="surface-card metric-card">
+              <span>31–60 分</span>
+              <strong>{{ withdrawSummaryTotals.score31To60Count.toLocaleString() }}</strong>
+              <small>评分区间订单数</small>
+            </article>
+            <article class="surface-card metric-card">
+              <span>≥61 分</span>
+              <strong>{{ withdrawSummaryTotals.scoreGte61Count.toLocaleString() }}</strong>
+              <small>评分区间订单数</small>
+            </article>
+          </section>
+
+          <section class="surface-card table-card scoring-review-table-card">
+            <div class="section-heading">
+              <div>
+                <h2>操作人提现订单统计</h2>
+                <p>
+                  {{ withdrawSummarySourceName }} · 共 {{ withdrawSummaryRows.length.toLocaleString() }} 名操作人 ·
+                  最近缓存更新：{{ withdrawSummaryLocalUpdatedText }} · 统计范围：{{ withdrawSummaryRangeText }}。
+                </p>
+              </div>
+              <el-tag type="info" effect="plain">{{ withdrawSummaryTimezone }}</el-tag>
+            </div>
+            <el-table
+              v-loading="withdrawSummaryLoading"
+              :data="withdrawSummaryRows"
+              empty-text="请先选择时间范围并查询提现订单汇总"
+            >
+              <el-table-column label="操作人" min-width="190" fixed="left">
+                <template #default="{ row }">
+                  <strong class="operator-selected-total">{{ withdrawSummaryOperatorDisplayName(row) }}</strong>
+                </template>
+              </el-table-column>
+              <el-table-column label="总单数" min-width="116" align="right">
+                <template #default="{ row }">
+                  <strong class="operator-selected-total">{{ row.totalCount.toLocaleString() }}</strong>
+                </template>
+              </el-table-column>
+              <el-table-column label="≤30评分单数" min-width="146" align="right">
+                <template #default="{ row }">{{ row.scoreLte30Count.toLocaleString() }}</template>
+              </el-table-column>
+              <el-table-column label="31–60评分单数" min-width="156" align="right">
+                <template #default="{ row }">{{ row.score31To60Count.toLocaleString() }}</template>
+              </el-table-column>
+              <el-table-column label="≥61评分单数" min-width="146" align="right">
+                <template #default="{ row }">{{ row.scoreGte61Count.toLocaleString() }}</template>
+              </el-table-column>
+              <el-table-column
+                v-for="status in withdrawSummaryStatusColumns"
+                :key="status || 'blank-status'"
+                :min-width="142"
+                align="right"
+              >
+                <template #header>{{ withdrawSummaryStatusLabel(status) }}</template>
+                <template #default="{ row }">
+                  {{ withdrawSummaryStatusCount(row, status).toLocaleString() }}
+                </template>
+              </el-table-column>
+            </el-table>
           </section>
         </div>
       </el-tab-pane>
@@ -2670,6 +2954,10 @@ onMounted(async () => {
 
 .scoring-review-table-card {
   min-width: 0;
+}
+
+.withdraw-summary-coverage-alert :deep(.el-alert__title) {
+  line-height: 1.65;
 }
 
 .query-card__footer-actions {

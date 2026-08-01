@@ -155,6 +155,10 @@ class ScoringReviewRemoteSyncRequest(ScoringReviewOperatorSummaryRequest):
     """A selected source and create-time range for a server-side API sync."""
 
 
+class WithdrawScoringSummaryRequest(ScoringReviewOperatorSummaryRequest):
+    """Range for the withdrawal summary backed by the local scoring cache."""
+
+
 class WithdrawOrderResponse(ApiSchema):
     id: str
     uid: str
@@ -363,6 +367,54 @@ class ScoringReviewOperatorSummaryResponse(ApiSchema):
             expected = sum(getattr(row, field_name) for row in self.rows)
             if getattr(self.totals, field_name) != expected:
                 raise ValueError("评分审核汇总合计与操作人明细不一致。")
+        return self
+
+
+class WithdrawScoringSummaryItem(ScoringReviewSummaryCounts):
+    """One remote-management operator's score-backed withdrawal totals."""
+
+    audit_admin: str = Field(min_length=1, max_length=160)
+    audit_admin_missing: bool
+    status_counts: list[WithdrawOperatorStatusCount]
+
+
+class WithdrawScoringSummaryResponse(ApiSchema):
+    """Score-table-backed withdrawal aggregation for one source and time range."""
+
+    source_id: str = Field(min_length=1, max_length=64)
+    source_display_name: str = Field(min_length=1, max_length=120)
+    business_timezone: str = Field(min_length=1, max_length=120)
+    start_at: datetime
+    end_at: datetime
+    generated_at: datetime
+    local_updated_at: datetime | None
+    rows: list[WithdrawScoringSummaryItem]
+    totals: ScoringReviewSummaryCounts
+    status_columns: list[str]
+    status_dictionary: list[WithdrawStatusDictionaryEntry]
+    management_order_count: int = Field(ge=0)
+    scoring_record_order_count: int = Field(ge=0)
+    missing_scoring_record_count: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_summary_scope(self) -> WithdrawScoringSummaryResponse:
+        if self.management_order_count != (
+            self.scoring_record_order_count + self.missing_scoring_record_count
+        ):
+            raise ValueError("后台订单数量与评分审核记录覆盖数量不一致。")
+        if self.scoring_record_order_count != self.totals.total_count:
+            raise ValueError("评分审核记录数量与评分区间汇总不一致。")
+        fields = (
+            "total_count",
+            "not_entered_scoring_count",
+            "score_lte30_count",
+            "score31_to60_count",
+            "score_gte61_count",
+        )
+        for field_name in fields:
+            expected = sum(getattr(row, field_name) for row in self.rows)
+            if getattr(self.totals, field_name) != expected:
+                raise ValueError("提现订单汇总合计与操作人明细不一致。")
         return self
 
 
