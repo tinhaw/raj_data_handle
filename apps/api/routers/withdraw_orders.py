@@ -257,6 +257,9 @@ async def withdraw_scoring_summary(
         management_order_count=result.management_order_count,
         scoring_record_order_count=result.scoring_record_order_count,
         missing_scoring_record_count=result.missing_scoring_record_count,
+        numeric_score_order_count=result.numeric_score_order_count,
+        unscored_score_record_count=result.unscored_score_record_count,
+        score_distribution=result.score_distribution,
     )
 
 

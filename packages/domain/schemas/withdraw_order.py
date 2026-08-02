@@ -378,6 +378,11 @@ class WithdrawScoringSummaryItem(ScoringReviewSummaryCounts):
     status_counts: list[WithdrawOperatorStatusCount]
 
 
+class WithdrawScoreDistributionItem(ApiSchema):
+    score: str = Field(min_length=1, max_length=80)
+    order_count: int = Field(ge=1)
+
+
 class WithdrawScoringSummaryResponse(ApiSchema):
     """Score-table-backed withdrawal aggregation for one source and time range."""
 
@@ -395,6 +400,9 @@ class WithdrawScoringSummaryResponse(ApiSchema):
     management_order_count: int = Field(ge=0)
     scoring_record_order_count: int = Field(ge=0)
     missing_scoring_record_count: int = Field(ge=0)
+    numeric_score_order_count: int = Field(ge=0)
+    unscored_score_record_count: int = Field(ge=0)
+    score_distribution: list[WithdrawScoreDistributionItem]
 
     @model_validator(mode="after")
     def validate_summary_scope(self) -> WithdrawScoringSummaryResponse:
@@ -404,6 +412,14 @@ class WithdrawScoringSummaryResponse(ApiSchema):
             raise ValueError("后台订单数量与评分审核记录覆盖数量不一致。")
         if self.scoring_record_order_count != self.totals.total_count:
             raise ValueError("评分审核记录数量与评分区间汇总不一致。")
+        if self.scoring_record_order_count != (
+            self.numeric_score_order_count + self.unscored_score_record_count
+        ):
+            raise ValueError("评分审核记录数量与有效评分数量不一致。")
+        if self.numeric_score_order_count != sum(
+            item.order_count for item in self.score_distribution
+        ):
+            raise ValueError("有效评分数量与分值分布不一致。")
         fields = (
             "total_count",
             "not_entered_scoring_count",

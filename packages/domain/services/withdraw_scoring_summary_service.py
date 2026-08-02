@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, desc, func, select
@@ -45,6 +46,12 @@ class WithdrawScoringSummaryItem(WithdrawScoringSummaryCounts):
 
 
 @dataclass(frozen=True, slots=True)
+class WithdrawScoreDistributionItem:
+    score: str
+    order_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class WithdrawScoringSummaryResult:
     source_id: str
     source_display_name: str
@@ -60,6 +67,9 @@ class WithdrawScoringSummaryResult:
     management_order_count: int
     scoring_record_order_count: int
     missing_scoring_record_count: int
+    numeric_score_order_count: int
+    unscored_score_record_count: int
+    score_distribution: list[WithdrawScoreDistributionItem]
 
 
 @dataclass(slots=True)
@@ -111,6 +121,20 @@ def _status_sort_key(code: str) -> tuple[int, int | str, str]:
         return (0, int(code), code)
     except ValueError:
         return (1, code.casefold(), code)
+
+
+def _normalized_numeric_score(score: str | None) -> tuple[Decimal, str] | None:
+    normalized = (score or "").strip()
+    if not normalized:
+        return None
+    try:
+        numeric_score = Decimal(normalized)
+    except (InvalidOperation, ValueError):
+        return None
+    if not numeric_score.is_finite():
+        return None
+    display = format(numeric_score.normalize(), "f")
+    return (numeric_score, "0" if display == "-0" else display)
 
 
 def _is_missing_summary_schema(error: OperationalError | ProgrammingError) -> bool:
@@ -205,6 +229,8 @@ async def query_withdraw_scoring_summary(
     synced_at_values: list[datetime | None] = []
     management_order_count = 0
     missing_scoring_record_count = 0
+    numeric_score_counts: dict[Decimal, tuple[str, int]] = {}
+    unscored_score_record_count = 0
 
     for record in records:
         management_order_count += 1
@@ -225,6 +251,16 @@ async def query_withdraw_scoring_summary(
         operator_missing.setdefault(operator, audit_admin_missing)
         counts.add(score=record["score_review"], status=status)
         totals.add(score=record["score_review"], status=status)
+        numeric_score = _normalized_numeric_score(record["score_review"])
+        if numeric_score is None:
+            unscored_score_record_count += 1
+            continue
+        score_value, score_display = numeric_score
+        previous = numeric_score_counts.get(score_value)
+        numeric_score_counts[score_value] = (
+            score_display,
+            (previous[1] if previous else 0) + 1,
+        )
 
     status_by_code = {
         str(entry["code"]).strip(): dict(entry) for entry in configured_status_dictionary
@@ -275,6 +311,12 @@ async def query_withdraw_scoring_summary(
 
     timezone = ZoneInfo(timezone_name)
     frozen_totals = totals.frozen()
+    score_distribution = [
+        WithdrawScoreDistributionItem(score=score_display, order_count=order_count)
+        for _numeric_score, (score_display, order_count) in sorted(
+            numeric_score_counts.items(), key=lambda item: item[0]
+        )
+    ]
     return WithdrawScoringSummaryResult(
         source_id=source_id,
         source_display_name=source_display_name,
@@ -297,4 +339,7 @@ async def query_withdraw_scoring_summary(
         management_order_count=management_order_count,
         scoring_record_order_count=frozen_totals.total_count,
         missing_scoring_record_count=missing_scoring_record_count,
+        numeric_score_order_count=sum(item.order_count for item in score_distribution),
+        unscored_score_record_count=unscored_score_record_count,
+        score_distribution=score_distribution,
     )

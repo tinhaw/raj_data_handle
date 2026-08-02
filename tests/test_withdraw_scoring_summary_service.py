@@ -196,6 +196,14 @@ async def test_withdraw_scoring_summary_only_counts_matched_scoring_rows() -> No
     assert result.management_order_count == 7
     assert result.scoring_record_order_count == 6
     assert result.missing_scoring_record_count == 1
+    assert result.numeric_score_order_count == 4
+    assert result.unscored_score_record_count == 2
+    assert [(item.score, item.order_count) for item in result.score_distribution] == [
+        ("30", 1),
+        ("31", 1),
+        ("60", 1),
+        ("61", 1),
+    ]
     assert (
         result.totals.total_count,
         result.totals.not_entered_scoring_count,
@@ -235,6 +243,10 @@ async def test_withdraw_scoring_summary_only_counts_matched_scoring_rows() -> No
         management_order_count=result.management_order_count,
         scoring_record_order_count=result.scoring_record_order_count,
         missing_scoring_record_count=result.missing_scoring_record_count,
+        numeric_score_order_count=result.numeric_score_order_count,
+        unscored_score_record_count=result.unscored_score_record_count,
+        score_distribution=result.score_distribution,
     )
     assert response.model_dump(by_alias=True)["missingScoringRecordCount"] == 1
+    assert response.model_dump(by_alias=True)["numericScoreOrderCount"] == 4
     await engine.dispose()

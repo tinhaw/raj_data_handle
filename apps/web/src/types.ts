@@ -569,22 +569,6 @@ export interface ScoringReviewSummaryCounts {
   scoreGte61Count: number
 }
 
-export interface ScoringReviewOperatorSummaryItem extends ScoringReviewSummaryCounts {
-  operator: string
-}
-
-export interface ScoringReviewOperatorSummaryResponse {
-  sourceId: string
-  sourceDisplayName: string
-  businessTimezone: string
-  startAt: string
-  endAt: string
-  generatedAt: string
-  localUpdatedAt: string | null
-  rows: ScoringReviewOperatorSummaryItem[]
-  totals: ScoringReviewSummaryCounts
-}
-
 /**
  * Withdrawal summary restricted to local orders that have a matching scoring
  * review cache record.  Management-side orders without a scoring record are
@@ -594,6 +578,11 @@ export interface WithdrawScoringSummaryItem extends ScoringReviewSummaryCounts {
   auditAdmin: string
   auditAdminMissing: boolean
   statusCounts: WithdrawOperatorStatusCount[]
+}
+
+export interface WithdrawScoreDistributionItem {
+  score: string
+  orderCount: number
 }
 
 export interface WithdrawScoringSummaryResponse {
@@ -611,6 +600,9 @@ export interface WithdrawScoringSummaryResponse {
   managementOrderCount: number
   scoringRecordOrderCount: number
   missingScoringRecordCount: number
+  numericScoreOrderCount: number
+  unscoredScoreRecordCount: number
+  scoreDistribution: WithdrawScoreDistributionItem[]
 }
 
 export interface WithdrawScoringImportResult {

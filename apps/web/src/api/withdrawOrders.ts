@@ -6,7 +6,6 @@ import type {
   WithdrawOrderRefreshResult,
   WithdrawOrderRefreshRange,
   WithdrawScoringSummaryResponse,
-  ScoringReviewOperatorSummaryResponse,
   WithdrawScoringImportResult,
 } from '../types'
 
@@ -59,21 +58,6 @@ export async function queryWithdrawChannelSummary(
   payload: WithdrawChannelSummaryQuery,
 ): Promise<WithdrawChannelSummaryResponse> {
   return (await api.post<WithdrawChannelSummaryResponse>('/withdraw-orders/channel-summary', payload)).data
-}
-
-export interface ScoringReviewOperatorSummaryQuery {
-  sourceId: string
-  createTimeStart: string
-  createTimeEnd: string
-}
-
-export async function queryScoringReviewOperatorSummary(
-  payload: ScoringReviewOperatorSummaryQuery,
-): Promise<ScoringReviewOperatorSummaryResponse> {
-  return (await api.post<ScoringReviewOperatorSummaryResponse>(
-    '/withdraw-orders/scoring-review-summary',
-    payload,
-  )).data
 }
 
 export interface WithdrawScoringSummaryQuery {
