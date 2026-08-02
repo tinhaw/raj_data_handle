@@ -581,8 +581,11 @@ export interface WithdrawScoringSummaryItem extends ScoringReviewSummaryCounts {
 }
 
 export interface WithdrawScoreDistributionItem {
-  score: string
-  orderCount: number
+  auditAdmin: string
+  auditAdminMissing: boolean
+  scoreLte30Count: number
+  score31To60Count: number
+  scoreGte61Count: number
 }
 
 export interface WithdrawScoringSummaryResponse {

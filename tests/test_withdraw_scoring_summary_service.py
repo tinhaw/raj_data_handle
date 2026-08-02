@@ -198,11 +198,18 @@ async def test_withdraw_scoring_summary_only_counts_matched_scoring_rows() -> No
     assert result.missing_scoring_record_count == 1
     assert result.numeric_score_order_count == 4
     assert result.unscored_score_record_count == 2
-    assert [(item.score, item.order_count) for item in result.score_distribution] == [
-        ("30", 1),
-        ("31", 1),
-        ("60", 1),
-        ("61", 1),
+    assert [
+        (
+            item.audit_admin,
+            item.score_lte30_count,
+            item.score31_to60_count,
+            item.score_gte61_count,
+        )
+        for item in result.score_distribution
+    ] == [
+        ("Alice", 1, 1, 1),
+        ("Bob", 0, 0, 0),
+        ("未记录操作人", 0, 1, 0),
     ]
     assert (
         result.totals.total_count,

@@ -47,8 +47,11 @@ class WithdrawScoringSummaryItem(WithdrawScoringSummaryCounts):
 
 @dataclass(frozen=True, slots=True)
 class WithdrawScoreDistributionItem:
-    score: str
-    order_count: int
+    audit_admin: str
+    audit_admin_missing: bool
+    score_lte30_count: int
+    score31_to60_count: int
+    score_gte61_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +126,7 @@ def _status_sort_key(code: str) -> tuple[int, int | str, str]:
         return (1, code.casefold(), code)
 
 
-def _normalized_numeric_score(score: str | None) -> tuple[Decimal, str] | None:
+def _normalized_numeric_score(score: str | None) -> Decimal | None:
     normalized = (score or "").strip()
     if not normalized:
         return None
@@ -133,8 +136,7 @@ def _normalized_numeric_score(score: str | None) -> tuple[Decimal, str] | None:
         return None
     if not numeric_score.is_finite():
         return None
-    display = format(numeric_score.normalize(), "f")
-    return (numeric_score, "0" if display == "-0" else display)
+    return numeric_score
 
 
 def _is_missing_summary_schema(error: OperationalError | ProgrammingError) -> bool:
@@ -229,7 +231,7 @@ async def query_withdraw_scoring_summary(
     synced_at_values: list[datetime | None] = []
     management_order_count = 0
     missing_scoring_record_count = 0
-    numeric_score_counts: dict[Decimal, tuple[str, int]] = {}
+    numeric_score_counts: dict[str, dict[str, int]] = {}
     unscored_score_record_count = 0
 
     for record in records:
@@ -255,12 +257,20 @@ async def query_withdraw_scoring_summary(
         if numeric_score is None:
             unscored_score_record_count += 1
             continue
-        score_value, score_display = numeric_score
-        previous = numeric_score_counts.get(score_value)
-        numeric_score_counts[score_value] = (
-            score_display,
-            (previous[1] if previous else 0) + 1,
+        numeric_counts = numeric_score_counts.setdefault(
+            operator,
+            {
+                "score_lte30_count": 0,
+                "score31_to60_count": 0,
+                "score_gte61_count": 0,
+            },
         )
+        if numeric_score <= Decimal("30"):
+            numeric_counts["score_lte30_count"] += 1
+        elif numeric_score <= Decimal("60"):
+            numeric_counts["score31_to60_count"] += 1
+        else:
+            numeric_counts["score_gte61_count"] += 1
 
     status_by_code = {
         str(entry["code"]).strip(): dict(entry) for entry in configured_status_dictionary
@@ -312,10 +322,20 @@ async def query_withdraw_scoring_summary(
     timezone = ZoneInfo(timezone_name)
     frozen_totals = totals.frozen()
     score_distribution = [
-        WithdrawScoreDistributionItem(score=score_display, order_count=order_count)
-        for _numeric_score, (score_display, order_count) in sorted(
-            numeric_score_counts.items(), key=lambda item: item[0]
+        WithdrawScoreDistributionItem(
+            audit_admin=row.audit_admin,
+            audit_admin_missing=row.audit_admin_missing,
+            score_lte30_count=numeric_score_counts.get(row.audit_admin, {}).get(
+                "score_lte30_count", 0
+            ),
+            score31_to60_count=numeric_score_counts.get(row.audit_admin, {}).get(
+                "score31_to60_count", 0
+            ),
+            score_gte61_count=numeric_score_counts.get(row.audit_admin, {}).get(
+                "score_gte61_count", 0
+            ),
         )
+        for row in rows
     ]
     return WithdrawScoringSummaryResult(
         source_id=source_id,
@@ -339,7 +359,12 @@ async def query_withdraw_scoring_summary(
         management_order_count=management_order_count,
         scoring_record_order_count=frozen_totals.total_count,
         missing_scoring_record_count=missing_scoring_record_count,
-        numeric_score_order_count=sum(item.order_count for item in score_distribution),
+        numeric_score_order_count=sum(
+            item.score_lte30_count
+            + item.score31_to60_count
+            + item.score_gte61_count
+            for item in score_distribution
+        ),
         unscored_score_record_count=unscored_score_record_count,
         score_distribution=score_distribution,
     )

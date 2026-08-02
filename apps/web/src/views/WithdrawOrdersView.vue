@@ -29,6 +29,7 @@ import type {
   WithdrawOrderQueryResponse,
   WithdrawOrderRefreshRange,
   WithdrawOrderSummary,
+  WithdrawScoreDistributionItem,
   WithdrawScoringSummaryItem,
   WithdrawScoringSummaryResponse,
   WithdrawStatusDictionaryEntry,
@@ -81,6 +82,14 @@ const WITHDRAW_CHANNEL_CHART_METRICS: WithdrawChannelChartMetricDefinition[] = [
   },
 ]
 const WITHDRAW_CHANNEL_CHART_DISPLAY_OPTIONS: Array<{ value: ChartDisplayType; label: string }> = [
+  { value: 'bar', label: '柱状图' },
+  { value: 'pie', label: '饼图' },
+  { value: 'line', label: '折线图' },
+]
+const WITHDRAW_SUMMARY_OPERATOR_CHART_DISPLAY_OPTIONS: Array<{
+  value: ChartDisplayType
+  label: string
+}> = [
   { value: 'bar', label: '柱状图' },
   { value: 'pie', label: '饼图' },
   { value: 'line', label: '折线图' },
@@ -184,6 +193,9 @@ const scoringReviewUploadInput = ref<HTMLInputElement | null>(null)
 const scoringReviewImportFile = ref<File | null>(null)
 const withdrawSummaryLoading = ref(false)
 const withdrawSummaryResponse = ref<WithdrawScoringSummaryResponse | null>(null)
+const withdrawSummaryOperatorChartVisible = ref(false)
+const selectedWithdrawScoreDistribution = ref<WithdrawScoreDistributionItem | null>(null)
+const withdrawSummaryOperatorChartDisplayType = ref<ChartDisplayType>('bar')
 const withdrawSummaryFilters = reactive({
   sourceId: '',
   createTimeRange: yesterdayFullDayRange('Asia/Kolkata') as [string, string] | null,
@@ -271,16 +283,19 @@ const withdrawSummaryTotals = computed(
 const withdrawScoreDistribution = computed(
   () => withdrawSummaryResponse.value?.scoreDistribution || [],
 )
-const withdrawScoreDistributionEmpty = computed(() => withdrawScoreDistribution.value.length === 0)
+const withdrawScoreDistributionEmpty = computed(
+  () => !withdrawSummaryResponse.value?.numericScoreOrderCount,
+)
 const withdrawScoreDistributionChartOption = computed<EChartsOption>(() => {
   const items = withdrawScoreDistribution.value
-  const scoreCount = items.length
-  const labelInterval = scoreCount > 24 ? Math.ceil(scoreCount / 12) - 1 : 0
+  const operatorCount = items.length
+  const labelInterval = operatorCount > 18 ? Math.ceil(operatorCount / 12) - 1 : 0
   return {
     animationDuration: 420,
     animationDurationUpdate: 320,
     animationEasing: 'cubicOut',
-    grid: { left: 30, right: 24, top: 28, bottom: 58, containLabel: true },
+    color: ['#397de5', '#39b8b0', '#e9a23b'],
+    grid: { left: 30, right: 24, top: 48, bottom: 64, containLabel: true },
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'shadow' },
@@ -291,17 +306,24 @@ const withdrawScoreDistributionChartOption = computed<EChartsOption>(() => {
       padding: [10, 12],
       textStyle: { color: '#f7fbff', fontSize: 12 },
     },
+    legend: {
+      top: 4,
+      right: 24,
+      itemWidth: 12,
+      itemHeight: 10,
+      textStyle: { color: '#53657a', fontSize: 12, fontWeight: 600 },
+    },
     xAxis: {
       type: 'category',
-      name: '评分',
+      name: '操作人',
       nameLocation: 'middle',
-      nameGap: 42,
-      data: items.map((item) => item.score),
+      nameGap: 48,
+      data: items.map((item) => withdrawSummaryOperatorDisplayName(item)),
       axisLine: { lineStyle: { color: '#dbe6ef' } },
       axisTick: { show: false },
       axisLabel: {
         interval: labelInterval,
-        rotate: scoreCount > 12 ? 38 : 0,
+        rotate: operatorCount > 8 ? 38 : 0,
         color: '#617b92',
         fontSize: 12,
       },
@@ -315,16 +337,154 @@ const withdrawScoreDistributionChartOption = computed<EChartsOption>(() => {
     },
     series: [
       {
-        name: '订单数',
+        name: '≤30 分',
         type: 'bar',
-        data: items.map((item) => item.orderCount),
-        barMaxWidth: 42,
+        stack: '评分区间',
+        data: items.map((item) => item.scoreLte30Count),
+        barMaxWidth: 34,
         itemStyle: {
           color: '#397de5',
-          borderRadius: [6, 6, 0, 0],
-          shadowBlur: 8,
-          shadowColor: 'rgba(57, 125, 229, 0.2)',
+          borderRadius: [0, 0, 3, 3],
         },
+      },
+      {
+        name: '31–60 分',
+        type: 'bar',
+        stack: '评分区间',
+        data: items.map((item) => item.score31To60Count),
+        barMaxWidth: 34,
+        itemStyle: { color: '#39b8b0' },
+      },
+      {
+        name: '≥61 分',
+        type: 'bar',
+        stack: '评分区间',
+        data: items.map((item) => item.scoreGte61Count),
+        barMaxWidth: 34,
+        itemStyle: {
+          color: '#e9a23b',
+          borderRadius: [3, 3, 0, 0],
+        },
+      },
+    ],
+  }
+})
+const withdrawSummaryOperatorChartData = computed(() => {
+  const item = selectedWithdrawScoreDistribution.value
+  if (!item) return []
+  return [
+    { name: '≤30 分', value: item.scoreLte30Count, color: '#397de5' },
+    { name: '31–60 分', value: item.score31To60Count, color: '#39b8b0' },
+    { name: '≥61 分', value: item.scoreGte61Count, color: '#e9a23b' },
+  ]
+})
+const withdrawSummaryOperatorChartEmpty = computed(
+  () => !withdrawSummaryOperatorChartData.value.some((item) => item.value > 0),
+)
+const withdrawSummaryOperatorChartTitle = computed(() => {
+  const item = selectedWithdrawScoreDistribution.value
+  return item
+    ? `${withdrawSummaryOperatorDisplayName(item)} · 评分区间分布`
+    : '操作人评分区间分布'
+})
+const withdrawSummaryOperatorChartTotal = computed(() =>
+  withdrawSummaryOperatorChartData.value.reduce((total, item) => total + item.value, 0),
+)
+const withdrawSummaryOperatorChartOption = computed<EChartsOption>(() => {
+  const items = withdrawSummaryOperatorChartData.value
+  const displayType = withdrawSummaryOperatorChartDisplayType.value
+  if (displayType === 'pie') {
+    return {
+      color: items.map((item) => item.color),
+      tooltip: {
+        trigger: 'item',
+        formatter: '{b}<br/><strong>{c}</strong> 单 · {d}%',
+        backgroundColor: 'rgba(18, 43, 64, 0.96)',
+        borderColor: 'rgba(147, 196, 218, 0.38)',
+        borderWidth: 1,
+        padding: [10, 12],
+        textStyle: { color: '#f7fbff', fontSize: 12 },
+      },
+      title: {
+        text: '有效评分',
+        subtext: `${withdrawSummaryOperatorChartTotal.value.toLocaleString()} 单`,
+        left: 'center',
+        top: '42%',
+        textAlign: 'center',
+        textStyle: { color: '#7a91a8', fontSize: 11, fontWeight: 700 },
+        subtextStyle: { color: '#17324d', fontSize: 20, fontWeight: 800, lineHeight: 28 },
+      },
+      legend: {
+        bottom: 0,
+        itemWidth: 12,
+        itemHeight: 10,
+        textStyle: { color: '#53657a', fontSize: 12, fontWeight: 600 },
+      },
+      series: [
+        {
+          type: 'pie',
+          radius: ['52%', '72%'],
+          center: ['50%', '46%'],
+          startAngle: 90,
+          avoidLabelOverlap: true,
+          itemStyle: { borderColor: '#ffffff', borderWidth: 4, borderRadius: 8 },
+          emphasis: {
+            scale: true,
+            scaleSize: 7,
+            itemStyle: { shadowBlur: 14, shadowColor: 'rgba(31, 61, 90, 0.18)' },
+          },
+          label: { show: false },
+          labelLine: { show: false },
+          data: items.map((item) => ({
+            name: item.name,
+            value: item.value,
+            itemStyle: { color: item.color },
+          })),
+        },
+      ],
+    }
+  }
+  return {
+    animationDuration: 360,
+    animationDurationUpdate: 260,
+    animationEasing: 'cubicOut',
+    grid: { left: 30, right: 24, top: 24, bottom: 34, containLabel: true },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: displayType === 'bar' ? 'shadow' : 'line' },
+      valueFormatter: (value: unknown) => `${Number(value).toLocaleString()} 单`,
+      backgroundColor: 'rgba(18, 43, 64, 0.96)',
+      borderColor: 'rgba(147, 196, 218, 0.38)',
+      borderWidth: 1,
+      padding: [10, 12],
+      textStyle: { color: '#f7fbff', fontSize: 12 },
+    },
+    xAxis: {
+      type: 'category',
+      data: items.map((item) => item.name),
+      axisLine: { lineStyle: { color: '#dbe6ef' } },
+      axisTick: { show: false },
+      axisLabel: { color: '#617b92', fontSize: 12 },
+    },
+    yAxis: {
+      type: 'value',
+      name: '订单数',
+      minInterval: 1,
+      axisLabel: { color: '#617b92', fontSize: 12 },
+      splitLine: { lineStyle: { color: '#edf2f6', type: 'dashed' } },
+    },
+    series: [
+      {
+        name: '订单数',
+        type: displayType,
+        data: items.map((item) => ({ value: item.value, itemStyle: { color: item.color } })),
+        smooth: displayType === 'line',
+        symbol: displayType === 'line' ? 'circle' : undefined,
+        symbolSize: displayType === 'line' ? 9 : undefined,
+        lineStyle: displayType === 'line' ? { color: '#397de5', width: 3 } : undefined,
+        areaStyle: displayType === 'line' ? { color: 'rgba(57, 125, 229, 0.12)' } : undefined,
+        barMaxWidth: displayType === 'bar' ? 48 : undefined,
+        itemStyle: displayType === 'bar' ? { borderRadius: [6, 6, 0, 0] } : undefined,
       },
     ],
   }
@@ -1090,8 +1250,24 @@ function withdrawSummaryStatusCount(item: WithdrawScoringSummaryItem, status: st
   return item.statusCounts.find((entry) => entry.status === status)?.count || 0
 }
 
-function withdrawSummaryOperatorDisplayName(item: WithdrawScoringSummaryItem): string {
+function withdrawSummaryOperatorDisplayName(
+  item: Pick<WithdrawScoringSummaryItem, 'auditAdmin' | 'auditAdminMissing'>,
+): string {
   return item.auditAdminMissing || !item.auditAdmin.trim() ? '未记录操作人' : item.auditAdmin
+}
+
+function openWithdrawSummaryOperatorChart(item: WithdrawScoringSummaryItem): void {
+  const distribution = withdrawScoreDistribution.value.find(
+    (entry) =>
+      entry.auditAdmin === item.auditAdmin && entry.auditAdminMissing === item.auditAdminMissing,
+  )
+  if (!distribution) {
+    ElMessage.warning('当前操作人暂无可用的评分区间数据。')
+    return
+  }
+  selectedWithdrawScoreDistribution.value = distribution
+  withdrawSummaryOperatorChartDisplayType.value = 'bar'
+  withdrawSummaryOperatorChartVisible.value = true
 }
 
 function statusOptionsLabel(entry: WithdrawStatusDictionaryEntry): string {
@@ -1402,6 +1578,8 @@ function resetOperatorSummaryResult(): void {
 function resetWithdrawSummaryResult(): void {
   withdrawSummaryRequestId += 1
   withdrawSummaryResponse.value = null
+  selectedWithdrawScoreDistribution.value = null
+  withdrawSummaryOperatorChartVisible.value = false
 }
 
 function handleSourceChange(): void {
@@ -2338,11 +2516,11 @@ onMounted(async () => {
           <section class="surface-card withdraw-score-distribution-card">
             <div class="section-heading">
               <div>
-                <h2>评分分值分布</h2>
+                <h2>操作人评分区间分布</h2>
                 <p>
-                  仅统计评分审核订单数据表有记录、可关联到本地提现订单且“评分审核”为有效数值的订单：
-                  {{ (withdrawSummaryResponse?.numericScoreOrderCount || 0).toLocaleString() }} 单。评分表有记录但未进入评分或无分值的
-                  {{ (withdrawSummaryResponse?.unscoredScoreRecordCount || 0).toLocaleString() }} 单不展示为具体分值；管理后台有但评分表无记录的
+                  与下方操作人提现订单统计表相同，按操作人和 ≤30 分、31–60 分、≥61 分三个区间展示。仅统计评分审核订单数据表有记录、可关联到本地提现订单且“评分审核”为有效数值的
+                  {{ (withdrawSummaryResponse?.numericScoreOrderCount || 0).toLocaleString() }} 单；因此图中 ≤30 分不包含未进入评分或无分值的
+                  {{ (withdrawSummaryResponse?.unscoredScoreRecordCount || 0).toLocaleString() }} 单。管理后台有但评分表无记录的
                   {{ (withdrawSummaryResponse?.missingScoringRecordCount || 0).toLocaleString() }} 单也不计入图表。
                 </p>
               </div>
@@ -2351,7 +2529,7 @@ onMounted(async () => {
               </el-tag>
             </div>
             <ChartPanel
-              title="评分分值分布"
+              title="操作人评分区间分布"
               :option="withdrawScoreDistributionChartOption"
               :empty="withdrawScoreDistributionEmpty"
               :height="320"
@@ -2380,6 +2558,13 @@ onMounted(async () => {
               <el-table-column label="操作人" min-width="190" fixed="left">
                 <template #default="{ row }">
                   <strong class="operator-selected-total">{{ withdrawSummaryOperatorDisplayName(row) }}</strong>
+                </template>
+              </el-table-column>
+              <el-table-column label="查看图表" width="124" align="center" fixed="left">
+                <template #default="{ row }">
+                  <el-button type="primary" link @click="openWithdrawSummaryOperatorChart(row)">
+                    查看图表
+                  </el-button>
                 </template>
               </el-table-column>
               <el-table-column label="总单数" min-width="116" align="right">
@@ -2567,6 +2752,42 @@ onMounted(async () => {
       </div>
       <template #footer>
         <el-button @click="operatorSummaryChartVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="withdrawSummaryOperatorChartVisible"
+      :title="withdrawSummaryOperatorChartTitle"
+      width="min(680px, calc(100vw - 32px))"
+      destroy-on-close
+    >
+      <div class="withdraw-summary-operator-chart__toolbar">
+        <p>
+          仅展示该操作人已关联提现订单且“评分审核”为有效数值的订单，共
+          <strong>{{ withdrawSummaryOperatorChartTotal.toLocaleString() }}</strong> 单。
+        </p>
+        <el-segmented
+          v-model="withdrawSummaryOperatorChartDisplayType"
+          :options="WITHDRAW_SUMMARY_OPERATOR_CHART_DISPLAY_OPTIONS"
+        />
+      </div>
+      <el-alert
+        title="未进入评分或无分值的订单不计入图表；因此 ≤30 分图表值可能小于表格中的 ≤30评分单数。"
+        type="info"
+        :closable="false"
+        show-icon
+      />
+      <ChartPanel
+        title="操作人评分区间分布"
+        :option="withdrawSummaryOperatorChartOption"
+        :empty="withdrawSummaryOperatorChartEmpty"
+        :height="320"
+        :active="withdrawSummaryOperatorChartVisible"
+        plain
+        :show-title="false"
+      />
+      <template #footer>
+        <el-button @click="withdrawSummaryOperatorChartVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>
@@ -2817,6 +3038,30 @@ onMounted(async () => {
 
 .withdraw-score-distribution-card {
   min-width: 0;
+}
+
+.withdraw-summary-operator-chart__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.withdraw-summary-operator-chart__toolbar p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.withdraw-summary-operator-chart__toolbar strong {
+  color: var(--ink-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.withdraw-summary-operator-chart__toolbar + :deep(.el-alert) {
+  margin-bottom: 14px;
 }
 
 .withdraw-summary-coverage-alert :deep(.el-alert__title) {
@@ -3170,6 +3415,11 @@ onMounted(async () => {
 
   .query-card__footer-actions .el-button {
     flex: 1 1 0;
+  }
+
+  .withdraw-summary-operator-chart__toolbar {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .scoring-review-metric-grid {

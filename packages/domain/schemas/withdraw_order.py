@@ -379,8 +379,11 @@ class WithdrawScoringSummaryItem(ScoringReviewSummaryCounts):
 
 
 class WithdrawScoreDistributionItem(ApiSchema):
-    score: str = Field(min_length=1, max_length=80)
-    order_count: int = Field(ge=1)
+    audit_admin: str = Field(min_length=1, max_length=160)
+    audit_admin_missing: bool
+    score_lte30_count: int = Field(ge=0)
+    score31_to60_count: int = Field(ge=0)
+    score_gte61_count: int = Field(ge=0)
 
 
 class WithdrawScoringSummaryResponse(ApiSchema):
@@ -417,9 +420,18 @@ class WithdrawScoringSummaryResponse(ApiSchema):
         ):
             raise ValueError("评分审核记录数量与有效评分数量不一致。")
         if self.numeric_score_order_count != sum(
-            item.order_count for item in self.score_distribution
+            item.score_lte30_count
+            + item.score31_to60_count
+            + item.score_gte61_count
+            for item in self.score_distribution
         ):
             raise ValueError("有效评分数量与分值分布不一致。")
+        if len(self.rows) != len(self.score_distribution) or any(
+            (summary.audit_admin, summary.audit_admin_missing)
+            != (distribution.audit_admin, distribution.audit_admin_missing)
+            for summary, distribution in zip(self.rows, self.score_distribution, strict=True)
+        ):
+            raise ValueError("评分分布与操作人汇总的统计粒度不一致。")
         fields = (
             "total_count",
             "not_entered_scoring_count",
