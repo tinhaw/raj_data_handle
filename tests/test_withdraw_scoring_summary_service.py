@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from packages.common.settings import Settings
@@ -207,10 +208,16 @@ async def test_withdraw_scoring_summary_only_counts_matched_scoring_rows() -> No
         )
         for item in result.score_distribution
     ] == [
-        ("Alice", 1, 1, 1),
-        ("Bob", 0, 0, 0),
+        ("Alice", 2, 1, 1),
+        ("Bob", 1, 0, 0),
         ("未记录操作人", 0, 1, 0),
     ]
+    assert sum(
+        item.score_lte30_count
+        + item.score31_to60_count
+        + item.score_gte61_count
+        for item in result.score_distribution
+    ) == result.scoring_record_order_count
     assert (
         result.totals.total_count,
         result.totals.not_entered_scoring_count,
@@ -256,4 +263,38 @@ async def test_withdraw_scoring_summary_only_counts_matched_scoring_rows() -> No
     )
     assert response.model_dump(by_alias=True)["missingScoringRecordCount"] == 1
     assert response.model_dump(by_alias=True)["numericScoreOrderCount"] == 4
+    assert response.model_dump(by_alias=True)["scoreDistribution"][0]["scoreLte30Count"] == 2
+
+    numeric_only_payload = response.model_dump()
+    numeric_only_payload["score_distribution"] = [
+        {
+            "audit_admin": "Alice",
+            "audit_admin_missing": False,
+            "score_lte30_count": 1,
+            "score31_to60_count": 1,
+            "score_gte61_count": 1,
+        },
+        {
+            "audit_admin": "Bob",
+            "audit_admin_missing": False,
+            "score_lte30_count": 0,
+            "score31_to60_count": 0,
+            "score_gte61_count": 0,
+        },
+        {
+            "audit_admin": "未记录操作人",
+            "audit_admin_missing": True,
+            "score_lte30_count": 0,
+            "score31_to60_count": 1,
+            "score_gte61_count": 0,
+        },
+    ]
+    with pytest.raises(ValidationError, match="评分审核记录数量与分值分布不一致"):
+        WithdrawScoringSummaryResponse.model_validate(numeric_only_payload)
+
+    swapped_operator_payload = response.model_dump()
+    swapped_operator_payload["score_distribution"][0]["score_lte30_count"] = 1
+    swapped_operator_payload["score_distribution"][1]["score_lte30_count"] = 2
+    with pytest.raises(ValidationError, match="评分分布与操作人汇总不一致"):
+        WithdrawScoringSummaryResponse.model_validate(swapped_operator_payload)
     await engine.dispose()

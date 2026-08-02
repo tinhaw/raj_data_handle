@@ -231,7 +231,6 @@ async def query_withdraw_scoring_summary(
     synced_at_values: list[datetime | None] = []
     management_order_count = 0
     missing_scoring_record_count = 0
-    numeric_score_counts: dict[str, dict[str, int]] = {}
     unscored_score_record_count = 0
 
     for record in records:
@@ -256,21 +255,6 @@ async def query_withdraw_scoring_summary(
         numeric_score = _normalized_numeric_score(record["score_review"])
         if numeric_score is None:
             unscored_score_record_count += 1
-            continue
-        numeric_counts = numeric_score_counts.setdefault(
-            operator,
-            {
-                "score_lte30_count": 0,
-                "score31_to60_count": 0,
-                "score_gte61_count": 0,
-            },
-        )
-        if numeric_score <= Decimal("30"):
-            numeric_counts["score_lte30_count"] += 1
-        elif numeric_score <= Decimal("60"):
-            numeric_counts["score31_to60_count"] += 1
-        else:
-            numeric_counts["score_gte61_count"] += 1
 
     status_by_code = {
         str(entry["code"]).strip(): dict(entry) for entry in configured_status_dictionary
@@ -325,15 +309,9 @@ async def query_withdraw_scoring_summary(
         WithdrawScoreDistributionItem(
             audit_admin=row.audit_admin,
             audit_admin_missing=row.audit_admin_missing,
-            score_lte30_count=numeric_score_counts.get(row.audit_admin, {}).get(
-                "score_lte30_count", 0
-            ),
-            score31_to60_count=numeric_score_counts.get(row.audit_admin, {}).get(
-                "score31_to60_count", 0
-            ),
-            score_gte61_count=numeric_score_counts.get(row.audit_admin, {}).get(
-                "score_gte61_count", 0
-            ),
+            score_lte30_count=row.score_lte30_count,
+            score31_to60_count=row.score31_to60_count,
+            score_gte61_count=row.score_gte61_count,
         )
         for row in rows
     ]
@@ -359,12 +337,7 @@ async def query_withdraw_scoring_summary(
         management_order_count=management_order_count,
         scoring_record_order_count=frozen_totals.total_count,
         missing_scoring_record_count=missing_scoring_record_count,
-        numeric_score_order_count=sum(
-            item.score_lte30_count
-            + item.score31_to60_count
-            + item.score_gte61_count
-            for item in score_distribution
-        ),
+        numeric_score_order_count=frozen_totals.total_count - unscored_score_record_count,
         unscored_score_record_count=unscored_score_record_count,
         score_distribution=score_distribution,
     )

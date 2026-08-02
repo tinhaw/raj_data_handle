@@ -284,7 +284,7 @@ const withdrawScoreDistribution = computed(
   () => withdrawSummaryResponse.value?.scoreDistribution || [],
 )
 const withdrawScoreDistributionEmpty = computed(
-  () => !withdrawSummaryResponse.value?.numericScoreOrderCount,
+  () => !withdrawSummaryResponse.value?.scoringRecordOrderCount,
 )
 const withdrawScoreDistributionChartOption = computed<EChartsOption>(() => {
   const items = withdrawScoreDistribution.value
@@ -406,7 +406,7 @@ const withdrawSummaryOperatorChartOption = computed<EChartsOption>(() => {
         textStyle: { color: '#f7fbff', fontSize: 12 },
       },
       title: {
-        text: '有效评分',
+        text: '汇总订单',
         subtext: `${withdrawSummaryOperatorChartTotal.value.toLocaleString()} 单`,
         left: 'center',
         top: '42%',
@@ -2518,14 +2518,14 @@ onMounted(async () => {
               <div>
                 <h2>操作人评分区间分布</h2>
                 <p>
-                  与下方操作人提现订单统计表相同，按操作人和 ≤30 分、31–60 分、≥61 分三个区间展示。仅统计评分审核订单数据表有记录、可关联到本地提现订单且“评分审核”为有效数值的
-                  {{ (withdrawSummaryResponse?.numericScoreOrderCount || 0).toLocaleString() }} 单；因此图中 ≤30 分不包含未进入评分或无分值的
-                  {{ (withdrawSummaryResponse?.unscoredScoreRecordCount || 0).toLocaleString() }} 单。管理后台有但评分表无记录的
+                  与下方操作人提现订单统计表使用相同口径，按操作人和 ≤30 分、31–60 分、≥61 分三个区间展示。共统计评分审核订单数据表有记录且可关联到本地提现订单的
+                  {{ (withdrawSummaryResponse?.scoringRecordOrderCount || 0).toLocaleString() }} 单；其中未进入评分或无分值的
+                  {{ (withdrawSummaryResponse?.unscoredScoreRecordCount || 0).toLocaleString() }} 单已计入 ≤30 分。管理后台有但评分表无记录的
                   {{ (withdrawSummaryResponse?.missingScoringRecordCount || 0).toLocaleString() }} 单也不计入图表。
                 </p>
               </div>
               <el-tag type="info" effect="plain">
-                有效数值评分 {{ (withdrawSummaryResponse?.numericScoreOrderCount || 0).toLocaleString() }} 单
+                图表订单 {{ (withdrawSummaryResponse?.scoringRecordOrderCount || 0).toLocaleString() }} 单
               </el-tag>
             </div>
             <ChartPanel
@@ -2763,7 +2763,7 @@ onMounted(async () => {
     >
       <div class="withdraw-summary-operator-chart__toolbar">
         <p>
-          仅展示该操作人已关联提现订单且“评分审核”为有效数值的订单，共
+          展示该操作人在评分审核订单数据表中有记录且可关联到本地提现订单的订单，共
           <strong>{{ withdrawSummaryOperatorChartTotal.toLocaleString() }}</strong> 单。
         </p>
         <el-segmented
@@ -2772,7 +2772,7 @@ onMounted(async () => {
         />
       </div>
       <el-alert
-        title="未进入评分或无分值的订单不计入图表；因此 ≤30 分图表值可能小于表格中的 ≤30评分单数。"
+        title="图表与统计表口径一致：未进入评分或无分值的订单计入 ≤30 分；评分审核表无记录的订单不计入。"
         type="info"
         :closable="false"
         show-icon
