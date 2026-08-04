@@ -19,6 +19,7 @@ from packages.domain.services.reconciliation_engine import compare_with_remote_o
 from packages.domain.services.remote_charge_service import (
     CHARGE_EXPORT_COLUMNS,
     RajAdminChargeClient,
+    RemoteResponseError,
     parse_charge_order_export,
 )
 
@@ -34,9 +35,14 @@ def _charge_export_workbook(rows: list[list[object]]) -> bytes:
     return content.getvalue()
 
 
-def _sample_charge_export_row(*, order_num: str = "merchant-1") -> list[object]:
+def _sample_charge_export_row(
+    *,
+    order_id: str = "export-1",
+    order_num: str = "merchant-1",
+    status: str = "已支付",
+) -> list[object]:
     return [
-        "export-1",
+        order_id,
         "1001",
         order_num,
         "product-1",
@@ -48,7 +54,7 @@ def _sample_charge_export_row(*, order_num: str = "merchant-1") -> list[object]:
         "100",
         "100",
         "0",
-        "已支付",
+        status,
         "2026-07-29 10:00:00",
         "2026-07-29 10:01:00",
         "2026-07-29 10:02:00",
@@ -56,6 +62,28 @@ def _sample_charge_export_row(*, order_num: str = "merchant-1") -> list[object]:
         "用户渠道",
         "9999999999",
     ]
+
+
+def test_charge_export_parser_excludes_test_pull_orders() -> None:
+    content = _charge_export_workbook(
+        [
+            _sample_charge_export_row(),
+            _sample_charge_export_row(order_id="test-pull-1", status="测试拉单"),
+        ]
+    )
+
+    orders = parse_charge_order_export(content)
+
+    assert [order["id"] for order in orders] == ["export-1"]
+
+
+def test_charge_export_parser_still_rejects_unknown_statuses() -> None:
+    content = _charge_export_workbook(
+        [_sample_charge_export_row(status="远端新增但未约定的状态")]
+    )
+
+    with pytest.raises(RemoteResponseError, match="包含未识别的订单状态"):
+        parse_charge_order_export(content)
 
 
 def test_charge_export_parser_uses_excel_columns_and_deduplicates_by_order_id() -> None:

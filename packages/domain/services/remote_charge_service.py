@@ -73,6 +73,7 @@ CHARGE_EXPORT_STATUS_CODES = {
     "已支付": "1",
     "已退款": "2",
 }
+CHARGE_EXPORT_EXCLUDED_STATUSES = frozenset({"测试拉单"})
 
 
 class RemoteChargeError(RuntimeError):
@@ -220,6 +221,8 @@ def parse_charge_order_export(content: bytes) -> list[dict[str, Any]]:
                 for column in CHARGE_EXPORT_COLUMNS
             }
             if not any(value not in (None, "") for value in row.values()):
+                continue
+            if _excel_text(row.get("订单状态")) in CHARGE_EXPORT_EXCLUDED_STATUSES:
                 continue
             order = normalize_charge_order_export_row(row)
             if not order["id"]:
