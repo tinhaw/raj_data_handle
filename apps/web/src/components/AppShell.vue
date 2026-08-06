@@ -4,6 +4,7 @@ import {
   Collection,
   DataAnalysis,
   Document,
+  Key,
   Present,
   Setting,
   SwitchButton,
@@ -133,6 +134,10 @@ onBeforeUnmount(() => {
         <el-menu-item v-if="isAdmin" index="/settings/sources">
           <el-icon><Setting /></el-icon>
           <template #title>盘口配置</template>
+        </el-menu-item>
+        <el-menu-item v-if="isAdmin" index="/settings/totp-codes">
+          <el-icon><Key /></el-icon>
+          <template #title>TOTP 验证码</template>
         </el-menu-item>
         <el-menu-item v-if="isAdmin" index="/settings/data-dictionaries">
           <el-icon><Collection /></el-icon>

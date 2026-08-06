@@ -45,6 +45,36 @@ export interface SourceConfig {
   updatedAt: string
 }
 
+export interface TotpAccount {
+  id: string
+  displayName: string
+  accountName: string
+  displayOrder: number
+  enabled: boolean
+  secretUpdatedAt: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type TotpCodeStatus = 'available' | 'disabled' | 'invalid'
+
+export interface TotpCodeItem {
+  accountId: string
+  displayName: string
+  accountName: string
+  enabled: boolean
+  status: TotpCodeStatus
+  code: string | null
+  message: string | null
+}
+
+export interface TotpCodeList {
+  generatedAt: string
+  expiresAt: string
+  periodSeconds: number
+  items: TotpCodeItem[]
+}
+
 export type WithdrawOrderQueryRange =
   | 'today'
   | 'last_1_hour'

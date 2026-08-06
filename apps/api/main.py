@@ -15,6 +15,7 @@ from apps.api.routers.sources import router as sources_router
 from apps.api.routers.spin_orders import router as spin_orders_router
 from apps.api.routers.sync_logs import router as sync_logs_router
 from apps.api.routers.system_settings import router as system_settings_router
+from apps.api.routers.totp_codes import router as totp_codes_router
 from apps.api.routers.withdraw_orders import router as withdraw_orders_router
 from packages.common.settings import get_settings
 from packages.storage import LocalFileStorage
@@ -46,6 +47,7 @@ app.add_middleware(
 app.include_router(auth_router, prefix=settings.api_prefix)
 app.include_router(sources_router, prefix=settings.api_prefix)
 app.include_router(system_settings_router, prefix=settings.api_prefix)
+app.include_router(totp_codes_router, prefix=settings.api_prefix)
 app.include_router(data_dictionaries_router, prefix=settings.api_prefix)
 app.include_router(payment_templates_router, prefix=settings.api_prefix)
 app.include_router(batches_router, prefix=settings.api_prefix)

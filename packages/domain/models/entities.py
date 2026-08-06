@@ -92,6 +92,35 @@ class SecurityAuditLog(Base):
     )
 
 
+class TotpAccount(Base):
+    """Standalone encrypted TOTP account, independent from remote data sources."""
+
+    __tablename__ = "totp_accounts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    account_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    encrypted_secret: Mapped[str] = mapped_column(Text, nullable=False)
+    secret_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    secret_updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    created_by: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL")
+    )
+    updated_by: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
 class SystemRetentionSetting(Base):
     __tablename__ = "system_retention_settings"
 
