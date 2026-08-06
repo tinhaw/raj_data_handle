@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+from datetime import date, time
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+CHARGE_ORDER_REFRESH_PAGE_SIZES = frozenset({10, 20, 30, 50, 100})
+SPIN_ORDER_REFRESH_INTERVAL_HOURS = frozenset({1, 2, 3, 4, 6, 8, 12, 24})
+# Deprecated compatibility values for existing environment files and staged
+# rollouts.  Withdrawal refreshes no longer read them; their real policy is
+# the daily Excel-export date mode below.
+WITHDRAW_ORDER_REFRESH_PAGE_SIZES = CHARGE_ORDER_REFRESH_PAGE_SIZES
 
 
 class Settings(BaseSettings):
@@ -27,7 +36,10 @@ class Settings(BaseSettings):
     secret_key: str = "development-only-change-me-please-32chars"
     credential_encryption_key: str | None = None
 
-    session_ttl_minutes: int = Field(default=480, ge=15, le=10_080)
+    # The database-backed system setting takes precedence once its migration has
+    # been applied.  This value is the safe fallback during bootstrap and while
+    # rolling out the application before the corresponding schema migration.
+    session_ttl_days: int = Field(default=30, ge=1, le=365)
     session_cookie_name: str = "raj_session"
     session_cookie_secure: bool = False
     session_cookie_samesite: str = "lax"
@@ -45,6 +57,56 @@ class Settings(BaseSettings):
     uploaded_file_retention_days: int = 3
     result_retention_days: int = 30
     remote_cache_retention_days: int = 30
+    withdraw_order_refresh_interval_hours: int = Field(default=1, ge=1, le=24)
+    withdraw_order_refresh_page_size: int = Field(default=100)
+    withdraw_order_query_range: Literal[
+        "today",
+        "last_1_hour",
+        "last_2_hours",
+        "last_3_hours",
+        "last_6_hours",
+        "last_12_hours",
+        "last_24_hours",
+        "last_48_hours",
+    ] = "today"
+    # The persisted system setting takes precedence once its migration has
+    # been applied. This fallback is used only when the singleton setting row
+    # is first initialized.
+    withdraw_order_export_date_mode: Literal["previous_day", "specific_date"] = "previous_day"
+    withdraw_order_export_specific_date: date | None = None
+    withdraw_order_export_time: time = time(0, 5, 1)
+    # Applies to automatic order-cache syncs only. The initial scheduled run
+    # does not consume this limit; 0 means do not retry a failed window.
+    automatic_sync_retry_limit: int = Field(default=3, ge=0, le=10)
+    automatic_sync_retry_interval_minutes: int = Field(default=5, ge=1, le=1440)
+    remote_order_sync_timeout_seconds: int = Field(default=180, ge=30, le=600)
+    charge_order_refresh_interval_hours: int = Field(default=1, ge=1, le=24)
+    charge_order_refresh_page_size: int = Field(default=100)
+    charge_order_query_range: Literal[
+        "today",
+        "last_1_hour",
+        "last_2_hours",
+        "last_3_hours",
+        "last_6_hours",
+        "last_12_hours",
+        "last_24_hours",
+        "last_48_hours",
+    ] = "today"
+    charge_order_export_time: time = time(0, 0, 1)
+    # The turntable cache is refreshed in completed time slots.  Database-backed
+    # system settings replace these bootstrap values after migration.
+    spin_order_refresh_interval_hours: int = Field(default=2)
+    spin_order_refresh_page_size: int = Field(default=100)
+    spin_order_query_range: Literal[
+        "last_completed_slot",
+        "business_day_to_completed_slot",
+        "previous_business_day_to_completed_slot",
+        "last_2_hours",
+        "last_3_hours",
+        "last_6_hours",
+        "last_12_hours",
+        "previous_day",
+    ] = "previous_business_day_to_completed_slot"
 
     @field_validator("environment")
     @classmethod
@@ -65,6 +127,45 @@ class Settings(BaseSettings):
         if normalized not in {"lax", "strict", "none"}:
             raise ValueError("session_cookie_samesite must be lax, strict, or none")
         return normalized
+
+    @field_validator("charge_order_refresh_page_size")
+    @classmethod
+    def validate_charge_order_refresh_page_size(cls, value: int) -> int:
+        if value not in CHARGE_ORDER_REFRESH_PAGE_SIZES:
+            raise ValueError("charge_order_refresh_page_size must be 10, 20, 30, 50, or 100")
+        return value
+
+    @field_validator("withdraw_order_refresh_page_size")
+    @classmethod
+    def validate_withdraw_order_refresh_page_size(cls, value: int) -> int:
+        if value not in WITHDRAW_ORDER_REFRESH_PAGE_SIZES:
+            raise ValueError("withdraw_order_refresh_page_size must be 10, 20, 30, 50, or 100")
+        return value
+
+    @field_validator("spin_order_refresh_interval_hours")
+    @classmethod
+    def validate_spin_order_refresh_interval_hours(cls, value: int) -> int:
+        if value not in SPIN_ORDER_REFRESH_INTERVAL_HOURS:
+            raise ValueError(
+                "spin_order_refresh_interval_hours must be 1, 2, 3, 4, 6, 8, 12, or 24"
+            )
+        return value
+
+    @field_validator("spin_order_refresh_page_size")
+    @classmethod
+    def validate_spin_order_refresh_page_size(cls, value: int) -> int:
+        if value not in CHARGE_ORDER_REFRESH_PAGE_SIZES:
+            raise ValueError("spin_order_refresh_page_size must be 10, 20, 30, 50, or 100")
+        return value
+
+    @field_validator("charge_order_export_time", "withdraw_order_export_time")
+    @classmethod
+    def validate_order_export_time(cls, value: time) -> time:
+        if value.tzinfo is not None:
+            raise ValueError("order export time must not include a timezone or UTC offset")
+        if value.microsecond:
+            raise ValueError("order export time must be precise to seconds")
+        return value
 
     @property
     def is_production(self) -> bool:

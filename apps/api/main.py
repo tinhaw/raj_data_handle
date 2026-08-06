@@ -7,10 +7,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.routers.auth import router as auth_router
 from apps.api.routers.batches import router as batches_router
+from apps.api.routers.charge_orders import router as charge_orders_router
+from apps.api.routers.data_dictionaries import router as data_dictionaries_router
 from apps.api.routers.notifications import router as notifications_router
 from apps.api.routers.payment_templates import router as payment_templates_router
 from apps.api.routers.sources import router as sources_router
+from apps.api.routers.spin_orders import router as spin_orders_router
+from apps.api.routers.sync_logs import router as sync_logs_router
 from apps.api.routers.system_settings import router as system_settings_router
+from apps.api.routers.totp_codes import router as totp_codes_router
+from apps.api.routers.withdraw_orders import router as withdraw_orders_router
 from packages.common.settings import get_settings
 from packages.storage import LocalFileStorage
 
@@ -41,9 +47,15 @@ app.add_middleware(
 app.include_router(auth_router, prefix=settings.api_prefix)
 app.include_router(sources_router, prefix=settings.api_prefix)
 app.include_router(system_settings_router, prefix=settings.api_prefix)
+app.include_router(totp_codes_router, prefix=settings.api_prefix)
+app.include_router(data_dictionaries_router, prefix=settings.api_prefix)
 app.include_router(payment_templates_router, prefix=settings.api_prefix)
 app.include_router(batches_router, prefix=settings.api_prefix)
 app.include_router(notifications_router, prefix=settings.api_prefix)
+app.include_router(withdraw_orders_router, prefix=settings.api_prefix)
+app.include_router(charge_orders_router, prefix=settings.api_prefix)
+app.include_router(spin_orders_router, prefix=settings.api_prefix)
+app.include_router(sync_logs_router, prefix=settings.api_prefix)
 
 
 @app.get("/")

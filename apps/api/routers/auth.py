@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -88,7 +90,7 @@ async def login(
         httponly=True,
         secure=settings.session_cookie_secure,
         samesite=settings.session_cookie_samesite,
-        max_age=settings.session_ttl_minutes * 60,
+        max_age=max(1, int((auth.expires_at - datetime.now(UTC)).total_seconds())),
         path="/",
     )
     return _auth_response(auth)

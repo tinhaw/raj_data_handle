@@ -17,7 +17,10 @@ from packages.domain.models import (
     StoredFileObject,
     StoredFileReference,
 )
-from packages.domain.services.batch_service import transition_batch
+from packages.domain.services.batch_service import (
+    resolve_payment_column_mapping,
+    transition_batch,
+)
 from packages.domain.services.payment_import_service import (
     PaymentImportError,
     PaymentOrderGroup,
@@ -186,6 +189,10 @@ async def execute_reconciliation_batch(
         )
         detection, template = _template_snapshot(batch)
         window = batch.parameters_json["comparisonWindow"]
+        column_mapping = resolve_payment_column_mapping(batch.parameters_json, template)
+        detected_headers = detection.get("detectedHeaders")
+        if isinstance(detected_headers, list) and detected_headers:
+            column_mapping["candidate_time_fields"] = list(detected_headers)
         path = await _uploaded_path(session, storage, batch.id)
         imported = import_payment_orders(
             path,
@@ -193,7 +200,7 @@ async def execute_reconciliation_batch(
             platform_key=str(template["platformKey"]),
             source_sheet=str(detection["sourceSheet"]),
             header_row=int(detection["headerRow"]),
-            column_mapping=dict(template["columnMapping"]),
+            column_mapping=column_mapping,
             success_status_values=list(template["successStatusValues"]),
             payment_time_field=str(window["paymentTimeField"]),
             payment_timezone=str(window["paymentTimezone"]),
@@ -321,8 +328,9 @@ async def execute_reconciliation_batch(
                         return
                     exact = await client.exact_search(
                         channels=channels,
-                        merchant_order_no=payment.merchant_order_no or "",
                         platform_order_no=payment.platform_order_no,
+                        create_start=query_lower.strftime("%Y-%m-%d %H:%M:%S"),
+                        create_end=query_upper.strftime("%Y-%m-%d %H:%M:%S"),
                     )
                     decision = compare_with_remote_orders(
                         payment,

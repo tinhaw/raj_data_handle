@@ -22,12 +22,27 @@ const router = createRouter({
     {
       path: '/batches/new',
       component: () => import('../views/NewBatchView.vue'),
-      meta: { navKey: '/batches/new' },
+      meta: { navKey: '/batches' },
     },
     {
       path: '/batches/:batchId',
       component: () => import('../views/BatchDetailView.vue'),
       meta: { navKey: '/batches' },
+    },
+    {
+      path: '/withdraw-orders',
+      component: () => import('../views/WithdrawOrdersView.vue'),
+      meta: { navKey: '/withdraw-orders' },
+    },
+    {
+      path: '/spin-orders',
+      component: () => import('../views/SpinOrdersView.vue'),
+      meta: { navKey: '/spin-orders' },
+    },
+    {
+      path: '/sync-logs',
+      component: () => import('../views/SyncLogsView.vue'),
+      meta: { navKey: '/sync-logs' },
     },
     {
       path: '/settings/system',
@@ -38,6 +53,16 @@ const router = createRouter({
       path: '/settings/sources',
       component: () => import('../views/SourceSettingsView.vue'),
       meta: { navKey: '/settings/sources', admin: true },
+    },
+    {
+      path: '/settings/totp-codes',
+      component: () => import('../views/TotpCodesView.vue'),
+      meta: { navKey: '/settings/totp-codes', admin: true },
+    },
+    {
+      path: '/settings/data-dictionaries',
+      component: () => import('../views/DataDictionaryView.vue'),
+      meta: { navKey: '/settings/data-dictionaries', admin: true },
     },
     {
       path: '/settings/users',

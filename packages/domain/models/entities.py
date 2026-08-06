@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from typing import Any
 
 from sqlalchemy import (
     JSON,
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
     Text,
+    Time,
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -89,6 +92,35 @@ class SecurityAuditLog(Base):
     )
 
 
+class TotpAccount(Base):
+    """Standalone encrypted TOTP account, independent from remote data sources."""
+
+    __tablename__ = "totp_accounts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    account_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    encrypted_secret: Mapped[str] = mapped_column(Text, nullable=False)
+    secret_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    secret_updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    created_by: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL")
+    )
+    updated_by: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
 class SystemRetentionSetting(Base):
     __tablename__ = "system_retention_settings"
 
@@ -96,8 +128,508 @@ class SystemRetentionSetting(Base):
     uploaded_file_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     result_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     remote_cache_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    # Operational sync records are intentionally retained separately from the
+    # cached source data.  They are small, append-only audit projections and
+    # should remain available even after an older order snapshot is purged.
+    sync_log_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    withdraw_order_refresh_interval_hours: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+    )
+    withdraw_order_refresh_page_size: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=100,
+    )
+    withdraw_order_query_range: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="today",
+    )
+    withdraw_order_export_date_mode: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="previous_day",
+    )
+    withdraw_order_export_specific_date: Mapped[date | None] = mapped_column(Date)
+    withdraw_order_export_time: Mapped[time] = mapped_column(
+        Time,
+        nullable=False,
+        default=time(0, 5, 1),
+    )
+    automatic_sync_retry_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    automatic_sync_retry_interval_minutes: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=5,
+    )
+    remote_order_sync_timeout_seconds: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=180,
+    )
+    charge_order_refresh_interval_hours: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+    )
+    charge_order_refresh_page_size: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=100,
+    )
+    charge_order_query_range: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="today",
+    )
+    charge_order_export_date_mode: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="previous_day",
+    )
+    charge_order_export_specific_date: Mapped[date | None] = mapped_column(Date)
+    charge_order_export_time: Mapped[time] = mapped_column(
+        Time,
+        nullable=False,
+        default=time(0, 0, 1),
+    )
+    spin_order_refresh_interval_hours: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=2,
+    )
+    spin_order_refresh_page_size: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=100,
+    )
+    spin_order_query_range: Mapped[str] = mapped_column(
+        String(48),
+        nullable=False,
+        default="previous_business_day_to_completed_slot",
+    )
     config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class SystemSessionSetting(Base):
+    __tablename__ = "system_session_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    session_ttl_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class WithdrawOrderSnapshot(Base):
+    """Approved withdrawal-order fields cached from one read-only source.
+
+    The table intentionally has no raw remote payload column.  It is safe for
+    the monitoring page to query without exposing account, IP, bank, or other
+    unrelated remote fields.
+    """
+
+    __tablename__ = "withdraw_order_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id",
+            "remote_order_id",
+            name="uq_withdraw_order_snapshot_source_remote_id",
+        ),
+        Index(
+            "ix_withdraw_order_snapshot_source_create_time",
+            "source_id",
+            "create_time_utc",
+        ),
+        Index(
+            "ix_withdraw_order_snapshot_source_status",
+            "source_id",
+            "status",
+        ),
+        Index(
+            "ix_withdraw_order_snapshot_source_uid",
+            "source_id",
+            "uid",
+        ),
+        Index(
+            "ix_withdraw_order_snapshot_source_pay_channel",
+            "source_id",
+            "pay_channel",
+        ),
+        Index(
+            "ix_withdraw_order_snapshot_source_order_num",
+            "source_id",
+            "order_num",
+        ),
+        Index(
+            "ix_withdraw_order_snapshot_source_out_trade_no",
+            "source_id",
+            "out_trade_no",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    remote_order_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    uid: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    order_num: Mapped[str | None] = mapped_column(String(160))
+    out_trade_no: Mapped[str | None] = mapped_column(String(160))
+    pay_channel_name: Mapped[str | None] = mapped_column(String(160))
+    pay_channel: Mapped[str | None] = mapped_column(String(120))
+    amount: Mapped[str | None] = mapped_column(String(64))
+    fee: Mapped[str | None] = mapped_column(String(64))
+    real_amount: Mapped[str | None] = mapped_column(String(64))
+    create_time: Mapped[str | None] = mapped_column(String(32))
+    create_time_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    update_time: Mapped[str | None] = mapped_column(String(32))
+    submit_time: Mapped[str | None] = mapped_column(String(32))
+    audit_admin: Mapped[str | None] = mapped_column(String(160))
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    status_label: Mapped[str | None] = mapped_column(String(120))
+    is_first: Mapped[str | None] = mapped_column(String(40))
+    channel: Mapped[str | None] = mapped_column(String(120))
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
+    )
+
+
+class WithdrawScoringSnapshot(Base):
+    """Supplemental scoring-review fields for an already cached withdrawal order.
+
+    A row is keyed by the source and the score workbook's ``案件号``.  The
+    composite foreign key intentionally points to the authoritative withdrawal
+    snapshot's ``(source_id, remote_order_id)`` pair.  This makes score-only
+    workbooks unable to introduce a withdrawal order into the analysis system:
+    the importer can persist a score row only after the primary withdrawal row
+    exists.
+
+    The projection excludes the score workbook's UID, amount, channel, and
+    withdrawal-time columns.  Those values remain exclusively owned by
+    :class:`WithdrawOrderSnapshot` and must never be overwritten by a scoring
+    export.
+    """
+
+    __tablename__ = "withdraw_scoring_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id",
+            "withdraw_order_id",
+            name="uq_withdraw_scoring_snapshot_source_withdraw_order_id",
+        ),
+        ForeignKeyConstraint(
+            ["source_id", "withdraw_order_id"],
+            [
+                "withdraw_order_snapshots.source_id",
+                "withdraw_order_snapshots.remote_order_id",
+            ],
+            name="fk_withdraw_scoring_snapshot_withdraw_order",
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_withdraw_scoring_snapshot_source_review_completed_at",
+            "source_id",
+            "review_completed_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    withdraw_order_id: Mapped[str] = mapped_column(String(120), nullable=False)
+
+    global_hard_condition: Mapped[str | None] = mapped_column(String(120))
+    scenario_review: Mapped[str | None] = mapped_column(String(120))
+    # The workbook may contain an integer score or a textual state such as
+    # "未开始", so retain its display value without coercing it to a number.
+    score_review: Mapped[str | None] = mapped_column(String(80))
+    decision_stage: Mapped[str | None] = mapped_column(String(120))
+    final_review_suggestion: Mapped[str | None] = mapped_column(String(120))
+    operation_result: Mapped[str | None] = mapped_column(String(120))
+    review_summary: Mapped[str | None] = mapped_column(Text)
+    current_status: Mapped[str | None] = mapped_column(String(120))
+    review_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    review_duration: Mapped[str | None] = mapped_column(String(80))
+    queue_duration: Mapped[str | None] = mapped_column(String(80))
+    entered_queue_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exited_queue_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
+    )
+
+
+class WithdrawOrderRefreshState(Base):
+    """Source-scoped background refresh state and durable manual request marker."""
+
+    __tablename__ = "withdraw_order_refresh_states"
+
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="idle", index=True)
+    manual_request_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    manual_query_range: Mapped[str | None] = mapped_column(String(32))
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_window_start_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_window_end_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_remote_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_cached_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_fetched_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    automatic_failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_export_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_imported_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_duplicate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(String(500))
+    # A manual request is represented by a durable sync-run record.  Keeping
+    # both pointers on the source-scoped state lets the worker update the exact
+    # queued/claimed run instead of trying to infer it from timestamps.
+    pending_sync_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("data_sync_runs.id", ondelete="SET NULL"),
+        index=True,
+    )
+    active_sync_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("data_sync_runs.id", ondelete="SET NULL"),
+        index=True,
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class ChargeOrderSnapshot(Base):
+    """Approved fields from the read-only remote recharge-order response.
+
+    The snapshot deliberately omits account, IP, nickname, attachment and raw
+    callback fields.  They are unnecessary for local monitoring and should not
+    be copied into the analysis database.
+    """
+
+    __tablename__ = "charge_order_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id",
+            "remote_order_id",
+            name="uq_charge_order_snapshot_source_remote_id",
+        ),
+        Index("ix_charge_order_snapshot_source_create_time", "source_id", "create_time_utc"),
+        Index("ix_charge_order_snapshot_source_status", "source_id", "status"),
+        Index("ix_charge_order_snapshot_source_uid", "source_id", "uid"),
+        Index("ix_charge_order_snapshot_source_channel", "source_id", "pay_method"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    remote_order_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    uid: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    order_num: Mapped[str | None] = mapped_column(String(160))
+    charge_product_id: Mapped[str | None] = mapped_column(String(120))
+    product_name: Mapped[str | None] = mapped_column(String(160))
+    out_trade_no: Mapped[str | None] = mapped_column(String(160))
+    pay_method: Mapped[str | None] = mapped_column(String(120))
+    pay_channel_name: Mapped[str | None] = mapped_column(String(160))
+    pay_type: Mapped[str | None] = mapped_column(String(120))
+    amount: Mapped[str | None] = mapped_column(String(64))
+    balance: Mapped[str | None] = mapped_column(String(64))
+    extra: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    create_time: Mapped[str | None] = mapped_column(String(32))
+    create_time_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pay_time: Mapped[str | None] = mapped_column(String(32))
+    update_time: Mapped[str | None] = mapped_column(String(32))
+    first_pay: Mapped[str | None] = mapped_column(String(40))
+    notified: Mapped[str | None] = mapped_column(String(40))
+    charge_type: Mapped[str | None] = mapped_column(String(80))
+    channel: Mapped[str | None] = mapped_column(String(120))
+    fill_order_id: Mapped[str | None] = mapped_column(String(120))
+    fill_order_num: Mapped[str | None] = mapped_column(String(160))
+    fill_order_admin: Mapped[str | None] = mapped_column(String(160))
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
+    )
+
+
+class ChargeOrderRefreshState(Base):
+    """Durable source-scoped scheduling state for recharge-order refreshes."""
+
+    __tablename__ = "charge_order_refresh_states"
+
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="idle", index=True)
+    manual_request_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    manual_query_range: Mapped[str | None] = mapped_column(String(32))
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_window_start_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_window_end_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_remote_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_cached_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_fetched_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    automatic_failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(String(500))
+    pending_sync_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("data_sync_runs.id", ondelete="SET NULL"),
+        index=True,
+    )
+    active_sync_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("data_sync_runs.id", ondelete="SET NULL"),
+        index=True,
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class SpinOrderSnapshot(Base):
+    """Read-only local projection of one remote turntable application."""
+
+    __tablename__ = "spin_order_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id",
+            "remote_order_id",
+            name="uq_spin_order_snapshot_source_remote_id",
+        ),
+        Index("ix_spin_order_snapshot_source_create_time", "source_id", "create_time_utc"),
+        Index("ix_spin_order_snapshot_source_status", "source_id", "status"),
+        Index("ix_spin_order_snapshot_source_uid", "source_id", "uid"),
+        Index("ix_spin_order_snapshot_source_config", "source_id", "spin_config_id"),
+        Index("ix_spin_order_snapshot_source_channel", "source_id", "channel_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    remote_order_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    uid: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    vip_level: Mapped[str | None] = mapped_column(String(40))
+    agent_total_count: Mapped[str | None] = mapped_column(String(64))
+    amount: Mapped[str | None] = mapped_column(String(64))
+    spin_config_id: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    round_number: Mapped[str | None] = mapped_column(String(40))
+    invite_count: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    status_label: Mapped[str | None] = mapped_column(String(120))
+    create_time: Mapped[str | None] = mapped_column(String(32))
+    create_time_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    audit_time: Mapped[str | None] = mapped_column(String(32))
+    audit_time_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    channel_id: Mapped[str | None] = mapped_column(String(120))
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
+    )
+
+
+class UserChannelCache(Base):
+    """Minimal source-scoped UID-to-channel cache; no user profile data is stored."""
+
+    __tablename__ = "user_channel_caches"
+    __table_args__ = (
+        UniqueConstraint("source_id", "uid", name="uq_user_channel_cache_source_uid"),
+        Index("ix_user_channel_cache_source_status", "source_id", "resolution_status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    uid: Mapped[str] = mapped_column(String(64), nullable=False)
+    channel_id: Mapped[str | None] = mapped_column(String(120))
+    resolution_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class SpinOrderRefreshState(Base):
+    """Source-scoped state for two-hour spin-order list refreshes."""
+
+    __tablename__ = "spin_order_refresh_states"
+
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="idle", index=True)
+    manual_request_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    manual_query_range: Mapped[str | None] = mapped_column(String(32))
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_window_start_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_window_end_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_remote_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_cached_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_fetched_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    automatic_failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_resolved_uid_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_unresolved_uid_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(String(500))
+    pending_sync_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("data_sync_runs.id", ondelete="SET NULL"),
+        index=True,
+    )
+    active_sync_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("data_sync_runs.id", ondelete="SET NULL"),
+        index=True,
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )
@@ -108,6 +640,7 @@ class SourceConfig(Base):
 
     source_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     base_url: Mapped[str | None] = mapped_column(String(500))
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     business_timezone: Mapped[str] = mapped_column(
@@ -120,6 +653,18 @@ class SourceConfig(Base):
     credential_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     credential_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # The scoring-review service is a separate, read-only integration.  Its
+    # API key must never be mixed with the Raj admin login credentials above:
+    # it has a different authorization model and can point at a different
+    # source-specific base URL.
+    scoring_api_base_url: Mapped[str | None] = mapped_column(String(500))
+    encrypted_scoring_api_key: Mapped[str | None] = mapped_column(Text)
+    scoring_api_key_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    scoring_api_key_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    scoring_api_last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    scoring_api_last_test_status: Mapped[str | None] = mapped_column(String(30))
+    scoring_api_last_test_request_id: Mapped[str | None] = mapped_column(String(64))
+
     last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_test_status: Mapped[str | None] = mapped_column(String(30))
     last_test_request_id: Mapped[str | None] = mapped_column(String(64))
@@ -131,6 +676,111 @@ class SourceConfig(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class DataSyncRun(Base):
+    """One append-only execution record for a local data synchronization.
+
+    The record deliberately stores only operational counters and safe status
+    text.  Remote credentials, request/response payloads, raw workbooks and
+    exception traces must never be copied here.  Source and actor snapshots
+    keep historical records understandable after a source is renamed or an
+    application user is removed.
+    """
+
+    __tablename__ = "data_sync_runs"
+    __table_args__ = (
+        Index("ix_data_sync_runs_source_requested", "source_id", "requested_at"),
+        Index(
+            "ix_data_sync_runs_business_status_requested",
+            "business_type",
+            "status",
+            "requested_at",
+        ),
+        Index("ix_data_sync_runs_finished", "finished_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    source_id: Mapped[str | None] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="SET NULL"),
+        index=True,
+    )
+    source_display_name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    business_timezone: Mapped[str | None] = mapped_column(String(80))
+    source_config_version: Mapped[int | None] = mapped_column(Integer)
+
+    # The values are application-level enums so deployments can add a new
+    # read-only source workflow without a destructive database enum change.
+    business_type: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    operation_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="remote_sync")
+    trigger_type: Mapped[str] = mapped_column(String(32), nullable=False, default="automatic")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
+
+    requested_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL"),
+        index=True,
+    )
+    requested_by_display_name: Mapped[str | None] = mapped_column(String(120))
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    window_start_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    window_end_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    query_range: Mapped[str | None] = mapped_column(String(64))
+    page_size: Mapped[int | None] = mapped_column(Integer)
+
+    remote_total: Mapped[int | None] = mapped_column(Integer)
+    export_row_count: Mapped[int | None] = mapped_column(Integer)
+    cached_total: Mapped[int | None] = mapped_column(Integer)
+    fetched_pages: Mapped[int | None] = mapped_column(Integer)
+    imported_count: Mapped[int | None] = mapped_column(Integer)
+    created_count: Mapped[int | None] = mapped_column(Integer)
+    updated_count: Mapped[int | None] = mapped_column(Integer)
+    duplicate_count: Mapped[int | None] = mapped_column(Integer)
+    matched_count: Mapped[int | None] = mapped_column(Integer)
+    unmatched_count: Mapped[int | None] = mapped_column(Integer)
+    resolved_uid_count: Mapped[int | None] = mapped_column(Integer)
+    unresolved_uid_count: Mapped[int | None] = mapped_column(Integer)
+    complete: Mapped[bool | None] = mapped_column(Boolean)
+
+    # The raw score-review workbook is never stored.  Its optional file name
+    # and size give the operator a useful, non-content trace of an import.
+    input_filename: Mapped[str | None] = mapped_column(String(255))
+    input_size_bytes: Mapped[int | None] = mapped_column(Integer)
+
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_message: Mapped[str | None] = mapped_column(String(500))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class DataSyncRunEvent(Base):
+    """Safe lifecycle event belonging to one :class:`DataSyncRun`."""
+
+    __tablename__ = "data_sync_run_events"
+    __table_args__ = (Index("ix_data_sync_run_events_run_occurred", "run_id", "occurred_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("data_sync_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    status: Mapped[str | None] = mapped_column(String(32))
+    message: Mapped[str | None] = mapped_column(String(500))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
     )
 
 
@@ -215,6 +865,43 @@ class PaymentChannelBinding(Base):
     created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
+class DataDictionaryEntry(Base):
+    __tablename__ = "data_dictionary_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id",
+            "dictionary_type",
+            "entry_code",
+            name="uq_data_dictionary_source_type_code",
+        ),
+        Index(
+            "ix_data_dictionary_type_active",
+            "dictionary_type",
+            "active",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    dictionary_type: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    entry_code: Mapped[str] = mapped_column(String(80), nullable=False)
+    entry_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )
 
 
