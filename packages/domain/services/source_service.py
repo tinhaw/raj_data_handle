@@ -148,6 +148,33 @@ async def list_sources(session: AsyncSession, enabled: bool | None = None) -> li
     return list(result)
 
 
+def source_login_username(
+    source: SourceConfig,
+    *,
+    settings: Settings | None = None,
+) -> str | None:
+    """Return only a source's login account for the administrator settings UI.
+
+    Passwords and TOTP secrets remain write-only.  A malformed historical
+    ciphertext should not prevent the settings page from loading; the normal
+    credential update flow will surface that condition if it needs changing.
+    """
+
+    if not source.encrypted_credentials:
+        return None
+    try:
+        credentials = decrypt_credentials(
+            source.encrypted_credentials,
+            source_id=source.source_id,
+            credential_version=source.credential_version,
+            settings=settings,
+        )
+    except SecurityValidationError:
+        return None
+    username = credentials.get("username", "").strip()
+    return username or None
+
+
 async def reorder_sources(
     session: AsyncSession,
     *,

@@ -27,6 +27,7 @@ from packages.domain.services.source_service import (
     normalize_base_url,
     normalize_scoring_api_base_url,
     reorder_sources,
+    source_login_username,
     validate_source_id,
     validate_timezone,
 )
@@ -177,6 +178,35 @@ async def test_new_source_accepts_initial_credentials_before_database_flush() ->
 
     assert created.credential_version == 1
     assert created.encrypted_credentials is not None
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_source_login_username_can_be_read_without_exposing_other_credentials() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings = development_settings()
+
+    async with factory() as session:
+        source = await create_source(
+            session,
+            request=SourceCreateRequest(
+                source_id="rajstar",
+                display_name="RajStar",
+                base_url="https://admin.example.test",
+                credentials=SourceCredentialsWrite(
+                    username="reader",
+                    password="test-password",
+                    totp_secret="JBSWY3DPEHPK3PXP",
+                ),
+            ),
+            actor_user_id=1,
+            settings=settings,
+        )
+
+    assert source_login_username(source, settings=settings) == "reader"
     await engine.dispose()
 
 

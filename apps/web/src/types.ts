@@ -33,6 +33,7 @@ export interface SourceConfig {
   currency: string
   configVersion: number
   credentialConfigured: boolean
+  loginUsername: string | null
   credentialUpdatedAt: string | null
   scoringApiBaseUrl: string | null
   scoringApiKeyConfigured: boolean

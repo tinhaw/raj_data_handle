@@ -2,6 +2,7 @@
 import {
   Bell,
   Collection,
+  Connection,
   DataAnalysis,
   Document,
   Key,
@@ -132,8 +133,8 @@ onBeforeUnmount(() => {
           <template #title>系统配置</template>
         </el-menu-item>
         <el-menu-item v-if="isAdmin" index="/settings/sources">
-          <el-icon><Setting /></el-icon>
-          <template #title>盘口配置</template>
+          <el-icon><Connection /></el-icon>
+          <template #title>远端连接</template>
         </el-menu-item>
         <el-menu-item v-if="isAdmin" index="/settings/totp-codes">
           <el-icon><Key /></el-icon>

@@ -76,6 +76,7 @@ class SourceResponse(ApiSchema):
     currency: str
     config_version: int
     credential_configured: bool
+    login_username: str | None
     credential_updated_at: datetime | None
     scoring_api_base_url: str | None
     scoring_api_key_configured: bool

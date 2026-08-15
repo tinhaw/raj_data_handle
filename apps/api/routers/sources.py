@@ -24,6 +24,7 @@ from packages.domain.services.source_service import (
     delete_source,
     list_sources,
     reorder_sources,
+    source_login_username,
     test_source_scoring_api_connection,
     upsert_source,
 )
@@ -34,7 +35,11 @@ from packages.domain.services.source_service import (
 router = APIRouter(tags=["sources"])
 
 
-def _source_response(source: SourceConfig) -> SourceResponse:
+def _source_response(
+    source: SourceConfig,
+    *,
+    include_login_username: bool = False,
+) -> SourceResponse:
     return SourceResponse(
         source_id=source.source_id,
         display_name=source.display_name,
@@ -45,6 +50,7 @@ def _source_response(source: SourceConfig) -> SourceResponse:
         currency=source.currency,
         config_version=source.config_version,
         credential_configured=bool(source.encrypted_credentials),
+        login_username=source_login_username(source) if include_login_username else None,
         credential_updated_at=source.credential_updated_at,
         scoring_api_base_url=source.scoring_api_base_url,
         scoring_api_key_configured=bool(source.encrypted_scoring_api_key),
@@ -72,7 +78,10 @@ async def settings_sources(
     _: AuthContext = Depends(require_admin),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[SourceResponse]:
-    return [_source_response(item) for item in await list_sources(session)]
+    return [
+        _source_response(item, include_login_username=True)
+        for item in await list_sources(session)
+    ]
 
 
 @router.post(
@@ -95,7 +104,7 @@ async def post_source(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except SourceValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return _source_response(source)
+    return _source_response(source, include_login_username=True)
 
 
 @router.put("/settings/sources/order", response_model=list[SourceResponse])
@@ -112,7 +121,7 @@ async def put_source_order(
         )
     except SourceValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return [_source_response(source) for source in sources]
+    return [_source_response(source, include_login_username=True) for source in sources]
 
 
 @router.put("/settings/sources/{source_id}", response_model=SourceResponse)
@@ -131,7 +140,7 @@ async def put_source(
         )
     except SourceValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return _source_response(source)
+    return _source_response(source, include_login_username=True)
 
 
 @router.patch("/settings/sources/{source_id}", response_model=SourceResponse)
@@ -150,7 +159,7 @@ async def patch_source(
         )
     except SourceValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return _source_response(source)
+    return _source_response(source, include_login_username=True)
 
 
 @router.delete(
@@ -190,7 +199,7 @@ async def delete_source_credentials(
         )
     except SourceValidationError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    return _source_response(source)
+    return _source_response(source, include_login_username=True)
 
 
 @router.post(
