@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
+import { recordPageAccess } from '../api/auth'
 import { currentUser, ensureAuth } from '../stores/auth'
 
 const router = createRouter({
@@ -12,7 +13,66 @@ const router = createRouter({
     },
     {
       path: '/',
-      redirect: '/batches',
+      redirect: '/workspace',
+    },
+    {
+      path: '/workspace',
+      component: () => import('../views/ErpMigrationView.vue'),
+      meta: {
+        navKey: '/workspace',
+        title: '工作台',
+        migrationDescription: '统一工作台将汇总 ERP 业务进度与数据对账状态。',
+      },
+    },
+    {
+      path: '/erp/operators',
+      component: () => import('../views/ErpOperatorsView.vue'),
+      meta: {
+        navKey: '/erp/operators',
+        title: '投放公司与投放线',
+      },
+    },
+    {
+      path: '/erp/balances',
+      component: () => import('../views/ErpBalancesView.vue'),
+      meta: {
+        navKey: '/erp/balances',
+        title: '输入台账',
+      },
+    },
+    {
+      path: '/erp/imports',
+      component: () => import('../views/ErpImportsView.vue'),
+      meta: {
+        navKey: '/erp/imports',
+        title: '导入中心',
+      },
+    },
+    {
+      path: '/erp/redemption',
+      component: () => import('../views/ErpRedemptionView.vue'),
+      meta: {
+        navKey: '/erp/redemption',
+        title: '兑换码管理',
+      },
+    },
+    {
+      path: '/erp/reports',
+      component: () => import('../views/ErpReportsView.vue'),
+      meta: {
+        navKey: '/erp/reports',
+        title: '汇总报表',
+      },
+    },
+    {
+      path: '/erp/remote-connections',
+      component: () => import('../views/ErpMigrationView.vue'),
+      meta: {
+        navKey: '/erp/remote-connections',
+        admin: true,
+        title: 'ERP 业务授权',
+        migrationDescription: '在统一的远端账号体系中，为已配置账号授予 ERP 兑换业务能力。',
+      },
     },
     {
       path: '/batches',
@@ -70,8 +130,13 @@ const router = createRouter({
       meta: { navKey: '/settings/users', admin: true },
     },
     {
+      path: '/settings/user-logs',
+      component: () => import('../views/UserLogsView.vue'),
+      meta: { navKey: '/settings/user-logs', admin: true },
+    },
+    {
       path: '/:pathMatch(.*)*',
-      redirect: '/batches',
+      redirect: '/workspace',
     },
   ],
 })
@@ -79,7 +144,7 @@ const router = createRouter({
 router.beforeEach(async (to) => {
   if (to.meta.public) {
     if (to.path === '/login' && (currentUser.value || (await ensureAuth()))) {
-      return '/batches'
+      return '/workspace'
     }
     return true
   }
@@ -88,9 +153,16 @@ router.beforeEach(async (to) => {
     return { path: '/login', query: { redirect: to.fullPath } }
   }
   if (to.meta.admin && user.role !== 'admin') {
-    return '/batches'
+    return '/workspace'
   }
   return true
+})
+
+router.afterEach((to, _from, failure) => {
+  if (failure || to.meta.public) return
+  void recordPageAccess(to.path).catch(() => {
+    // A failed audit write must not interrupt normal page navigation.
+  })
 })
 
 export default router

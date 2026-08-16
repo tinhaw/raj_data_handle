@@ -198,4 +198,5 @@ def test_renderer_main_writes_a_private_env_without_echoing_password(
     assert renderer.main() == 0
 
     assert output_file.stat().st_mode & 0o777 == 0o600
-    assert "do-not-log-me" not in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "do-not-log-me" not in output

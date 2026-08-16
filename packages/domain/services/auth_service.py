@@ -20,6 +20,7 @@ from packages.common.security import (
 )
 from packages.common.settings import Settings, get_settings
 from packages.domain.models import AppUser, AuthSession, SecurityAuditLog
+from packages.domain.schemas.auth import UserLogQueryRequest
 from packages.domain.services.session_setting_service import get_session_settings
 
 ALLOWED_ROLES = {"admin", "user"}
@@ -35,6 +36,23 @@ class AuthContext:
     user: AppUser
     session: AuthSession
     expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class UserLogEntry:
+    id: str
+    user_id: int
+    username: str | None
+    display_name: str | None
+    event_type: str
+    path: str | None
+    occurred_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class UserLogQueryResult:
+    items: list[UserLogEntry]
+    total: int
 
 
 def _aware(value: datetime) -> datetime:
@@ -168,6 +186,78 @@ async def revoke_session(
         target_id=auth_session.id,
     )
     await session.commit()
+
+
+async def record_page_access(
+    session: AsyncSession,
+    *,
+    actor_user_id: int,
+    path: str,
+) -> None:
+    """Append a user-facing route visit to the existing append-only audit log."""
+
+    await write_audit(
+        session,
+        action="user.access",
+        actor_user_id=actor_user_id,
+        target_type="route",
+        metadata={"path": path},
+    )
+    await session.commit()
+
+
+async def query_user_logs(
+    session: AsyncSession,
+    *,
+    request: UserLogQueryRequest,
+) -> UserLogQueryResult:
+    """Return successful sign-ins and recorded application route visits only."""
+
+    action_by_event = {"login": "login", "access": "user.access"}
+    selected_events = request.event_types or ["login", "access"]
+    filters = [
+        SecurityAuditLog.actor_user_id.is_not(None),
+        SecurityAuditLog.result == "success",
+        SecurityAuditLog.action.in_([action_by_event[event] for event in selected_events]),
+    ]
+    if request.user_id is not None:
+        filters.append(SecurityAuditLog.actor_user_id == request.user_id)
+    if request.started_at is not None:
+        filters.append(SecurityAuditLog.created_at >= request.started_at)
+    if request.ended_at is not None:
+        filters.append(SecurityAuditLog.created_at <= request.ended_at)
+
+    total = int(
+        await session.scalar(select(func.count()).select_from(SecurityAuditLog).where(*filters))
+        or 0
+    )
+    rows = (
+        await session.execute(
+            select(SecurityAuditLog, AppUser.username, AppUser.display_name)
+            .outerjoin(AppUser, SecurityAuditLog.actor_user_id == AppUser.id)
+            .where(*filters)
+            .order_by(SecurityAuditLog.created_at.desc(), SecurityAuditLog.id.desc())
+            .offset((request.page - 1) * request.page_size)
+            .limit(request.page_size)
+        )
+    ).all()
+    items: list[UserLogEntry] = []
+    for audit_log, username, display_name in rows:
+        metadata = audit_log.metadata_json if isinstance(audit_log.metadata_json, dict) else {}
+        event_type = "login" if audit_log.action == "login" else "access"
+        path = metadata.get("path") if event_type == "access" else None
+        items.append(
+            UserLogEntry(
+                id=audit_log.id,
+                user_id=audit_log.actor_user_id,
+                username=username,
+                display_name=display_name,
+                event_type=event_type,
+                path=path if isinstance(path, str) else None,
+                occurred_at=_aware(audit_log.created_at),
+            )
+        )
+    return UserLogQueryResult(items=items, total=total)
 
 
 async def list_users(session: AsyncSession) -> list[AppUser]:

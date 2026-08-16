@@ -23,6 +23,25 @@ export interface UserRecord {
   updatedAt: string
 }
 
+export type UserLogEventType = 'login' | 'access'
+
+export interface UserLogRecord {
+  id: string
+  userId: number
+  username: string | null
+  displayName: string | null
+  eventType: UserLogEventType
+  path: string | null
+  occurredAt: string
+}
+
+export interface UserLogQueryResponse {
+  items: UserLogRecord[]
+  total: number
+  page: number
+  pageSize: number
+}
+
 export interface SourceConfig {
   sourceId: string
   displayName: string
@@ -74,6 +93,220 @@ export interface TotpCodeList {
   expiresAt: string
   periodSeconds: number
   items: TotpCodeItem[]
+}
+
+export type ErpOperatorType = 'COMPANY' | 'STUDIO' | 'INDIVIDUAL'
+export type ErpRecordStatus = 'ACTIVE' | 'INACTIVE'
+export type ErpAsset = 'USDT' | 'USDC'
+
+export interface ErpOperator {
+  id: string
+  code: string
+  name: string
+  operatorType: ErpOperatorType
+  status: ErpRecordStatus
+  contactName: string | null
+  contactValue: string | null
+  remark: string | null
+  rowVersion: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ErpDeliveryLine {
+  id: string
+  operatorId: string
+  operatorName: string
+  displayName: string
+  code: string
+  name: string
+  asset: ErpAsset
+  network: string | null
+  walletAddress: string | null
+  startDate: string | null
+  defaultExchangeLossRate: string
+  defaultExchangeLossBasis: string
+  defaultServiceFeeRate: string
+  defaultServiceFeeBasis: string
+  calculationScale: number
+  status: ErpRecordStatus
+  rowVersion: number
+  createdAt: string
+  updatedAt: string
+}
+
+export type ErpDailyBalanceStatus = 'DRAFT' | 'CONFIRMED'
+export type ErpBalanceMode = 'AUTO' | 'MANUAL'
+export type ErpFraudDeductionSource = 'TRANSFER' | 'BALANCE'
+
+export interface ErpDailyBalance {
+  id: string
+  operatorLineId: string
+  businessDate: string
+  suggestedOpeningBalance: string | null
+  openingBalance: string
+  openingMode: ErpBalanceMode
+  openingOverrideReason: string | null
+  transferAmount: string
+  fraudLossAmount: string
+  fraudDeductionSource: ErpFraudDeductionSource | null
+  effectiveTransferAmount: string
+  spendAmount: string
+  exchangeLossRate: string
+  exchangeLossBasis: string
+  exchangeLossAutoAmount: string
+  exchangeLossAmount: string
+  exchangeLossMode: ErpBalanceMode
+  exchangeLossOverrideReason: string | null
+  serviceFeeRate: string
+  serviceFeeBasis: string
+  serviceFeeAutoAmount: string
+  serviceFeeAmount: string
+  serviceFeeMode: ErpBalanceMode
+  serviceFeeOverrideReason: string | null
+  refluxAmount: string
+  refundAmount: string
+  otherDeductionAmount: string
+  otherReason: string | null
+  closingBalance: string
+  calculationScale: number
+  status: ErpDailyBalanceStatus
+  sourceType: 'MANUAL' | 'PASTE' | 'IMPORT'
+  remark: string | null
+  rowVersion: number
+  createdAt: string
+  updatedAt: string
+  confirmedAt: string | null
+}
+
+export interface ErpDailyBalanceList {
+  operatorLineId: string
+  month: string
+  records: ErpDailyBalance[]
+}
+
+export interface ErpReportRow {
+  period: string
+  asset: string
+  openingBalance: string
+  transferAmount: string
+  fraudFromTransfer: string
+  effectiveTransferAmount: string
+  spendAmount: string
+  exchangeLossAmount: string
+  serviceFeeAmount: string
+  refluxAmount: string
+  refundAmount: string
+  otherDeductionAmount: string
+  fraudFromBalance: string
+  closingBalance: string
+  recordCount: number
+  warnings: string[]
+}
+
+export interface ErpReportResponse {
+  reportType: 'DAILY' | 'MONTHLY'
+  nominalU: boolean
+  rows: ErpReportRow[]
+}
+
+export type ErpImportConflictStrategy = 'SKIP_EXISTING' | 'UPDATE_DRAFT' | 'REJECT_ON_CONFLICT'
+
+export interface ErpImportJob {
+  id: string
+  sourceType: string
+  originalFilename: string | null
+  status: 'PREVIEW_READY' | 'SUCCEEDED'
+  conflictStrategy: ErpImportConflictStrategy
+  totalRows: number
+  validRows: number
+  warningRows: number
+  errorRows: number
+  createdAt: string
+  committedAt: string | null
+}
+
+export interface ErpImportRow {
+  id: string
+  sourceSheet: string | null
+  sourceRow: number | null
+  sourceJson: Record<string, unknown>
+  operatorLineId: string | null
+  businessDate: string | null
+  severity: 'OK' | 'WARNING' | 'ERROR'
+  errorCode: string | null
+  errorMessage: string | null
+  action: string | null
+  targetDailyBalanceId: string | null
+}
+
+export interface ErpImportPreview {
+  job: ErpImportJob
+  rows: ErpImportRow[]
+}
+
+export interface ErpRedemptionTier {
+  id: string
+  displayName: string | null
+  minDepositAmount: string
+  bonusAmount: string
+  bonusMaxAmount: string
+  sortOrder: number
+  rowVersion: number
+}
+
+export interface ErpRedemptionCampaign {
+  id: string
+  code: string
+  name: string
+  status: 'DRAFT' | 'ACTIVE' | 'ARCHIVED'
+  lookbackDays: number
+  description: string | null
+  tiers: ErpRedemptionTier[]
+  plannedCodeCount: number
+  importedCodeCount: number
+  rowVersion: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ErpRedemptionBatch {
+  id: string
+  campaignId: string
+  claimDateFrom: string
+  claimDateTo: string
+  lookbackDays: number
+  expectedCodeCount: number
+  importedCodeCount: number
+  status: 'PLANNED' | 'READY_LOCAL' | 'PUBLISHED_LOCAL'
+  publishedAt: string | null
+  rowVersion: number
+  createdAt: string
+}
+
+export interface ErpRedemptionIssue {
+  id: string
+  campaignId: string
+  campaignTierId: string
+  batchId: string
+  claimDate: string
+  depositWindowStart: string
+  depositWindowEnd: string
+  tierName: string | null
+  minDepositAmount: string
+  bonusAmount: string
+  bonusMaxAmount: string
+  redemptionCode: string | null
+  localReference: string | null
+  workflowStatus: 'PENDING_LOCAL_CODE' | 'CODE_IMPORTED' | 'PUBLISHED_LOCAL'
+  state: 'PENDING' | 'GENERATED'
+  importedAt: string | null
+  rowVersion: number
+}
+
+export interface ErpRedemptionBatchDetail {
+  batch: ErpRedemptionBatch
+  issues: ErpRedemptionIssue[]
 }
 
 export type WithdrawOrderQueryRange =

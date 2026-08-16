@@ -5,10 +5,16 @@ import {
   Connection,
   DataAnalysis,
   Document,
+  DocumentChecked,
+  Files,
+  HomeFilled,
   Key,
   Present,
   Setting,
+  Shop,
   SwitchButton,
+  Ticket,
+  Tickets,
   User,
   Wallet,
 } from '@element-plus/icons-vue'
@@ -94,8 +100,8 @@ onBeforeUnmount(() => {
       <button class="brand" type="button" @click="collapsed = !collapsed">
         <span class="brand-mark">R</span>
         <span v-if="!collapsed" class="brand-copy">
-          <strong>RAJ DATA</strong>
-          <small>对账分析中心</small>
+          <strong>RAJ CONSOLE</strong>
+          <small>ERP 业务与数据对账</small>
         </span>
       </button>
 
@@ -111,43 +117,101 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <el-menu :default-active="activeMenu" router :collapse="collapsed">
-        <el-menu-item index="/batches">
-          <el-icon><DataAnalysis /></el-icon>
-          <template #title>充值订单</template>
+      <el-menu
+        :default-active="activeMenu"
+        :default-openeds="['reconciliation']"
+        router
+        :collapse="collapsed"
+      >
+        <el-menu-item index="/workspace">
+          <el-icon><HomeFilled /></el-icon>
+          <template #title>工作台</template>
         </el-menu-item>
-        <el-menu-item index="/withdraw-orders">
-          <el-icon><Wallet /></el-icon>
-          <template #title>提现订单</template>
-        </el-menu-item>
-        <el-menu-item index="/spin-orders">
-          <el-icon><Present /></el-icon>
-          <template #title>转盘订单</template>
-        </el-menu-item>
-        <el-menu-item index="/sync-logs">
-          <el-icon><Document /></el-icon>
-          <template #title>同步日志</template>
-        </el-menu-item>
-        <el-menu-item index="/settings/system">
-          <el-icon><Setting /></el-icon>
-          <template #title>系统配置</template>
-        </el-menu-item>
-        <el-menu-item v-if="isAdmin" index="/settings/sources">
-          <el-icon><Connection /></el-icon>
-          <template #title>远端连接</template>
-        </el-menu-item>
-        <el-menu-item v-if="isAdmin" index="/settings/totp-codes">
-          <el-icon><Key /></el-icon>
-          <template #title>TOTP 验证码</template>
-        </el-menu-item>
-        <el-menu-item v-if="isAdmin" index="/settings/data-dictionaries">
-          <el-icon><Collection /></el-icon>
-          <template #title>数据字典</template>
-        </el-menu-item>
-        <el-menu-item v-if="isAdmin" index="/settings/users">
-          <el-icon><User /></el-icon>
-          <template #title>用户管理</template>
-        </el-menu-item>
+
+        <el-sub-menu index="business-management" popper-class="data-side-menu-popper">
+          <template #title>
+            <el-icon><Shop /></el-icon>
+            <span>业务管理</span>
+          </template>
+          <el-menu-item index="/erp/operators">
+            <el-icon><Shop /></el-icon>
+            <template #title>投放公司与投放线</template>
+          </el-menu-item>
+          <el-menu-item index="/erp/balances">
+            <el-icon><DocumentChecked /></el-icon>
+            <template #title>输入台账</template>
+          </el-menu-item>
+          <el-menu-item index="/erp/imports">
+            <el-icon><Files /></el-icon>
+            <template #title>导入中心</template>
+          </el-menu-item>
+          <el-menu-item index="/erp/redemption">
+            <el-icon><Ticket /></el-icon>
+            <template #title>兑换码管理</template>
+          </el-menu-item>
+          <el-menu-item index="/erp/reports">
+            <el-icon><DataAnalysis /></el-icon>
+            <template #title>汇总报表</template>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu index="reconciliation" popper-class="data-side-menu-popper">
+          <template #title>
+            <el-icon><DataAnalysis /></el-icon>
+            <span>数据对账</span>
+          </template>
+          <el-menu-item index="/batches">
+            <el-icon><DataAnalysis /></el-icon>
+            <template #title>充值订单</template>
+          </el-menu-item>
+          <el-menu-item index="/withdraw-orders">
+            <el-icon><Wallet /></el-icon>
+            <template #title>提现订单</template>
+          </el-menu-item>
+          <el-menu-item index="/spin-orders">
+            <el-icon><Present /></el-icon>
+            <template #title>转盘订单</template>
+          </el-menu-item>
+          <el-menu-item index="/sync-logs">
+            <el-icon><Document /></el-icon>
+            <template #title>同步日志</template>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu index="platform" popper-class="data-side-menu-popper">
+          <template #title>
+            <el-icon><Setting /></el-icon>
+            <span>平台管理</span>
+          </template>
+          <el-menu-item index="/settings/system">
+            <el-icon><Setting /></el-icon>
+            <template #title>系统设置</template>
+          </el-menu-item>
+          <el-menu-item v-if="isAdmin" index="/settings/sources">
+            <el-icon><Connection /></el-icon>
+            <template #title>远端账号与盘口</template>
+          </el-menu-item>
+          <el-menu-item v-if="isAdmin" index="/erp/remote-connections">
+            <el-icon><Connection /></el-icon>
+            <template #title>ERP 业务授权</template>
+          </el-menu-item>
+          <el-menu-item v-if="isAdmin" index="/settings/data-dictionaries">
+            <el-icon><Collection /></el-icon>
+            <template #title>数据字典</template>
+          </el-menu-item>
+          <el-menu-item v-if="isAdmin" index="/settings/totp-codes">
+            <el-icon><Key /></el-icon>
+            <template #title>TOTP 验证码</template>
+          </el-menu-item>
+          <el-menu-item v-if="isAdmin" index="/settings/users">
+            <el-icon><User /></el-icon>
+            <template #title>用户与权限</template>
+          </el-menu-item>
+          <el-menu-item v-if="isAdmin" index="/settings/user-logs">
+            <el-icon><Tickets /></el-icon>
+            <template #title>操作审计</template>
+          </el-menu-item>
+        </el-sub-menu>
       </el-menu>
 
       <div class="side-footer">
@@ -275,20 +339,50 @@ onBeforeUnmount(() => {
 
 .side-nav :deep(.el-menu) {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   border-right: 0;
   background: transparent;
 }
 
-.side-nav :deep(.el-menu-item) {
+.side-nav :deep(.el-menu-item),
+.side-nav :deep(.el-sub-menu__title) {
   margin: 5px 10px;
   border-radius: 10px;
   color: rgba(255, 255, 255, 0.68);
 }
 
 .side-nav :deep(.el-menu-item:hover),
-.side-nav :deep(.el-menu-item.is-active) {
+.side-nav :deep(.el-menu-item.is-active),
+.side-nav :deep(.el-sub-menu__title:hover),
+.side-nav :deep(.el-sub-menu.is-active > .el-sub-menu__title) {
   color: #fff;
   background: rgba(255, 255, 255, 0.1);
+}
+
+.side-nav :deep(.el-sub-menu .el-menu-item) {
+  margin-left: 22px;
+}
+
+:global(.data-side-menu-popper) {
+  --el-menu-bg-color: #102a43;
+  --el-menu-text-color: rgba(255, 255, 255, 0.72);
+  --el-menu-hover-bg-color: rgba(255, 255, 255, 0.1);
+  --el-menu-active-color: #fff;
+  border: 1px solid rgba(233, 196, 106, 0.18);
+  border-radius: 10px;
+  background: #102a43;
+  box-shadow: 0 12px 30px rgba(11, 31, 51, 0.28);
+}
+
+:global(.data-side-menu-popper .el-menu) {
+  padding: 5px;
+  background: transparent;
+}
+
+:global(.data-side-menu-popper .el-menu-item) {
+  margin: 2px 0;
+  border-radius: 7px;
 }
 
 .side-footer {

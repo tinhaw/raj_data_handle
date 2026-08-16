@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime, time
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
@@ -13,6 +14,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     Time,
@@ -1070,3 +1072,392 @@ class UserNotification(Base):
     )
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class ErpOperator(Base):
+    """A delivery company migrated from the ERP local business domain."""
+
+    __tablename__ = "erp_operators"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    code: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    operator_type: Mapped[str] = mapped_column(String(20), nullable=False, default="COMPANY")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="ACTIVE", index=True)
+    contact_name: Mapped[str | None] = mapped_column(String(200))
+    contact_value: Mapped[str | None] = mapped_column(String(200))
+    remark: Mapped[str | None] = mapped_column(Text)
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class ErpOperatorLine(Base):
+    """A delivery line belonging to an :class:`ErpOperator`."""
+
+    __tablename__ = "erp_operator_lines"
+    __table_args__ = (
+        UniqueConstraint("operator_id", "code", name="uq_erp_operator_line_code"),
+        UniqueConstraint("operator_id", "name", name="uq_erp_operator_line_name"),
+        Index("ix_erp_operator_line_operator_status", "operator_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    operator_id: Mapped[str] = mapped_column(
+        ForeignKey("erp_operators.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    code: Mapped[str] = mapped_column(String(50), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    asset: Mapped[str] = mapped_column(String(10), nullable=False, default="USDT")
+    network: Mapped[str | None] = mapped_column(String(120))
+    wallet_address: Mapped[str | None] = mapped_column(String(500))
+    start_date: Mapped[date | None] = mapped_column(Date)
+    default_exchange_loss_rate: Mapped[Decimal] = mapped_column(
+        Numeric(12, 8), nullable=False, default=Decimal("0.02")
+    )
+    default_exchange_loss_basis: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="TRANSFER"
+    )
+    default_service_fee_rate: Mapped[Decimal] = mapped_column(
+        Numeric(12, 8), nullable=False, default=Decimal("0.02")
+    )
+    default_service_fee_basis: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="TRANSFER"
+    )
+    calculation_scale: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="ACTIVE")
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class ErpDailyBalance(Base):
+    """One local ERP daily ledger record for a delivery line and business date."""
+
+    __tablename__ = "erp_daily_balances"
+    __table_args__ = (
+        UniqueConstraint(
+            "operator_line_id",
+            "business_date",
+            name="uq_erp_daily_balance_line_date",
+        ),
+        Index("ix_erp_daily_balance_line_date", "operator_line_id", "business_date"),
+        Index("ix_erp_daily_balance_date_status", "business_date", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    operator_line_id: Mapped[str] = mapped_column(
+        ForeignKey("erp_operator_lines.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    business_date: Mapped[date] = mapped_column(Date, nullable=False)
+    opening_balance: Mapped[Decimal] = mapped_column(
+        Numeric(24, 8),
+        nullable=False,
+        default=Decimal("0"),
+    )
+    suggested_opening_balance: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    opening_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="AUTO")
+    opening_override_reason: Mapped[str | None] = mapped_column(String(500))
+    transfer_amount: Mapped[Decimal] = mapped_column(
+        Numeric(24, 8),
+        nullable=False,
+        default=Decimal("0"),
+    )
+    fraud_loss_amount: Mapped[Decimal] = mapped_column(
+        Numeric(24, 8),
+        nullable=False,
+        default=Decimal("0"),
+    )
+    fraud_deduction_source: Mapped[str | None] = mapped_column(String(20))
+    effective_transfer_amount: Mapped[Decimal] = mapped_column(
+        Numeric(24, 8), nullable=False, default=Decimal("0")
+    )
+    spend_amount: Mapped[Decimal] = mapped_column(
+        Numeric(24, 8),
+        nullable=False,
+        default=Decimal("0"),
+    )
+    exchange_loss_rate: Mapped[Decimal] = mapped_column(
+        Numeric(12, 8), nullable=False, default=Decimal("0")
+    )
+    exchange_loss_basis: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default="TRANSFER",
+    )
+    exchange_loss_auto_amount: Mapped[Decimal] = mapped_column(
+        Numeric(24, 8), nullable=False, default=Decimal("0")
+    )
+    exchange_loss_amount: Mapped[Decimal] = mapped_column(
+        Numeric(24, 8), nullable=False, default=Decimal("0")
+    )
+    exchange_loss_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="AUTO")
+    exchange_loss_override_reason: Mapped[str | None] = mapped_column(String(500))
+    service_fee_rate: Mapped[Decimal] = mapped_column(
+        Numeric(12, 8), nullable=False, default=Decimal("0")
+    )
+    service_fee_basis: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default="TRANSFER",
+    )
+    service_fee_auto_amount: Mapped[Decimal] = mapped_column(
+        Numeric(24, 8), nullable=False, default=Decimal("0")
+    )
+    service_fee_amount: Mapped[Decimal] = mapped_column(
+        Numeric(24, 8), nullable=False, default=Decimal("0")
+    )
+    service_fee_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="AUTO")
+    service_fee_override_reason: Mapped[str | None] = mapped_column(String(500))
+    reflux_amount: Mapped[Decimal] = mapped_column(
+        Numeric(24, 8),
+        nullable=False,
+        default=Decimal("0"),
+    )
+    refund_amount: Mapped[Decimal] = mapped_column(
+        Numeric(24, 8),
+        nullable=False,
+        default=Decimal("0"),
+    )
+    other_deduction_amount: Mapped[Decimal] = mapped_column(
+        Numeric(24, 8), nullable=False, default=Decimal("0")
+    )
+    other_reason: Mapped[str | None] = mapped_column(String(500))
+    closing_balance: Mapped[Decimal] = mapped_column(
+        Numeric(24, 8),
+        nullable=False,
+        default=Decimal("0"),
+    )
+    calculation_scale: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="DRAFT", index=True)
+    source_type: Mapped[str] = mapped_column(String(20), nullable=False, default="MANUAL")
+    remark: Mapped[str | None] = mapped_column(Text)
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    confirmed_by: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL")
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+    @property
+    def fraud_from_transfer(self) -> Decimal:
+        if self.fraud_deduction_source == "TRANSFER":
+            return self.fraud_loss_amount
+        return Decimal("0")
+
+    @property
+    def fraud_from_balance(self) -> Decimal:
+        if self.fraud_deduction_source == "BALANCE":
+            return self.fraud_loss_amount
+        return Decimal("0")
+
+
+class ErpImportJob(Base):
+    """A local ERP ledger import preview and its eventual commit result."""
+
+    __tablename__ = "erp_import_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    source_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    original_filename: Mapped[str | None] = mapped_column(String(500))
+    file_sha256: Mapped[str | None] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="PREVIEW_READY")
+    conflict_strategy: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="SKIP_EXISTING"
+    )
+    total_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    valid_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    warning_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    committed_by: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL")
+    )
+    committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class ErpImportJobRow(Base):
+    """One source row with an immutable normalized daily-balance snapshot."""
+
+    __tablename__ = "erp_import_job_rows"
+    __table_args__ = (
+        Index("ix_erp_import_job_row_job_source", "import_job_id", "source_sheet", "source_row"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    import_job_id: Mapped[str] = mapped_column(
+        ForeignKey("erp_import_jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_sheet: Mapped[str | None] = mapped_column(String(200))
+    source_row: Mapped[int | None] = mapped_column(Integer)
+    source_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    normalized_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    operator_line_id: Mapped[str | None] = mapped_column(
+        ForeignKey("erp_operator_lines.id", ondelete="SET NULL"), index=True
+    )
+    business_date: Mapped[date | None] = mapped_column(Date)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="OK")
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_message: Mapped[str | None] = mapped_column(String(1_000))
+    action: Mapped[str | None] = mapped_column(String(30))
+    target_daily_balance_id: Mapped[str | None] = mapped_column(
+        ForeignKey("erp_daily_balances.id", ondelete="SET NULL")
+    )
+    preview_daily_balance_id: Mapped[str | None] = mapped_column(String(36))
+    preview_row_version: Mapped[int | None] = mapped_column(Integer)
+
+
+class ErpRedemptionCampaign(Base):
+    """Local definition of a redemption-code campaign."""
+
+    __tablename__ = "erp_redemption_campaigns"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    code: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="DRAFT")
+    lookback_days: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
+    description: Mapped[str | None] = mapped_column(Text)
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class ErpRedemptionCampaignTier(Base):
+    """A deposit threshold and reward snapshot for a local campaign."""
+
+    __tablename__ = "erp_redemption_campaign_tiers"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "min_deposit_amount",
+            name="uq_erp_redemption_tier_deposit",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    campaign_id: Mapped[str] = mapped_column(
+        ForeignKey("erp_redemption_campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    display_name: Mapped[str | None] = mapped_column(String(120))
+    min_deposit_amount: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    bonus_amount: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    bonus_max_amount: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class ErpRedemptionCodeBatch(Base):
+    """A local task batch; it does not represent a remote publication."""
+
+    __tablename__ = "erp_redemption_code_batches"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    campaign_id: Mapped[str] = mapped_column(
+        ForeignKey("erp_redemption_campaigns.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    claim_date_from: Mapped[date] = mapped_column(Date, nullable=False)
+    claim_date_to: Mapped[date] = mapped_column(Date, nullable=False)
+    lookback_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    expected_code_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="PLANNED")
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    published_by: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL")
+    )
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class ErpRedemptionCodeIssue(Base):
+    """A local redemption-code task and, when supplied, its imported code."""
+
+    __tablename__ = "erp_redemption_code_issues"
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_id",
+            "claim_date",
+            "campaign_tier_id",
+            name="uq_erp_redemption_issue",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    campaign_id: Mapped[str] = mapped_column(
+        ForeignKey("erp_redemption_campaigns.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    campaign_tier_id: Mapped[str] = mapped_column(
+        ForeignKey("erp_redemption_campaign_tiers.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("erp_redemption_code_batches.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    claim_date: Mapped[date] = mapped_column(Date, nullable=False)
+    deposit_window_start: Mapped[date] = mapped_column(Date, nullable=False)
+    deposit_window_end: Mapped[date] = mapped_column(Date, nullable=False)
+    tier_name: Mapped[str | None] = mapped_column(String(120))
+    min_deposit_amount: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    bonus_amount: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    bonus_max_amount: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    redemption_code: Mapped[str | None] = mapped_column(String(255), unique=True)
+    local_reference: Mapped[str | None] = mapped_column(String(255))
+    workflow_status: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="PENDING_LOCAL_CODE"
+    )
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING")
+    imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )

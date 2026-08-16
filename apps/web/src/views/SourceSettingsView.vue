@@ -345,9 +345,9 @@ onMounted(load)
   <div class="page-stack">
     <header class="page-header">
       <div>
-        <span class="page-eyebrow">Admin settings</span>
-        <h1>远端连接</h1>
-        <p>先创建盘口及其远端后台地址，再为账号选择所属盘口并配置登录凭据。</p>
+        <span class="page-eyebrow">Remote accounts</span>
+        <h1>远端账号与盘口</h1>
+        <p>以当前分析数据源为基础维护统一的盘口和远端账号；ERP 能力将通过单独授权附加到同一账号。</p>
       </div>
       <div class="header-actions">
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
