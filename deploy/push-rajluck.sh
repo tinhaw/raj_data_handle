@@ -203,7 +203,9 @@ if [[ "$INIT" == true && "$UPLOAD_SOURCE" == false ]]; then
 fi
 
 if [[ "$UPLOAD_SOURCE" == true ]]; then
-    SOURCE_ARCHIVE="$(mktemp "${TMPDIR:-/tmp}/raj-data-handle-source.XXXXXX.tar.gz")"
+    # macOS requires the X placeholders at the end of the template.  The
+    # archive format is explicit in tar's flags, so an extension is not needed.
+    SOURCE_ARCHIVE="$(mktemp "${TMPDIR:-/tmp}/raj-data-handle-source.XXXXXX")"
     tar \
         --no-xattrs \
         --no-mac-metadata \
