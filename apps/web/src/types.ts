@@ -59,6 +59,9 @@ export interface SourceConfig {
   scoringApiKeyUpdatedAt: string | null
   scoringApiLastTestedAt: string | null
   scoringApiLastTestStatus: string | null
+  initialReviewV1ApiBaseUrl: string | null
+  initialReviewV1ApiKeyConfigured: boolean
+  initialReviewV1ApiKeyUpdatedAt: string | null
   lastTestedAt: string | null
   lastTestStatus: string | null
   createdAt: string

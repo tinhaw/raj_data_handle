@@ -109,12 +109,8 @@ class TotpAccount(Base):
     secret_updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
-    created_by: Mapped[int | None] = mapped_column(
-        ForeignKey("app_users.id", ondelete="SET NULL")
-    )
-    updated_by: Mapped[int | None] = mapped_column(
-        ForeignKey("app_users.id", ondelete="SET NULL")
-    )
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
@@ -666,6 +662,17 @@ class SourceConfig(Base):
     scoring_api_last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     scoring_api_last_test_status: Mapped[str | None] = mapped_column(String(30))
     scoring_api_last_test_request_id: Mapped[str | None] = mapped_column(String(64))
+
+    # The v1 initial-review API follows the same write-only key rules as the
+    # scoring-review API, but has a separate authorization scope and URL.
+    initial_review_v1_api_base_url: Mapped[str | None] = mapped_column(String(500))
+    encrypted_initial_review_v1_api_key: Mapped[str | None] = mapped_column(Text)
+    initial_review_v1_api_key_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    initial_review_v1_api_key_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
     last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_test_status: Mapped[str | None] = mapped_column(String(30))

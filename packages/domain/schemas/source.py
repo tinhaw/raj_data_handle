@@ -28,6 +28,7 @@ class SourceUpsertRequest(ApiSchema):
     currency: str = "INR"
     credentials: SourceCredentialsWrite | None = None
     scoring_api: ScoringApiWrite | None = None
+    initial_review_v1_api: ScoringApiWrite | None = None
 
     @field_validator("currency")
     @classmethod
@@ -50,6 +51,7 @@ class SourcePatchRequest(ApiSchema):
     currency: str | None = None
     credentials: SourceCredentialsWrite | None = None
     scoring_api: ScoringApiWrite | None = None
+    initial_review_v1_api: ScoringApiWrite | None = None
 
     @field_validator("currency")
     @classmethod
@@ -83,6 +85,9 @@ class SourceResponse(ApiSchema):
     scoring_api_key_updated_at: datetime | None
     scoring_api_last_tested_at: datetime | None
     scoring_api_last_test_status: str | None
+    initial_review_v1_api_base_url: str | None
+    initial_review_v1_api_key_configured: bool
+    initial_review_v1_api_key_updated_at: datetime | None
     last_tested_at: datetime | None
     last_test_status: str | None
     created_at: datetime

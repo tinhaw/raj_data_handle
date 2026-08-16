@@ -57,6 +57,9 @@ def _source_response(
         scoring_api_key_updated_at=source.scoring_api_key_updated_at,
         scoring_api_last_tested_at=source.scoring_api_last_tested_at,
         scoring_api_last_test_status=source.scoring_api_last_test_status,
+        initial_review_v1_api_base_url=source.initial_review_v1_api_base_url,
+        initial_review_v1_api_key_configured=bool(source.encrypted_initial_review_v1_api_key),
+        initial_review_v1_api_key_updated_at=source.initial_review_v1_api_key_updated_at,
         last_tested_at=source.last_tested_at,
         last_test_status=source.last_test_status,
         created_at=source.created_at,
@@ -79,8 +82,7 @@ async def settings_sources(
     session: AsyncSession = Depends(get_db_session),
 ) -> list[SourceResponse]:
     return [
-        _source_response(item, include_login_username=True)
-        for item in await list_sources(session)
+        _source_response(item, include_login_username=True) for item in await list_sources(session)
     ]
 
 

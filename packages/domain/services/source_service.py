@@ -95,6 +95,32 @@ def normalize_base_url(value: str | None, settings: Settings) -> str | None:
     return urlunsplit((parts.scheme, parts.netloc, "", "", "")).rstrip("/")
 
 
+def _normalize_key_api_base_url(
+    value: str | None,
+    settings: Settings,
+    *,
+    label: str,
+) -> str | None:
+    """Normalize a write-only-key API root that must end in ``/api``."""
+
+    if value is None:
+        return None
+    parts = urlsplit(value.strip())
+    if parts.username or parts.password or parts.query or parts.fragment:
+        raise SourceValidationError(f"{label} Base URL 不能包含凭据、查询参数或片段。")
+    is_local_dev = settings.environment == "development" and parts.hostname in {
+        "localhost",
+        "127.0.0.1",
+    }
+    if parts.scheme != "https" and not (is_local_dev and parts.scheme == "http"):
+        raise SourceValidationError(f"{label} Base URL 必须使用 HTTPS。")
+    if not parts.hostname:
+        raise SourceValidationError(f"{label} Base URL 缺少有效主机名。")
+    if parts.path.rstrip("/") != "/api":
+        raise SourceValidationError(f"{label} Base URL 必须以 /api 结束。")
+    return urlunsplit((parts.scheme, parts.netloc, "/api", "", ""))
+
+
 def normalize_scoring_api_base_url(value: str | None, settings: Settings) -> str | None:
     """Normalize an external scoring-review API root, including its ``/api`` path.
 
@@ -104,28 +130,25 @@ def normalize_scoring_api_base_url(value: str | None, settings: Settings) -> str
     from being accidentally used as an API-key endpoint.
     """
 
-    if value is None:
-        return None
-    parts = urlsplit(value.strip())
-    if parts.username or parts.password or parts.query or parts.fragment:
-        raise SourceValidationError("评分审核 API Base URL 不能包含凭据、查询参数或片段。")
-    is_local_dev = settings.environment == "development" and parts.hostname in {
-        "localhost",
-        "127.0.0.1",
-    }
-    if parts.scheme != "https" and not (is_local_dev and parts.scheme == "http"):
-        raise SourceValidationError("评分审核 API Base URL 必须使用 HTTPS。")
-    if not parts.hostname:
-        raise SourceValidationError("评分审核 API Base URL 缺少有效主机名。")
-    if parts.path.rstrip("/") != "/api":
-        raise SourceValidationError("评分审核 API Base URL 必须以 /api 结束。")
-    return urlunsplit((parts.scheme, parts.netloc, "/api", "", ""))
+    return _normalize_key_api_base_url(value, settings, label="评分审核 API")
+
+
+def normalize_initial_review_v1_api_base_url(value: str | None, settings: Settings) -> str | None:
+    """Normalize the v1 initial-review API root using the same ``/api`` contract."""
+
+    return _normalize_key_api_base_url(value, settings, label="v1版初审 API")
 
 
 def _scoring_api_credential_scope(source_id: str) -> str:
     """Return a distinct AES-GCM associated-data scope for the API key."""
 
     return f"{source_id}:scoring-review-api"
+
+
+def _initial_review_v1_api_credential_scope(source_id: str) -> str:
+    """Keep v1 initial-review keys cryptographically separate from other keys."""
+
+    return f"{source_id}:initial-review-v1-api"
 
 
 def _credentials_dict(request: object) -> dict[str, str | None]:
@@ -358,6 +381,48 @@ async def upsert_source(
             source.scoring_api_key_updated_at = datetime.now(UTC)
             source.scoring_api_last_test_status = None
             changed_fields.append("scoring_api_key")
+
+    initial_review_v1_api = getattr(request, "initial_review_v1_api", None)
+    if initial_review_v1_api is not None:
+        raw_initial_review_v1_api_url = (
+            str(initial_review_v1_api.base_url)
+            if initial_review_v1_api.base_url is not None
+            else None
+        )
+        initial_review_v1_api_base_url = normalize_initial_review_v1_api_base_url(
+            raw_initial_review_v1_api_url,
+            current_settings,
+        )
+        if source.initial_review_v1_api_base_url != initial_review_v1_api_base_url:
+            source.initial_review_v1_api_base_url = initial_review_v1_api_base_url
+            changed_fields.append("initial_review_v1_api_base_url")
+
+        supplied_initial_review_v1_api_key = (initial_review_v1_api.api_key or "").strip()
+        if supplied_initial_review_v1_api_key:
+            if initial_review_v1_api_base_url is None:
+                raise SourceValidationError("配置 v1版初审 API Key 前必须填写 Base URL。")
+            source.initial_review_v1_api_key_version = (
+                source.initial_review_v1_api_key_version or 0
+            ) + 1
+            source.encrypted_initial_review_v1_api_key = encrypt_credentials(
+                {"api_key": supplied_initial_review_v1_api_key},
+                source_id=_initial_review_v1_api_credential_scope(source.source_id),
+                credential_version=source.initial_review_v1_api_key_version,
+                settings=current_settings,
+            )
+            source.initial_review_v1_api_key_updated_at = datetime.now(UTC)
+            changed_fields.append("initial_review_v1_api_key")
+        elif (
+            initial_review_v1_api_base_url is None
+            and source.encrypted_initial_review_v1_api_key is not None
+        ):
+            # Clearing the URL explicitly clears the inaccessible key too.
+            source.initial_review_v1_api_key_version = (
+                source.initial_review_v1_api_key_version or 0
+            ) + 1
+            source.encrypted_initial_review_v1_api_key = None
+            source.initial_review_v1_api_key_updated_at = datetime.now(UTC)
+            changed_fields.append("initial_review_v1_api_key")
 
     requested_enabled = getattr(request, "enabled", None)
     if requested_enabled is not None:

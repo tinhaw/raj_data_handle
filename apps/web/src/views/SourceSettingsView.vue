@@ -33,6 +33,7 @@ const editingSourceId = ref<string | null>(null)
 const accountSourceId = ref('')
 const originalAccountUsername = ref('')
 const scoringApiKeyConfigured = ref(false)
+const initialReviewV1ApiKeyConfigured = ref(false)
 const presetSourceIds = new Set(['rajwin', 'rajluck'])
 
 const sourceForm = reactive({
@@ -44,6 +45,8 @@ const sourceForm = reactive({
   enabled: false,
   scoringApiBaseUrl: '',
   scoringApiKey: '',
+  initialReviewV1ApiBaseUrl: '',
+  initialReviewV1ApiKey: '',
 })
 
 const accountForm = reactive({
@@ -71,6 +74,7 @@ async function load(): Promise<void> {
 function resetSourceForm(): void {
   editingSourceId.value = null
   scoringApiKeyConfigured.value = false
+  initialReviewV1ApiKeyConfigured.value = false
   sourceForm.sourceId = ''
   sourceForm.displayName = ''
   sourceForm.baseUrl = ''
@@ -79,6 +83,8 @@ function resetSourceForm(): void {
   sourceForm.enabled = false
   sourceForm.scoringApiBaseUrl = ''
   sourceForm.scoringApiKey = ''
+  sourceForm.initialReviewV1ApiBaseUrl = ''
+  sourceForm.initialReviewV1ApiKey = ''
 }
 
 function openCreateSource(): void {
@@ -89,6 +95,7 @@ function openCreateSource(): void {
 function openEditSource(row: SourceConfig): void {
   editingSourceId.value = row.sourceId
   scoringApiKeyConfigured.value = row.scoringApiKeyConfigured
+  initialReviewV1ApiKeyConfigured.value = row.initialReviewV1ApiKeyConfigured
   sourceForm.sourceId = row.sourceId
   sourceForm.displayName = row.displayName
   sourceForm.baseUrl = row.baseUrl || ''
@@ -97,6 +104,8 @@ function openEditSource(row: SourceConfig): void {
   sourceForm.enabled = row.enabled
   sourceForm.scoringApiBaseUrl = row.scoringApiBaseUrl || ''
   sourceForm.scoringApiKey = ''
+  sourceForm.initialReviewV1ApiBaseUrl = row.initialReviewV1ApiBaseUrl || ''
+  sourceForm.initialReviewV1ApiKey = ''
   sourceDialogVisible.value = true
 }
 
@@ -111,7 +120,15 @@ function sourcePayload(enabled: boolean): Record<string, unknown> {
       baseUrl: sourceForm.scoringApiBaseUrl || null,
       apiKey: sourceForm.scoringApiKey || null,
     },
+    initialReviewV1Api: {
+      baseUrl: sourceForm.initialReviewV1ApiBaseUrl || null,
+      apiKey: sourceForm.initialReviewV1ApiKey || null,
+    },
   }
+}
+
+function apiConfigured(baseUrl: string | null, keyConfigured: boolean): boolean {
+  return Boolean(baseUrl && keyConfigured)
 }
 
 function validateSource(): boolean {
@@ -416,12 +433,20 @@ onMounted(load)
                 </small>
               </template>
             </el-table-column>
-            <el-table-column label="评分审核 API" min-width="220" show-overflow-tooltip>
+            <el-table-column label="评分审核 API" width="140">
               <template #default="{ row }">
-                <span>{{ row.scoringApiBaseUrl || '未配置' }}</span>
-                <small class="table-subtext">
-                  {{ row.scoringApiKeyConfigured ? 'API Key 已配置' : 'API Key 未配置' }}
-                </small>
+                <el-tag :type="apiConfigured(row.scoringApiBaseUrl, row.scoringApiKeyConfigured) ? 'success' : 'info'">
+                  {{ apiConfigured(row.scoringApiBaseUrl, row.scoringApiKeyConfigured) ? '已配置' : '未配置' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="v1版初审 API" width="140">
+              <template #default="{ row }">
+                <el-tag
+                  :type="apiConfigured(row.initialReviewV1ApiBaseUrl, row.initialReviewV1ApiKeyConfigured) ? 'success' : 'info'"
+                >
+                  {{ apiConfigured(row.initialReviewV1ApiBaseUrl, row.initialReviewV1ApiKeyConfigured) ? '已配置' : '未配置' }}
+                </el-tag>
               </template>
             </el-table-column>
             <el-table-column label="时区 / 币种" min-width="165">
@@ -434,25 +459,27 @@ onMounted(load)
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="270" fixed="right">
+            <el-table-column label="操作" width="330" fixed="right">
               <template #default="{ row }">
-                <el-button text type="primary" :icon="Edit" @click="openEditSource(row)">编辑盘口</el-button>
-                <el-button text type="primary" :icon="Connection" @click="openConfigureAccount(row)">
-                  配置账号
-                </el-button>
-                <el-tooltip :content="row.enabled ? '请先停用盘口再删除' : '永久删除盘口'">
-                  <span>
-                    <el-button
-                      text
-                      type="danger"
-                      :icon="Delete"
-                      :disabled="row.enabled"
-                      @click="removeSource(row)"
-                    >
-                      删除
-                    </el-button>
-                  </span>
-                </el-tooltip>
+                <div class="source-actions">
+                  <el-button text type="primary" :icon="Edit" @click="openEditSource(row)">编辑盘口</el-button>
+                  <el-button text type="primary" :icon="Connection" @click="openConfigureAccount(row)">
+                    配置账号
+                  </el-button>
+                  <el-tooltip :content="row.enabled ? '请先停用盘口再删除' : '永久删除盘口'">
+                    <span>
+                      <el-button
+                        text
+                        type="danger"
+                        :icon="Delete"
+                        :disabled="row.enabled"
+                        @click="removeSource(row)"
+                      >
+                        删除
+                      </el-button>
+                    </span>
+                  </el-tooltip>
+                </div>
               </template>
             </el-table-column>
           </el-table>
@@ -554,6 +581,23 @@ onMounted(load)
           <el-input
             v-model="sourceForm.scoringApiKey"
             :placeholder="scoringApiKeyConfigured ? '已设置，留空则保持原值' : '请输入具有 reviewed-cases:read 权限的 Key'"
+            type="password"
+            show-password
+            autocomplete="off"
+          />
+        </el-form-item>
+        <el-divider content-position="left">v1版初审 API（可选，按盘口配置）</el-divider>
+        <el-form-item label="v1版初审 API Base URL">
+          <el-input
+            v-model="sourceForm.initialReviewV1ApiBaseUrl"
+            placeholder="https://primary.example.com/api"
+          />
+          <span class="field-help">v1版初审 API 必须以 /api 结束，与远端账号登录地址独立。</span>
+        </el-form-item>
+        <el-form-item label="v1版初审 API Key">
+          <el-input
+            v-model="sourceForm.initialReviewV1ApiKey"
+            :placeholder="initialReviewV1ApiKeyConfigured ? '已设置，留空则保持原值' : '请输入 v1版初审 API Key'"
             type="password"
             show-password
             autocomplete="off"
@@ -684,5 +728,22 @@ onMounted(load)
 
 .account-form-grid {
   align-items: start;
+}
+
+.source-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.source-actions > span {
+  display: inline-flex;
+}
+
+.source-actions :deep(.el-button) {
+  margin-left: 0;
+  white-space: nowrap;
 }
 </style>
