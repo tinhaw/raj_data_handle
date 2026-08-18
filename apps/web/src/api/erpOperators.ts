@@ -16,6 +16,16 @@ export interface ErpDeliveryLineWrite {
   rowVersion?: number
 }
 
+export interface ErpOperatorDeleteImpact {
+  operatorId: string
+  operatorName: string
+  deliveryLineCount: number
+  ledgerCount: number
+  lockedPeriodCount: number
+  hasHistory: boolean
+  canDeleteWithoutPurge: boolean
+}
+
 export async function fetchErpOperators(
   includeInactive = true,
   search?: string,
@@ -51,6 +61,24 @@ export async function disableErpOperator(
       params: { rowVersion },
     })
   ).data
+}
+
+export async function fetchErpOperatorDeleteImpact(
+  operatorId: string,
+): Promise<ErpOperatorDeleteImpact> {
+  return (await api.get<ErpOperatorDeleteImpact>(`/erp/operators/${operatorId}/delete-impact`)).data
+}
+
+export async function deleteErpOperator(
+  operatorId: string,
+  payload: {
+    rowVersion: number
+    purgeHistory: boolean
+    confirmationName?: string
+    reason?: string
+  },
+): Promise<void> {
+  await api.delete(`/erp/operators/${operatorId}`, { data: payload })
 }
 
 export async function createErpDeliveryLine(

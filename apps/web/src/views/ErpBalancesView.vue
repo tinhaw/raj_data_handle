@@ -8,12 +8,20 @@ import {
   confirmErpDailyBalance,
   createErpDailyBalance,
   fetchErpDailyBalances,
+  previewErpDailyBalanceImpact,
+  reopenErpDailyBalance,
   updateErpDailyBalance,
   type ErpDailyBalanceWrite,
 } from '../api/erpBalances'
 import { fetchErpOperatorLines, fetchErpOperators } from '../api/erpOperators'
-import { isAdmin } from '../stores/auth'
-import type { ErpDailyBalance, ErpDeliveryLine } from '../types'
+import {
+  fetchErpPeriodLocks,
+  lockErpPeriod,
+  unlockErpPeriod,
+  validateErpPeriodLock,
+} from '../api/erpPeriodLocks'
+import { hasErpPermission } from '../stores/auth'
+import type { ErpDailyBalance, ErpDeliveryLine, ErpPeriodLock } from '../types'
 
 function today(): string {
   return new Date().toISOString().slice(0, 10)
@@ -21,6 +29,10 @@ function today(): string {
 
 function currentMonth(): string {
   return today().slice(0, 7)
+}
+
+function monthDate(value: string): string {
+  return `${value}-01`
 }
 
 function clean(value: string): string | undefined {
@@ -36,10 +48,12 @@ const loading = ref(false)
 const saving = ref(false)
 const lines = ref<ErpDeliveryLine[]>([])
 const records = ref<ErpDailyBalance[]>([])
+const periodLocks = ref<ErpPeriodLock[]>([])
 const selectedLineId = ref('')
 const month = ref(currentMonth())
 const dialogVisible = ref(false)
 const editing = ref<ErpDailyBalance | null>(null)
+const periodSaving = ref(false)
 
 const form = reactive({
   operatorLineId: '',
@@ -70,6 +84,10 @@ const formLine = computed(() => lines.value.find((line) => line.id === form.oper
 const selectedLineLabel = computed(() => selectedLine.value
   ? `${selectedLine.value.operatorName} · ${selectedLine.value.name} · ${selectedLine.value.asset}`
   : '请选择投放线')
+const selectedPeriodLock = computed(() => periodLocks.value.find(
+  (item) => item.operatorLineId === selectedLineId.value && item.status === 'LOCKED',
+))
+const monthLocked = computed(() => Boolean(selectedPeriodLock.value))
 
 async function loadLines(): Promise<void> {
   const operators = await fetchErpOperators(false)
@@ -87,12 +105,18 @@ async function load(): Promise<void> {
     if (!lines.value.length) await loadLines()
     if (!selectedLineId.value) {
       records.value = []
+      periodLocks.value = []
       return
     }
-    const result = await fetchErpDailyBalances(selectedLineId.value, month.value)
+    const [result, locks] = await Promise.all([
+      fetchErpDailyBalances(selectedLineId.value, month.value),
+      fetchErpPeriodLocks(monthDate(month.value)),
+    ])
     records.value = result.records
+    periodLocks.value = locks
   } catch (error) {
     records.value = []
+    periodLocks.value = []
     ElMessage.error(apiErrorMessage(error, '台账数据加载失败。请确认本地 ERP 数据库已完成初始化。'))
   } finally {
     loading.value = false
@@ -176,11 +200,29 @@ async function save(): Promise<void> {
   }
   saving.value = true
   try {
+    const payload = toPayload()
+    const impact = await previewErpDailyBalanceImpact(payload)
+    if (impact.blockingReasons.length) {
+      await ElMessageBox.alert(
+        impact.blockingReasons.join('<br/>'),
+        '后续日结阻止保存',
+        { dangerouslyUseHTMLString: true, type: 'warning' },
+      )
+      return
+    }
+    if (impact.impactedRecords.length) {
+      const dates = impact.impactedRecords.map((item) => item.businessDate).join('、')
+      await ElMessageBox.confirm(
+        `保存后会自动重算以下连续自动期初日结：${dates}。是否继续？`,
+        '确认连锁重算',
+        { type: 'warning', confirmButtonText: '保存并重算', cancelButtonText: '取消' },
+      )
+    }
     if (editing.value) {
-      await updateErpDailyBalance(editing.value.id, toPayload())
+      await updateErpDailyBalance(editing.value.id, payload)
       ElMessage.success('日结草稿已更新。')
     } else {
-      await createErpDailyBalance(toPayload())
+      await createErpDailyBalance(payload)
       ElMessage.success('日结草稿已创建。')
     }
     dialogVisible.value = false
@@ -188,6 +230,7 @@ async function save(): Promise<void> {
     month.value = form.businessDate.slice(0, 7)
     await load()
   } catch (error) {
+    if (error === 'cancel' || error === 'close') return
     ElMessage.error(apiErrorMessage(error, '日结保存失败。'))
   } finally {
     saving.value = false
@@ -210,6 +253,85 @@ async function confirm(record: ErpDailyBalance): Promise<void> {
   }
 }
 
+async function reopen(record: ErpDailyBalance): Promise<void> {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `请填写重开 ${record.businessDate} 日结的原因。`,
+      '重开日结',
+      {
+        confirmButtonText: '重开',
+        cancelButtonText: '取消',
+        inputPattern: /\S+/,
+        inputErrorMessage: '重开原因不能为空。',
+      },
+    )
+    await reopenErpDailyBalance(record.id, { rowVersion: record.rowVersion, reason: value.trim() })
+    ElMessage.success('日结已重开为草稿。')
+    await load()
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(apiErrorMessage(error, '重开日结失败。'))
+  }
+}
+
+async function lockMonth(): Promise<void> {
+  if (!selectedLineId.value) return
+  periodSaving.value = true
+  try {
+    const payload = { month: monthDate(month.value), operatorLineIds: [selectedLineId.value] }
+    const validation = await validateErpPeriodLock(payload)
+    if (!validation.canLock) {
+      const detail = validation.issues
+        .map((issue) => `${issue.businessDate || '本月'}：${issue.message}`)
+        .join('；')
+      ElMessage.warning(detail || '本月不满足锁定条件。')
+      return
+    }
+    await ElMessageBox.confirm(
+      `锁定 ${month.value} 后，该投放线本月日结将不能新建、编辑、确认或重开。`,
+      '锁定会计期间',
+      { type: 'warning', confirmButtonText: '锁定', cancelButtonText: '取消' },
+    )
+    await lockErpPeriod(payload)
+    ElMessage.success(`${month.value} 已锁定。`)
+    await load()
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(apiErrorMessage(error, '锁定期间失败。'))
+  } finally {
+    periodSaving.value = false
+  }
+}
+
+async function unlockMonth(): Promise<void> {
+  if (!selectedLineId.value) return
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `请填写解锁 ${month.value} 的原因。`,
+      '解锁会计期间',
+      {
+        confirmButtonText: '解锁',
+        cancelButtonText: '取消',
+        inputPattern: /\S+/,
+        inputErrorMessage: '解锁原因不能为空。',
+      },
+    )
+    periodSaving.value = true
+    await unlockErpPeriod({
+      month: monthDate(month.value),
+      operatorLineIds: [selectedLineId.value],
+      reason: value.trim(),
+    })
+    ElMessage.success(`${month.value} 已解锁。`)
+    await load()
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(apiErrorMessage(error, '解锁期间失败。'))
+  } finally {
+    periodSaving.value = false
+  }
+}
+
 watch([selectedLineId, month], () => void load())
 onMounted(() => void load())
 </script>
@@ -224,7 +346,16 @@ onMounted(() => void load())
       </div>
       <div class="header-actions">
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
-        <el-button v-if="isAdmin" type="primary" :icon="Plus" :disabled="!lines.length" @click="openCreate">
+        <el-button
+          v-if="hasErpPermission('ERP_PERIOD_LOCK')"
+          :loading="periodSaving"
+          :disabled="!selectedLineId"
+          :type="monthLocked ? 'warning' : 'default'"
+          @click="monthLocked ? unlockMonth() : lockMonth()"
+        >
+          {{ monthLocked ? '解锁本月' : '锁定本月' }}
+        </el-button>
+        <el-button v-if="hasErpPermission('ERP_LEDGER_WRITE')" type="primary" :icon="Plus" :disabled="!lines.length || monthLocked" @click="openCreate">
           新建日结
         </el-button>
       </div>
@@ -244,6 +375,8 @@ onMounted(() => void load())
       </el-select>
       <el-date-picker v-model="month" type="month" value-format="YYYY-MM" placeholder="选择月份" />
       <span>{{ selectedLineLabel }}</span>
+      <el-tag v-if="monthLocked" type="danger" effect="light">本月已锁定</el-tag>
+      <el-tag v-else type="success" effect="plain">本月未锁定</el-tag>
     </section>
 
     <section class="surface-card table-card">
@@ -256,7 +389,15 @@ onMounted(() => void load())
         <el-table-column label="回流 / 退款 / 其他" min-width="180" align="right"><template #default="{ row }">{{ amount(row.refluxAmount) }} / {{ amount(row.refundAmount) }} / {{ amount(row.otherDeductionAmount) }}</template></el-table-column>
         <el-table-column label="期末结余" min-width="118" align="right"><template #default="{ row }"><strong>{{ amount(row.closingBalance) }}</strong></template></el-table-column>
         <el-table-column label="状态" width="100" align="center"><template #default="{ row }"><el-tag :type="row.status === 'CONFIRMED' ? 'success' : 'warning'">{{ row.status === 'CONFIRMED' ? '已确认' : '草稿' }}</el-tag></template></el-table-column>
-        <el-table-column v-if="isAdmin" label="操作" width="145" fixed="right"><template #default="{ row }"><el-button v-if="row.status === 'DRAFT'" text type="primary" @click="openEdit(row)">编辑</el-button><el-button v-if="row.status === 'DRAFT'" text type="success" @click="confirm(row)">确认</el-button></template></el-table-column>
+        <el-table-column v-if="hasErpPermission('ERP_LEDGER_WRITE') || hasErpPermission('ERP_LEDGER_CONFIRM') || hasErpPermission('ERP_LEDGER_REOPEN')" label="操作" width="205" fixed="right">
+          <template #default="{ row }">
+            <div class="ledger-actions">
+              <el-button v-if="row.status === 'DRAFT' && hasErpPermission('ERP_LEDGER_WRITE')" text type="primary" :disabled="monthLocked" @click="openEdit(row)">编辑</el-button>
+              <el-button v-if="row.status === 'DRAFT' && hasErpPermission('ERP_LEDGER_CONFIRM')" text type="success" :disabled="monthLocked" @click="confirm(row)">确认</el-button>
+              <el-button v-if="row.status === 'CONFIRMED' && hasErpPermission('ERP_LEDGER_REOPEN')" text type="warning" :disabled="monthLocked" @click="reopen(row)">重开</el-button>
+            </div>
+          </template>
+        </el-table-column>
       </el-table>
     </section>
 
@@ -290,7 +431,7 @@ onMounted(() => void load())
         </div>
         <el-form-item label="备注"><el-input v-model="form.remark" type="textarea" :rows="3" maxlength="5000" show-word-limit /></el-form-item>
       </el-form>
-      <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="save">保存草稿</el-button></template>
+      <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" :disabled="monthLocked" @click="save">保存草稿</el-button></template>
     </el-dialog>
   </div>
 </template>
@@ -299,6 +440,8 @@ onMounted(() => void load())
 .ledger-filter { display: flex; align-items: center; gap: 14px; padding: 16px; }
 .ledger-filter > .el-select { width: min(460px, 52vw); }
 .ledger-filter > span { color: var(--ink-muted); font-size: 13px; }
+.ledger-actions { display: flex; align-items: center; white-space: nowrap; }
+.ledger-actions :deep(.el-button + .el-button) { margin-left: 8px; }
 .ledger-form__grid { display: grid; gap: 0 16px; }
 .ledger-form__grid--three { grid-template-columns: 2fr 1fr 1fr; }
 .ledger-form__grid--four { grid-template-columns: repeat(4, minmax(0, 1fr)); }

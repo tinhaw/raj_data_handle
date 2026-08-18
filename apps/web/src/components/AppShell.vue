@@ -23,7 +23,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { fetchUnreadNotifications, markNotificationRead } from '../api/notifications'
-import { clearSession, currentUser, isAdmin } from '../stores/auth'
+import { clearSession, currentUser, hasErpPermission, isAdmin } from '../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
@@ -123,7 +123,7 @@ onBeforeUnmount(() => {
         router
         :collapse="collapsed"
       >
-        <el-menu-item index="/workspace">
+        <el-menu-item v-if="hasErpPermission('ERP_WORKSPACE_VIEW')" index="/workspace">
           <el-icon><HomeFilled /></el-icon>
           <template #title>工作台</template>
         </el-menu-item>
@@ -133,25 +133,29 @@ onBeforeUnmount(() => {
             <el-icon><Shop /></el-icon>
             <span>业务管理</span>
           </template>
-          <el-menu-item index="/erp/operators">
+          <el-menu-item v-if="hasErpPermission('ERP_OPERATOR_VIEW')" index="/erp/operators">
             <el-icon><Shop /></el-icon>
             <template #title>投放公司与投放线</template>
           </el-menu-item>
-          <el-menu-item index="/erp/balances">
+          <el-menu-item v-if="hasErpPermission('ERP_LEDGER_VIEW')" index="/erp/balances">
             <el-icon><DocumentChecked /></el-icon>
             <template #title>输入台账</template>
           </el-menu-item>
-          <el-menu-item index="/erp/imports">
+          <el-menu-item v-if="hasErpPermission('ERP_IMPORT')" index="/erp/imports">
             <el-icon><Files /></el-icon>
             <template #title>导入中心</template>
           </el-menu-item>
-          <el-menu-item index="/erp/redemption">
+          <el-menu-item v-if="hasErpPermission('ERP_REDEMPTION_VIEW')" index="/erp/redemption">
             <el-icon><Ticket /></el-icon>
             <template #title>兑换码管理</template>
           </el-menu-item>
-          <el-menu-item index="/erp/reports">
+          <el-menu-item v-if="hasErpPermission('ERP_REPORT_VIEW')" index="/erp/reports">
             <el-icon><DataAnalysis /></el-icon>
             <template #title>汇总报表</template>
+          </el-menu-item>
+          <el-menu-item v-if="hasErpPermission('ERP_AUDIT_VIEW')" index="/erp/audit">
+            <el-icon><Tickets /></el-icon>
+            <template #title>审计日志</template>
           </el-menu-item>
         </el-sub-menu>
 
@@ -191,7 +195,7 @@ onBeforeUnmount(() => {
             <el-icon><Connection /></el-icon>
             <template #title>远端账号与盘口</template>
           </el-menu-item>
-          <el-menu-item v-if="isAdmin" index="/erp/remote-connections">
+          <el-menu-item v-if="hasErpPermission('ERP_REDEMPTION_VIEW')" index="/erp/remote-connections">
             <el-icon><Connection /></el-icon>
             <template #title>ERP 业务授权</template>
           </el-menu-item>

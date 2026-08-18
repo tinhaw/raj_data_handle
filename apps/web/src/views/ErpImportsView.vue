@@ -1,17 +1,19 @@
 <script setup lang="ts">
-import { Document, Refresh, UploadFilled } from '@element-plus/icons-vue'
+import { Document, Download, Refresh, UploadFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, ref } from 'vue'
 
 import { apiErrorMessage } from '../api/client'
 import {
   commitErpImport,
+  downloadErpImportArtifact,
+  fetchErpImportJob,
   fetchErpImportJobs,
   previewErpExcelImport,
   previewErpPasteImport,
 } from '../api/erpImports'
 import { fetchErpOperatorLines, fetchErpOperators } from '../api/erpOperators'
-import { isAdmin } from '../stores/auth'
+import { hasErpPermission } from '../stores/auth'
 import type {
   ErpDeliveryLine,
   ErpImportConflictStrategy,
@@ -33,7 +35,7 @@ const parsing = ref(false)
 const committing = ref(false)
 
 const canCommit = computed(() => Boolean(
-  isAdmin.value
+  hasErpPermission('ERP_IMPORT')
   && preview.value
   && preview.value.job.errorRows === 0
   && preview.value.job.totalRows > 0,
@@ -111,6 +113,22 @@ async function commit(): Promise<void> {
   }
 }
 
+async function openJob(job: ErpImportJob): Promise<void> {
+  try {
+    preview.value = await fetchErpImportJob(job.id)
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '导入批次详情加载失败。'))
+  }
+}
+
+async function download(path: string, filename: string): Promise<void> {
+  try {
+    await downloadErpImportArtifact(path, filename)
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '文件下载失败。'))
+  }
+}
+
 onMounted(() => void load())
 </script>
 
@@ -118,7 +136,7 @@ onMounted(() => void load())
   <div class="page-stack">
     <header class="page-header">
       <div><span class="page-eyebrow">ERP local import</span><h1>导入中心</h1><p>先预览、校验并选择冲突策略，再把日结写入当前项目的本地 ERP 台账。</p></div>
-      <div class="header-actions"><el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button></div>
+      <div class="header-actions"><el-button :icon="Download" @click="download('/erp/imports/template', 'erp-daily-balance-template.xlsx')">标准模板</el-button><el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button></div>
     </header>
 
     <el-alert title="本地预览后提交" description="导入不读取或写入任何远端盘口与业务系统。请在预览中处理错误与重复记录，再提交到本地台账。" type="info" show-icon :closable="false" />
@@ -130,7 +148,7 @@ onMounted(() => void load())
         <el-form-item label="业务年份"><el-input-number v-model="businessYear" :min="2000" :max="2200" /></el-form-item>
       </div>
       <el-tabs v-model="source"><el-tab-pane label="粘贴表格" name="paste"><el-input v-model="pasteText" type="textarea" :rows="11" placeholder="首行可使用业务日期、期初余额、转U、消耗等列名；也支持标准列顺序。" /></el-tab-pane><el-tab-pane label="Excel (.xlsx)" name="excel"><label class="file-picker"><UploadFilled :size="20" /><input type="file" accept=".xlsx" @change="pickFile" /><span>{{ selectedFile?.name || '选择 .xlsx 文件' }}</span></label></el-tab-pane></el-tabs>
-      <el-button v-if="isAdmin" type="primary" :icon="Document" :loading="parsing" @click="createPreview">生成预览</el-button>
+      <el-button v-if="hasErpPermission('ERP_IMPORT')" type="primary" :icon="Document" :loading="parsing" @click="createPreview">生成预览</el-button>
     </section>
 
     <section v-if="preview" class="surface-card table-card">
@@ -138,7 +156,7 @@ onMounted(() => void load())
       <el-table :data="preview.rows" row-key="id" max-height="420"><el-table-column label="来源" min-width="115"><template #default="{ row }">{{ row.sourceSheet || '—' }} #{{ row.sourceRow || '—' }}</template></el-table-column><el-table-column prop="businessDate" label="业务日期" width="115" /><el-table-column label="状态" width="105"><template #default="{ row }"><el-tag :type="row.severity === 'ERROR' ? 'danger' : row.severity === 'WARNING' ? 'warning' : 'success'">{{ row.severity }}</el-tag></template></el-table-column><el-table-column prop="action" label="预期动作" width="110" /><el-table-column label="说明" min-width="310"><template #default="{ row }">{{ row.errorMessage || '校验通过' }}</template></el-table-column></el-table>
     </section>
 
-    <section class="surface-card table-card"><div class="import-preview-heading"><div><h2>导入历史</h2><p>仅显示当前系统已创建的本地导入预览与提交状态。</p></div></div><el-table :data="jobs" row-key="id" max-height="330"><el-table-column label="创建时间" min-width="170"><template #default="{ row }">{{ new Date(row.createdAt).toLocaleString() }}</template></el-table-column><el-table-column prop="sourceType" label="来源" width="100" /><el-table-column prop="originalFilename" label="文件" min-width="180" /><el-table-column label="有效 / 警告 / 错误" min-width="145"><template #default="{ row }">{{ row.validRows }} / {{ row.warningRows }} / {{ row.errorRows }}</template></el-table-column><el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="row.status === 'SUCCEEDED' ? 'success' : 'warning'">{{ row.status === 'SUCCEEDED' ? '已提交' : '待提交' }}</el-tag></template></el-table-column></el-table></section>
+    <section class="surface-card table-card"><div class="import-preview-heading"><div><h2>导入历史</h2><p>可回看逐行预检、下载原始文件和错误报告。</p></div></div><el-table :data="jobs" row-key="id" max-height="330"><el-table-column label="创建时间" min-width="170"><template #default="{ row }">{{ new Date(row.createdAt).toLocaleString() }}</template></el-table-column><el-table-column prop="sourceType" label="来源" width="100" /><el-table-column prop="originalFilename" label="文件" min-width="180" /><el-table-column label="有效 / 警告 / 错误" min-width="145"><template #default="{ row }">{{ row.validRows }} / {{ row.warningRows }} / {{ row.errorRows }}</template></el-table-column><el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="row.status === 'SUCCEEDED' ? 'success' : 'warning'">{{ row.status === 'SUCCEEDED' ? '已提交' : '待提交' }}</el-tag></template></el-table-column><el-table-column label="操作" min-width="235" fixed="right"><template #default="{ row }"><div class="history-actions"><el-button link type="primary" @click="openJob(row)">查看明细</el-button><el-button v-if="row.sourceAvailable" link type="primary" @click="download(`/erp/imports/${row.id}/source`, row.originalFilename || `erp-import-${row.id}.xlsx`)">源文件</el-button><el-button v-if="row.errorReportAvailable" link type="danger" @click="download(`/erp/imports/${row.id}/error-report`, `erp-import-errors-${row.id}.xlsx`)">错误报告</el-button></div></template></el-table-column></el-table></section>
   </div>
 </template>
 
@@ -149,5 +167,6 @@ onMounted(() => void load())
 .file-picker input { display: none; }
 .import-preview-heading { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 14px; }
 .import-preview-heading h2 { margin: 0; font-size: 17px; }.import-preview-heading p { margin: 4px 0 0; color: var(--ink-muted); font-size: 13px; }
+.history-actions { display: flex; align-items: center; white-space: nowrap; }
 @media (max-width: 700px) { .import-form__grid { grid-template-columns: 1fr; } .import-preview-heading { align-items: flex-start; flex-direction: column; } }
 </style>

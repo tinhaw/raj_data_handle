@@ -23,6 +23,20 @@ export interface UserRecord {
   updatedAt: string
 }
 
+export interface ErpRoleDefinition {
+  code: string
+  label: string
+  permissions: string[]
+}
+
+export interface ErpUserAccess {
+  userId: number
+  roleGrants: string[]
+  allOperators: boolean
+  operatorIds: string[]
+  effectivePermissions: string[]
+}
+
 export type UserLogEventType = 'login' | 'access'
 
 export interface UserLogRecord {
@@ -66,6 +80,62 @@ export interface SourceConfig {
   lastTestStatus: string | null
   createdAt: string
   updatedAt: string
+}
+
+export interface RemoteAccountCapabilityDefinition {
+  code: string
+  label: string
+}
+
+export interface RemoteAccount {
+  id: string
+  sourceId: string
+  sourceDisplayName: string
+  sourceBaseUrl: string | null
+  sourceEnabled: boolean
+  loginUsername: string | null
+  displayName: string
+  enabled: boolean
+  credentialMode: 'MANAGED' | 'LEGACY_SOURCE'
+  credentialConfigured: boolean
+  credentialUpdatedAt: string | null
+  lastTestedAt: string | null
+  lastTestStatus: string | null
+  capabilities: Record<string, boolean>
+  createdAt: string
+  updatedAt: string
+}
+
+export interface RemoteTag {
+  id: number
+  name: string
+}
+
+export interface RemoteTagSnapshot {
+  exists: boolean
+  tags: RemoteTag[]
+  source: string | null
+  stale: boolean
+  syncedAt: string | null
+  updatedAt: string | null
+  rowVersion: number | null
+}
+
+export interface RewardTierPresetTier {
+  labelIds: number[]
+  displayName: string
+  minDepositAmount: string
+  bonusAmount: string
+  bonusMaxAmount: string
+}
+
+export interface RewardTierPreset {
+  exists: boolean
+  stale: boolean
+  tiers: RewardTierPresetTier[]
+  tagSnapshot: RemoteTag[]
+  savedAt: string | null
+  rowVersion: number | null
 }
 
 export interface TotpAccount {
@@ -188,6 +258,126 @@ export interface ErpDailyBalanceList {
   records: ErpDailyBalance[]
 }
 
+export interface ErpBalanceImpactRecord {
+  id: string
+  businessDate: string
+  previousOpeningBalance: string
+  recalculatedOpeningBalance: string
+  previousClosingBalance: string
+  recalculatedClosingBalance: string
+}
+
+export interface ErpBalanceImpactPreview {
+  current: {
+    suggestedOpeningBalance: string | null
+    openingBalance: string
+    effectiveTransferAmount: string
+    exchangeLossAutoAmount: string
+    exchangeLossAmount: string
+    serviceFeeAutoAmount: string
+    serviceFeeAmount: string
+    fraudFromTransfer: string
+    fraudFromBalance: string
+    closingBalance: string
+  }
+  impactedRecords: ErpBalanceImpactRecord[]
+  blockingReasons: string[]
+}
+
+export type ErpPeriodLockStatus = 'LOCKED' | 'UNLOCKED'
+
+export interface ErpPeriodLock {
+  id: string
+  operatorLineId: string
+  monthStart: string
+  status: ErpPeriodLockStatus
+  lockedBy: number | null
+  lockedAt: string | null
+  unlockReason: string | null
+  unlockedBy: number | null
+  unlockedAt: string | null
+  rowVersion: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ErpPeriodLockIssue {
+  operatorLineId: string
+  businessDate: string | null
+  code: string
+  message: string
+}
+
+export interface ErpPeriodLockValidation {
+  month: string
+  canLock: boolean
+  issues: ErpPeriodLockIssue[]
+}
+
+export interface ErpDashboardMetric {
+  openingBalance: string
+  transferAmount: string
+  spendAmount: string
+  closingBalance: string
+  activeOperatorCount: number
+  activeLineCount: number
+}
+
+export interface ErpDashboardTrendPoint {
+  businessDate: string
+  closingBalance: string
+}
+
+export interface ErpDashboardHealthItem {
+  code: string
+  severity: 'INFO' | 'WARNING' | 'DANGER'
+  title: string
+  description: string
+  targetPath: string
+  count: number
+}
+
+export interface ErpDashboardRecentBalance {
+  id: string
+  businessDate: string
+  operatorName: string
+  operatorLineName: string
+  asset: string
+  openingBalance: string
+  transferAmount: string
+  spendAmount: string
+  closingBalance: string
+  status: 'DRAFT' | 'CONFIRMED'
+}
+
+export interface ErpDashboard {
+  businessDate: string
+  metric: ErpDashboardMetric
+  trend: ErpDashboardTrendPoint[]
+  healthItems: ErpDashboardHealthItem[]
+  recentBalances: ErpDashboardRecentBalance[]
+}
+
+export interface ErpAuditLogEntry {
+  id: string
+  action: string
+  actorUserId: number | null
+  actorDisplayName: string | null
+  targetType: string | null
+  targetId: string | null
+  requestId: string | null
+  result: string
+  metadata: Record<string, unknown>
+  createdAt: string
+}
+
+export interface ErpAuditLogList {
+  items: ErpAuditLogEntry[]
+  total: number
+  page: number
+  pageSize: number
+}
+
 export interface ErpReportRow {
   period: string
   asset: string
@@ -219,6 +409,9 @@ export interface ErpImportJob {
   id: string
   sourceType: string
   originalFilename: string | null
+  sourceAvailable: boolean
+  errorReportAvailable: boolean
+  sourceSizeBytes: number | null
   status: 'PREVIEW_READY' | 'SUCCEEDED'
   conflictStrategy: ErpImportConflictStrategy
   totalRows: number
@@ -276,6 +469,10 @@ export interface ErpRedemptionCampaign {
 export interface ErpRedemptionBatch {
   id: string
   campaignId: string
+  taskId: string | null
+  sourceId: string | null
+  remoteAccountId: string | null
+  executionOrder: number
   claimDateFrom: string
   claimDateTo: string
   lookbackDays: number
@@ -304,12 +501,140 @@ export interface ErpRedemptionIssue {
   workflowStatus: 'PENDING_LOCAL_CODE' | 'CODE_IMPORTED' | 'PUBLISHED_LOCAL'
   state: 'PENDING' | 'GENERATED'
   importedAt: string | null
+  remoteWorkflowStatus:
+    | 'NOT_STARTED'
+    | 'RESERVED'
+    | 'CREATING'
+    | 'CREATED'
+    | 'PUBLISHED'
+    | 'DOWNLOADING'
+    | 'DOWNLOADED'
+    | 'FAILED'
+  remoteConfigurationId: string | null
+  remoteGroupKey: string | null
+  remoteLabelIds: number[]
+  remoteDescription: string | null
+  remoteErrorCode: string | null
+  remoteErrorMessage: string | null
+  remoteCreatedAt: string | null
+  remoteDownloadedAt: string | null
   rowVersion: number
 }
 
 export interface ErpRedemptionBatchDetail {
   batch: ErpRedemptionBatch
   issues: ErpRedemptionIssue[]
+}
+
+export interface ErpRedemptionTaskSubtask {
+  batchId: string
+  executionOrder: number
+  sourceId: string
+  sourceDisplayName: string
+  remoteAccountId: string
+  remoteAccountName: string
+  expectedCodeCount: number
+  importedCodeCount: number
+  status: 'PLANNED' | 'READY_LOCAL' | 'PUBLISHED_LOCAL'
+}
+
+export interface ErpRedemptionTask {
+  id: string
+  campaignId: string
+  taskName: string
+  claimDateFrom: string
+  claimDateTo: string
+  lookbackDays: number
+  exportGroupKey: string
+  status: 'PLANNED' | 'READY_LOCAL' | 'PUBLISHED_LOCAL'
+  expectedCodeCount: number
+  importedCodeCount: number
+  rowVersion: number
+  createdAt: string
+  subtasks: ErpRedemptionTaskSubtask[]
+}
+
+export type ErpRedemptionRemotePlanStatus =
+  | 'AWAITING_CREATE_AUTHORIZATION'
+  | 'CREATING'
+  | 'CREATE_FAILED'
+  | 'READY_TO_PUBLISH'
+  | 'AWAITING_PUBLISH_AUTHORIZATION'
+  | 'PUBLISHING'
+  | 'PUBLISH_FAILED'
+  | 'PUBLISH_SCHEDULED'
+  | 'PUBLISHED'
+  | 'DOWNLOADING'
+  | 'DOWNLOAD_FAILED'
+  | 'COMPLETED'
+  | 'CANCEL_PENDING'
+  | 'CANCEL_FAILED'
+  | 'CANCELLED'
+
+export interface ErpRedemptionRemotePlan {
+  id: string
+  batchId: string
+  remoteAccountId: string
+  remoteAccountName: string
+  sourceId: string
+  sourceDisplayName: string
+  businessTimezone: string
+  redemptionType: 'SEVEN_DAY_DEPOSIT' | 'PREVIOUS_DAY_DEPOSIT'
+  workflowStatus: ErpRedemptionRemotePlanStatus
+  publishEnvironment: 'test' | 'prod'
+  flowTimes: number
+  creationIntervalSeconds: number
+  activityRecharge: string | null
+  activityRechargeCount: number | null
+  activityId: number | null
+  keyNumber: number
+  singleUserLimit: number
+  singleKeyLimit: number
+  requireBindBankCard: boolean
+  requireBindPhone: boolean
+  checkUuid: boolean
+  uuidRewardLimit: number
+  checkLoginIp: boolean
+  loginIpRewardLimit: number
+  checkRegisterIp: boolean
+  registerIpRewardLimit: number
+  publishMode: 'IMMEDIATE' | 'SCHEDULED' | null
+  scheduledPublishAt: string | null
+  scheduledPublishLocalAt: string | null
+  fallbackToScheduled: boolean
+  publishNote: string | null
+  remotePublishTaskId: string | null
+  scheduleCancelledAt: string | null
+  reservedOperation: 'CREATE' | 'PUBLISH' | 'DOWNLOAD' | 'CANCEL' | null
+  errorCode: string | null
+  errorMessage: string | null
+  issueCount: number
+  createdCount: number
+  downloadedCount: number
+  failedCount: number
+  scheduleDue: boolean
+  rowVersion: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ErpRedemptionRemoteExecution {
+  id: string
+  planId: string
+  issueId: string | null
+  operation: 'CREATE' | 'PUBLISH' | 'DOWNLOAD' | 'CANCEL'
+  triggerType: 'MANUAL' | 'SCHEDULED'
+  status: 'RESERVED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED'
+  attemptNumber: number
+  scheduledFor: string | null
+  remoteRequestId: string | null
+  errorCode: string | null
+  errorMessage: string | null
+  resultMetadata: Record<string, unknown>
+  requestedBy: number | null
+  requestedAt: string
+  startedAt: string | null
+  finishedAt: string | null
 }
 
 export type WithdrawOrderQueryRange =

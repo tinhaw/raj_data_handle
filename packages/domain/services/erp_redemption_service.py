@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
@@ -13,6 +14,9 @@ from packages.domain.models import (
     ErpRedemptionCampaignTier,
     ErpRedemptionCodeBatch,
     ErpRedemptionCodeIssue,
+    ErpRedemptionTask,
+    RemoteAccount,
+    SourceConfig,
 )
 from packages.domain.schemas.erp_redemption import (
     ErpRedemptionBatchCreateRequest,
@@ -22,6 +26,9 @@ from packages.domain.schemas.erp_redemption import (
     ErpRedemptionCampaignResponse,
     ErpRedemptionCodeImportRequest,
     ErpRedemptionIssueResponse,
+    ErpRedemptionTaskCreateRequest,
+    ErpRedemptionTaskResponse,
+    ErpRedemptionTaskSubtask,
     ErpRedemptionTierResponse,
 )
 from packages.domain.services.auth_service import write_audit
@@ -96,7 +103,34 @@ def _tier_response(tier: ErpRedemptionCampaignTier) -> ErpRedemptionTierResponse
 
 
 def _issue_response(issue: ErpRedemptionCodeIssue) -> ErpRedemptionIssueResponse:
-    return ErpRedemptionIssueResponse.model_validate(issue)
+    return ErpRedemptionIssueResponse(
+        id=issue.id,
+        campaign_id=issue.campaign_id,
+        campaign_tier_id=issue.campaign_tier_id,
+        batch_id=issue.batch_id,
+        claim_date=issue.claim_date,
+        deposit_window_start=issue.deposit_window_start,
+        deposit_window_end=issue.deposit_window_end,
+        tier_name=issue.tier_name,
+        min_deposit_amount=issue.min_deposit_amount,
+        bonus_amount=issue.bonus_amount,
+        bonus_max_amount=issue.bonus_max_amount,
+        redemption_code=issue.redemption_code,
+        local_reference=issue.local_reference,
+        workflow_status=issue.workflow_status,
+        state=issue.state,
+        imported_at=issue.imported_at,
+        remote_workflow_status=issue.remote_workflow_status,
+        remote_configuration_id=issue.remote_configuration_id,
+        remote_group_key=issue.remote_group_key,
+        remote_label_ids=issue.remote_label_ids_json,
+        remote_description=issue.remote_description,
+        remote_error_code=issue.remote_error_code,
+        remote_error_message=issue.remote_error_message,
+        remote_created_at=issue.remote_created_at,
+        remote_downloaded_at=issue.remote_downloaded_at,
+        row_version=issue.row_version,
+    )
 
 
 async def _campaign_response(
@@ -137,6 +171,10 @@ def _batch_response(
     return ErpRedemptionBatchResponse(
         id=batch.id,
         campaign_id=batch.campaign_id,
+        task_id=batch.task_id,
+        source_id=batch.source_id,
+        remote_account_id=batch.remote_account_id,
+        execution_order=batch.execution_order,
         claim_date_from=batch.claim_date_from,
         claim_date_to=batch.claim_date_to,
         lookback_days=batch.lookback_days,
@@ -290,6 +328,174 @@ async def create_erp_redemption_batch(
     )
     await session.commit()
     return result
+
+
+async def _task_response(
+    session: AsyncSession,
+    task: ErpRedemptionTask,
+) -> ErpRedemptionTaskResponse:
+    rows = (
+        await session.execute(
+            select(ErpRedemptionCodeBatch, RemoteAccount, SourceConfig)
+            .join(RemoteAccount, RemoteAccount.id == ErpRedemptionCodeBatch.remote_account_id)
+            .join(SourceConfig, SourceConfig.source_id == ErpRedemptionCodeBatch.source_id)
+            .where(ErpRedemptionCodeBatch.task_id == task.id)
+            .order_by(ErpRedemptionCodeBatch.execution_order.asc())
+        )
+    ).all()
+    subtasks = [
+        ErpRedemptionTaskSubtask(
+            batch_id=batch.id,
+            execution_order=batch.execution_order,
+            source_id=source.source_id,
+            source_display_name=source.display_name,
+            remote_account_id=account.id,
+            remote_account_name=account.display_name,
+            expected_code_count=batch.expected_code_count,
+            imported_code_count=sum(
+                issue.redemption_code is not None
+                for issue in await _issues(session, batch_id=batch.id)
+            ),
+            status=batch.status,
+        )
+        for batch, account, source in rows
+    ]
+    expected = sum(item.expected_code_count for item in subtasks)
+    imported = sum(item.imported_code_count for item in subtasks)
+    status = "PUBLISHED_LOCAL" if subtasks and all(
+        item.status == "PUBLISHED_LOCAL" for item in subtasks
+    ) else "READY_LOCAL" if subtasks and all(
+        item.status in {"READY_LOCAL", "PUBLISHED_LOCAL"} for item in subtasks
+    ) else "PLANNED"
+    return ErpRedemptionTaskResponse(
+        id=task.id,
+        campaign_id=task.campaign_id,
+        task_name=task.task_name,
+        claim_date_from=task.claim_date_from,
+        claim_date_to=task.claim_date_to,
+        lookback_days=task.lookback_days,
+        export_group_key=task.export_group_key,
+        status=status,
+        expected_code_count=expected,
+        imported_code_count=imported,
+        row_version=task.row_version,
+        created_at=task.created_at,
+        subtasks=subtasks,
+    )
+
+
+async def create_erp_redemption_task(
+    session: AsyncSession,
+    *,
+    request: ErpRedemptionTaskCreateRequest,
+    actor_user_id: int,
+) -> ErpRedemptionTaskResponse:
+    campaign = await _campaign(session, campaign_id=request.campaign_id)
+    if campaign.status != "ACTIVE":
+        raise ErpRedemptionConflictError("只有进行中的活动可以创建任务组。")
+    accounts = list(
+        await session.scalars(
+            select(RemoteAccount)
+            .where(
+                RemoteAccount.id.in_(request.remote_account_ids),
+                RemoteAccount.enabled.is_(True),
+            )
+            .order_by(RemoteAccount.created_at.asc())
+        )
+    )
+    if len(accounts) != len(request.remote_account_ids):
+        raise ErpRedemptionError("包含不存在或已停用的远端账号。")
+    tiers = await _tiers(session, campaign_id=campaign.id)
+    if not tiers:
+        raise ErpRedemptionError("活动至少需要一个充值分档。")
+    day_count = (request.claim_date_to - request.claim_date_from).days + 1
+    task = ErpRedemptionTask(
+        campaign_id=campaign.id,
+        task_name=(
+            request.task_name or f"{campaign.code} {request.claim_date_from:%Y%m%d}"
+        ).strip(),
+        claim_date_from=request.claim_date_from,
+        claim_date_to=request.claim_date_to,
+        lookback_days=campaign.lookback_days,
+        export_group_key=str(uuid.uuid4()),
+        created_by=actor_user_id,
+    )
+    session.add(task)
+    await session.flush()
+    for order, account_id in enumerate(request.remote_account_ids, start=1):
+        account = next(account for account in accounts if account.id == account_id)
+        batch = ErpRedemptionCodeBatch(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            remote_account_id=account.id,
+            source_id=account.source_id,
+            execution_order=order,
+            claim_date_from=request.claim_date_from,
+            claim_date_to=request.claim_date_to,
+            lookback_days=campaign.lookback_days,
+            expected_code_count=day_count * len(tiers),
+            created_by=actor_user_id,
+        )
+        session.add(batch)
+        await session.flush()
+        for offset in range(day_count):
+            claim_date = request.claim_date_from + timedelta(days=offset)
+            for tier in tiers:
+                session.add(
+                    ErpRedemptionCodeIssue(
+                        campaign_id=campaign.id,
+                        campaign_tier_id=tier.id,
+                        batch_id=batch.id,
+                        claim_date=claim_date,
+                        deposit_window_start=claim_date - timedelta(days=campaign.lookback_days),
+                        deposit_window_end=claim_date - timedelta(days=1),
+                        tier_name=tier.display_name,
+                        min_deposit_amount=tier.min_deposit_amount,
+                        bonus_amount=tier.bonus_amount,
+                        bonus_max_amount=tier.bonus_max_amount,
+                        created_by=actor_user_id,
+                    )
+                )
+    await session.flush()
+    result = await _task_response(session, task)
+    await write_audit(
+        session,
+        action="erp_redemption_task.create",
+        actor_user_id=actor_user_id,
+        target_type="erp_redemption_task",
+        target_id=task.id,
+        metadata={
+            "campaign_id": campaign.id,
+            "subtask_count": len(accounts),
+            "export_group_key": task.export_group_key,
+        },
+    )
+    await session.commit()
+    return result
+
+
+async def get_erp_redemption_task(
+    session: AsyncSession,
+    *,
+    task_id: str,
+) -> ErpRedemptionTaskResponse:
+    task = await session.get(ErpRedemptionTask, task_id)
+    if task is None:
+        raise ErpRedemptionNotFoundError("兑换码任务组不存在。")
+    return await _task_response(session, task)
+
+
+async def list_erp_redemption_tasks(
+    session: AsyncSession,
+    *,
+    campaign_id: str | None = None,
+) -> list[ErpRedemptionTaskResponse]:
+    statement = select(ErpRedemptionTask).order_by(ErpRedemptionTask.created_at.desc())
+    if campaign_id:
+        await _campaign(session, campaign_id=campaign_id)
+        statement = statement.where(ErpRedemptionTask.campaign_id == campaign_id)
+    tasks = list((await session.scalars(statement)).all())
+    return [await _task_response(session, task) for task in tasks]
 
 
 async def get_erp_redemption_batch(

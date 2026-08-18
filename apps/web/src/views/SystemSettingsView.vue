@@ -108,6 +108,16 @@ onMounted(load)
       :closable="false"
     />
 
+    <section class="surface-card settings-card">
+      <div class="settings-heading"><div><h2>ERP 业务基准</h2><p>与原 ERP 当前云端版本一致；敏感参数继续由部署环境管理。</p></div><el-tag type="success">已融合</el-tag></div>
+      <div class="form-grid">
+        <el-form-item label="业务时区"><el-input model-value="Asia/Shanghai" disabled /></el-form-item>
+        <el-form-item label="默认计算精度"><el-input model-value="2 位小数" disabled /></el-form-item>
+        <el-form-item label="舍入方式"><el-input model-value="四舍五入（HALF_UP）" disabled /></el-form-item>
+        <el-form-item label="台账导入"><el-input model-value=".xlsx · 最大 10 MB · 最大 20,000 行" disabled /></el-form-item>
+      </div>
+    </section>
+
     <el-alert
       title="登录有效期从成功登录时开始计时"
       description="会话不会因访问页面自动续期；修改时长只影响之后的新登录，不会追溯改变现有会话。"

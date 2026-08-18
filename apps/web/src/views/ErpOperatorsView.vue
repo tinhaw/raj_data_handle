@@ -1,18 +1,20 @@
 <script setup lang="ts">
-import { Plus, Refresh } from '@element-plus/icons-vue'
+import { Delete, Plus, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import {
   createErpDeliveryLine,
   createErpOperator,
+  deleteErpOperator,
   disableErpOperator,
+  fetchErpOperatorDeleteImpact,
   fetchErpOperatorLines,
   fetchErpOperators,
   updateErpOperator,
 } from '../api/erpOperators'
 import { apiErrorMessage } from '../api/client'
-import { isAdmin } from '../stores/auth'
+import { hasErpPermission } from '../stores/auth'
 import type { ErpDeliveryLine, ErpOperator } from '../types'
 
 const loading = ref(false)
@@ -168,6 +170,49 @@ async function disableOperator(operator: ErpOperator): Promise<void> {
   }
 }
 
+async function removeOperator(operator: ErpOperator): Promise<void> {
+  try {
+    const impact = await fetchErpOperatorDeleteImpact(operator.id)
+    await ElMessageBox.confirm(
+      `将永久删除“${operator.name}”及其 ${impact.deliveryLineCount} 条投放线。停用可完整保留历史，仍要继续删除吗？`,
+      '删除投放公司',
+      { type: 'warning', confirmButtonText: '继续检查', cancelButtonText: '取消' },
+    )
+    let purgeHistory = false
+    let confirmationName: string | undefined
+    if (impact.hasHistory) {
+      const history = [
+        impact.ledgerCount ? `${impact.ledgerCount} 条台账` : '',
+        impact.lockedPeriodCount ? `${impact.lockedPeriodCount} 个结账期间` : '',
+      ].filter(Boolean).join('、')
+      const result = await ElMessageBox.prompt(
+        `该公司存在${history}。清空后不可恢复，请输入完整公司名称“${operator.name}”确认。`,
+        '确认清空历史并删除',
+        {
+          type: 'error',
+          inputPlaceholder: operator.name,
+          confirmButtonText: '清空并删除',
+          cancelButtonText: '取消',
+          inputValidator: (value) => value === operator.name || '公司名称不一致',
+        },
+      )
+      purgeHistory = true
+      confirmationName = result.value
+    }
+    await deleteErpOperator(operator.id, {
+      rowVersion: operator.rowVersion,
+      purgeHistory,
+      confirmationName,
+      reason: purgeHistory ? '用户已通过公司名称二次确认清空历史' : '公司无历史记录',
+    })
+    ElMessage.success(purgeHistory ? '历史数据及投放公司已删除。' : '投放公司已删除。')
+    await load()
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(apiErrorMessage(error, '投放公司删除失败。'))
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -177,11 +222,11 @@ onMounted(load)
       <div>
         <span class="page-eyebrow">ERP operators</span>
         <h1>投放公司与投放线</h1>
-        <p>维护 ERP 本地台账所使用的投放公司和投放线。删除历史数据不在此页面提供。</p>
+        <p>维护 ERP 本地台账所使用的投放公司和投放线；删除含历史记录的公司需二次确认。</p>
       </div>
       <div class="header-actions">
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
-        <el-button v-if="isAdmin" type="primary" :icon="Plus" @click="openCreateOperator">
+        <el-button v-if="hasErpPermission('ERP_OPERATOR_MANAGE')" type="primary" :icon="Plus" @click="openCreateOperator">
           新建投放公司
         </el-button>
       </div>
@@ -236,18 +281,14 @@ onMounted(load)
         <el-table-column label="备注" min-width="170" show-overflow-tooltip>
           <template #default="{ row }">{{ row.remark || '—' }}</template>
         </el-table-column>
-        <el-table-column v-if="isAdmin" label="操作" width="250" fixed="right">
+        <el-table-column v-if="hasErpPermission('ERP_OPERATOR_MANAGE')" label="操作" width="330" fixed="right">
           <template #default="{ row }">
-            <el-button text type="primary" @click="openCreateLine(row)">新建投放线</el-button>
-            <el-button text type="primary" @click="openEditOperator(row)">编辑</el-button>
-            <el-button
-              v-if="row.status === 'ACTIVE'"
-              text
-              type="danger"
-              @click="disableOperator(row)"
-            >
-              停用
-            </el-button>
+            <div class="operator-actions">
+              <el-button text type="primary" @click="openCreateLine(row)">新建投放线</el-button>
+              <el-button text type="primary" @click="openEditOperator(row)">编辑</el-button>
+              <el-button v-if="row.status === 'ACTIVE'" text type="danger" @click="disableOperator(row)">停用</el-button>
+              <el-button text type="danger" :icon="Delete" @click="removeOperator(row)">删除</el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -333,6 +374,13 @@ onMounted(load)
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.operator-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  white-space: nowrap;
 }
 
 .form-grid {

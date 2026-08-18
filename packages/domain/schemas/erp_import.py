@@ -31,6 +31,9 @@ class ErpImportJobResponse(ApiSchema):
     source_type: str
     original_filename: str | None
     file_sha256: str | None
+    source_available: bool = False
+    error_report_available: bool = False
+    source_size_bytes: int | None = None
     status: ErpImportStatus
     conflict_strategy: ErpImportConflictStrategy
     total_rows: int

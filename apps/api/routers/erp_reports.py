@@ -10,10 +10,16 @@ from fastapi.responses import Response
 from openpyxl import Workbook
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.dependencies import get_auth_context
+from apps.api.dependencies import require_erp_permission
 from packages.common.database import get_db_session
 from packages.domain.schemas.erp_report import ErpReportResponse
 from packages.domain.services.auth_service import AuthContext, write_audit
+from packages.domain.services.erp_access_service import (
+    ERP_PERMISSION_REPORT_EXPORT,
+    ERP_PERMISSION_REPORT_VIEW,
+    ErpScopePermissionError,
+    resolve_erp_operator_scope,
+)
 from packages.domain.services.erp_report_service import (
     ErpReportError,
     build_erp_daily_report,
@@ -78,7 +84,9 @@ def _workbook_bytes(report: ErpReportResponse) -> bytes:
     return buffer.getvalue()
 
 
-def _report_error(exc: ErpReportError) -> HTTPException:
+def _report_error(exc: ErpReportError | ErpScopePermissionError) -> HTTPException:
+    if isinstance(exc, ErpScopePermissionError):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
@@ -91,10 +99,13 @@ async def get_daily_report(
     asset: str | None = None,
     include_draft: bool = True,
     nominal_u: bool = False,
-    _: AuthContext = Depends(get_auth_context),
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REPORT_VIEW)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ErpReportResponse:
     try:
+        operator_ids = await resolve_erp_operator_scope(
+            session, user_id=auth.user.id, requested_operator_ids=operator_ids
+        )
         return await build_erp_daily_report(
             session,
             date_from=date_from,
@@ -105,7 +116,7 @@ async def get_daily_report(
             include_draft=include_draft,
             nominal_u=nominal_u,
         )
-    except ErpReportError as exc:
+    except (ErpReportError, ErpScopePermissionError) as exc:
         raise _report_error(exc) from exc
 
 
@@ -118,10 +129,13 @@ async def get_monthly_report(
     asset: str | None = None,
     include_draft: bool = True,
     nominal_u: bool = False,
-    _: AuthContext = Depends(get_auth_context),
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REPORT_VIEW)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ErpReportResponse:
     try:
+        operator_ids = await resolve_erp_operator_scope(
+            session, user_id=auth.user.id, requested_operator_ids=operator_ids
+        )
         return await build_erp_monthly_report(
             session,
             month_from=month_from,
@@ -132,7 +146,7 @@ async def get_monthly_report(
             include_draft=include_draft,
             nominal_u=nominal_u,
         )
-    except ErpReportError as exc:
+    except (ErpReportError, ErpScopePermissionError) as exc:
         raise _report_error(exc) from exc
 
 
@@ -145,10 +159,13 @@ async def export_daily_report(
     asset: str | None = None,
     include_draft: bool = True,
     nominal_u: bool = False,
-    auth: AuthContext = Depends(get_auth_context),
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REPORT_EXPORT)),
     session: AsyncSession = Depends(get_db_session),
 ) -> Response:
     try:
+        operator_ids = await resolve_erp_operator_scope(
+            session, user_id=auth.user.id, requested_operator_ids=operator_ids
+        )
         report = await build_erp_daily_report(
             session,
             date_from=date_from,
@@ -159,7 +176,7 @@ async def export_daily_report(
             include_draft=include_draft,
             nominal_u=nominal_u,
         )
-    except ErpReportError as exc:
+    except (ErpReportError, ErpScopePermissionError) as exc:
         raise _report_error(exc) from exc
     await write_audit(
         session,
@@ -194,10 +211,13 @@ async def export_monthly_report(
     asset: str | None = None,
     include_draft: bool = True,
     nominal_u: bool = False,
-    auth: AuthContext = Depends(get_auth_context),
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REPORT_EXPORT)),
     session: AsyncSession = Depends(get_db_session),
 ) -> Response:
     try:
+        operator_ids = await resolve_erp_operator_scope(
+            session, user_id=auth.user.id, requested_operator_ids=operator_ids
+        )
         report = await build_erp_monthly_report(
             session,
             month_from=month_from,
@@ -208,7 +228,7 @@ async def export_monthly_report(
             include_draft=include_draft,
             nominal_u=nominal_u,
         )
-    except ErpReportError as exc:
+    except (ErpReportError, ErpScopePermissionError) as exc:
         raise _report_error(exc) from exc
     await write_audit(
         session,

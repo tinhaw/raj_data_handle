@@ -9,16 +9,25 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from packages.domain.models import ErpOperator, ErpOperatorLine
+from packages.domain.models import (
+    ErpAccountingPeriodLock,
+    ErpDailyBalance,
+    ErpImportJobRow,
+    ErpOperator,
+    ErpOperatorLine,
+    ErpUserOperatorScope,
+)
 from packages.domain.schemas.erp_operator import (
     ErpDeliveryLineCreateRequest,
     ErpDeliveryLinePatchRequest,
     ErpDeliveryLineResponse,
     ErpOperatorCreateRequest,
+    ErpOperatorDeleteImpactResponse,
+    ErpOperatorDeleteRequest,
     ErpOperatorPatchRequest,
     ErpOperatorResponse,
 )
@@ -80,8 +89,13 @@ async def list_erp_operators(
     *,
     include_inactive: bool = False,
     search: str | None = None,
+    operator_ids: list[str] | None = None,
 ) -> list[ErpOperatorResponse]:
     statement = select(ErpOperator)
+    if operator_ids is not None:
+        if not operator_ids:
+            return []
+        statement = statement.where(ErpOperator.id.in_(operator_ids))
     if not include_inactive:
         statement = statement.where(ErpOperator.status == "ACTIVE")
     if search and search.strip():
@@ -215,6 +229,116 @@ async def disable_erp_operator(
     )
     await session.commit()
     return result
+
+
+async def get_erp_operator_delete_impact(
+    session: AsyncSession,
+    *,
+    operator_id: str,
+) -> ErpOperatorDeleteImpactResponse:
+    operator = await get_erp_operator(session, operator_id=operator_id)
+    line_ids = list(
+        await session.scalars(
+            select(ErpOperatorLine.id).where(ErpOperatorLine.operator_id == operator.id)
+        )
+    )
+    ledger_count = 0
+    locked_period_count = 0
+    if line_ids:
+        ledger_count = int(
+            await session.scalar(
+                select(func.count(ErpDailyBalance.id)).where(
+                    ErpDailyBalance.operator_line_id.in_(line_ids)
+                )
+            )
+            or 0
+        )
+        locked_period_count = int(
+            await session.scalar(
+                select(func.count(ErpAccountingPeriodLock.id)).where(
+                    ErpAccountingPeriodLock.operator_line_id.in_(line_ids)
+                )
+            )
+            or 0
+        )
+    has_history = ledger_count > 0 or locked_period_count > 0
+    return ErpOperatorDeleteImpactResponse(
+        operator_id=operator.id,
+        operator_name=operator.name,
+        delivery_line_count=len(line_ids),
+        ledger_count=ledger_count,
+        locked_period_count=locked_period_count,
+        has_history=has_history,
+        can_delete_without_purge=not has_history,
+    )
+
+
+async def delete_erp_operator(
+    session: AsyncSession,
+    *,
+    operator_id: str,
+    request: ErpOperatorDeleteRequest,
+    actor_user_id: int,
+) -> None:
+    operator = await get_erp_operator(session, operator_id=operator_id)
+    _assert_version(actual=operator.row_version, requested=request.row_version, label="投放公司")
+    impact = await get_erp_operator_delete_impact(session, operator_id=operator.id)
+    if impact.has_history and not request.purge_history:
+        raise ErpOperatorConflictError(
+            f"投放公司下存在 {impact.ledger_count} 条历史台账和 "
+            f"{impact.locked_period_count} 个结账期间，请二次确认后再清空删除。"
+        )
+    if request.purge_history and request.confirmation_name != operator.name:
+        raise ErpOperatorConflictError("清空历史并删除前，必须完整输入投放公司名称确认。")
+
+    line_ids = list(
+        await session.scalars(
+            select(ErpOperatorLine.id).where(ErpOperatorLine.operator_id == operator.id)
+        )
+    )
+    if line_ids:
+        if request.purge_history:
+            await session.execute(
+                delete(ErpAccountingPeriodLock).where(
+                    ErpAccountingPeriodLock.operator_line_id.in_(line_ids)
+                )
+            )
+            await session.execute(
+                delete(ErpDailyBalance).where(ErpDailyBalance.operator_line_id.in_(line_ids))
+            )
+        await session.execute(
+            update(ErpImportJobRow)
+            .where(ErpImportJobRow.operator_line_id.in_(line_ids))
+            .values(operator_line_id=None)
+        )
+        await session.execute(
+            delete(ErpOperatorLine).where(ErpOperatorLine.id.in_(line_ids))
+        )
+    await session.execute(
+        delete(ErpUserOperatorScope).where(ErpUserOperatorScope.operator_id == operator.id)
+    )
+    await session.delete(operator)
+    await write_audit(
+        session,
+        action="erp_operator.delete",
+        actor_user_id=actor_user_id,
+        target_type="erp_operator",
+        target_id=operator.id,
+        metadata={
+            "name": operator.name,
+            "deleted_delivery_line_count": impact.delivery_line_count,
+            "purged_ledger_count": impact.ledger_count if request.purge_history else 0,
+            "purged_locked_period_count": (
+                impact.locked_period_count if request.purge_history else 0
+            ),
+            "reason": _optional_text(request.reason),
+        },
+    )
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise ErpOperatorConflictError("投放公司仍被其他业务记录引用，暂不能删除。") from exc
 
 
 async def list_erp_operator_lines(

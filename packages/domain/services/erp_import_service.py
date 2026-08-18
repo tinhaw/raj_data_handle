@@ -14,7 +14,12 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from packages.domain.models import ErpDailyBalance, ErpImportJob, ErpImportJobRow
+from packages.domain.models import (
+    ErpDailyBalance,
+    ErpImportJob,
+    ErpImportJobRow,
+    ErpOperatorLine,
+)
 from packages.domain.schemas.erp_balance import ErpDailyBalanceWriteRequest
 from packages.domain.schemas.erp_import import (
     ErpImportCommitResponse,
@@ -35,7 +40,7 @@ from packages.domain.services.erp_operator_service import (
 )
 
 MAX_IMPORT_BYTES = 10 * 1024 * 1024
-MAX_IMPORT_ROWS = 10_000
+MAX_IMPORT_ROWS = 20_000
 CONFLICT_STRATEGIES = frozenset({"SKIP_EXISTING", "UPDATE_DRAFT", "REJECT_ON_CONFLICT"})
 
 
@@ -348,7 +353,13 @@ def _strategy(value: str) -> str:
 
 
 def _job_response(job: ErpImportJob) -> ErpImportJobResponse:
-    return ErpImportJobResponse.model_validate(job)
+    data = ErpImportJobResponse.model_validate(job).model_dump()
+    data.update(
+        source_available=bool(job.source_storage_key),
+        error_report_available=job.error_rows > 0,
+        source_size_bytes=job.source_size_bytes,
+    )
+    return ErpImportJobResponse.model_validate(data)
 
 
 def _row_response(row: ErpImportJobRow) -> ErpImportRowResponse:
@@ -388,6 +399,8 @@ async def _persist_preview(
     source_type: str,
     original_filename: str | None,
     file_sha256: str | None,
+    source_storage_key: str | None,
+    source_size_bytes: int | None,
     strategy: str,
     parsed_rows: list[_ParsedRow],
     actor_user_id: int,
@@ -396,6 +409,8 @@ async def _persist_preview(
         source_type=source_type,
         original_filename=original_filename,
         file_sha256=file_sha256,
+        source_storage_key=source_storage_key,
+        source_size_bytes=source_size_bytes,
         status="PREVIEW_READY",
         conflict_strategy=strategy,
         created_by=actor_user_id,
@@ -496,6 +511,8 @@ async def preview_erp_paste_import(
         source_type="PASTE",
         original_filename=None,
         file_sha256=None,
+        source_storage_key=None,
+        source_size_bytes=None,
         strategy=_strategy(conflict_strategy),
         parsed_rows=parsed,
         actor_user_id=actor_user_id,
@@ -511,6 +528,8 @@ async def preview_erp_excel_import(
     conflict_strategy: str,
     business_year: int | None,
     actor_user_id: int,
+    source_storage_key: str | None = None,
+    source_size_bytes: int | None = None,
 ) -> ErpImportPreviewResponse:
     if len(content) > MAX_IMPORT_BYTES:
         raise ErpImportError("Excel 文件超过 10 MB 限制。")
@@ -523,6 +542,8 @@ async def preview_erp_excel_import(
         source_type="XLSX",
         original_filename=original_filename,
         file_sha256=sha256(content).hexdigest(),
+        source_storage_key=source_storage_key,
+        source_size_bytes=source_size_bytes,
         strategy=_strategy(conflict_strategy),
         parsed_rows=parsed,
         actor_user_id=actor_user_id,
@@ -548,8 +569,22 @@ async def get_erp_import_job(session: AsyncSession, *, job_id: str) -> ErpImport
     )
 
 
-async def list_erp_import_jobs(session: AsyncSession) -> list[ErpImportJobResponse]:
-    rows = await session.scalars(select(ErpImportJob).order_by(ErpImportJob.created_at.desc()))
+async def list_erp_import_jobs(
+    session: AsyncSession, *, operator_ids: list[str] | None = None
+) -> list[ErpImportJobResponse]:
+    statement = select(ErpImportJob)
+    if operator_ids is not None:
+        line_ids = select(ErpOperatorLine.id).where(
+            ErpOperatorLine.operator_id.in_(operator_ids)
+        )
+        statement = statement.where(
+            ErpImportJob.id.in_(
+                select(ErpImportJobRow.import_job_id).where(
+                    ErpImportJobRow.operator_line_id.in_(line_ids)
+                )
+            )
+        )
+    rows = await session.scalars(statement.order_by(ErpImportJob.created_at.desc()))
     return [_job_response(row) for row in rows]
 
 

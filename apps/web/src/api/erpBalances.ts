@@ -1,5 +1,9 @@
 import { api } from './client'
-import type { ErpDailyBalance, ErpDailyBalanceList } from '../types'
+import type {
+  ErpBalanceImpactPreview,
+  ErpDailyBalance,
+  ErpDailyBalanceList,
+} from '../types'
 
 export interface ErpDailyBalanceWrite {
   operatorLineId: string
@@ -62,4 +66,17 @@ export async function confirmErpDailyBalance(
       params: { rowVersion },
     })
   ).data
+}
+
+export async function reopenErpDailyBalance(
+  balanceId: string,
+  payload: { rowVersion: number; reason: string },
+): Promise<ErpDailyBalance> {
+  return (await api.post<ErpDailyBalance>(`/erp/daily-balances/${balanceId}/reopen`, payload)).data
+}
+
+export async function previewErpDailyBalanceImpact(
+  payload: ErpDailyBalanceWrite,
+): Promise<ErpBalanceImpactPreview> {
+  return (await api.post<ErpBalanceImpactPreview>('/erp/daily-balances/impact-preview', payload)).data
 }

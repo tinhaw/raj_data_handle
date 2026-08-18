@@ -5,6 +5,23 @@ export async function fetchErpImportJobs(): Promise<ErpImportJob[]> {
   return (await api.get<ErpImportJob[]>('/erp/imports')).data
 }
 
+export async function fetchErpImportJob(jobId: string): Promise<ErpImportPreview> {
+  return (await api.get<ErpImportPreview>(`/erp/imports/${jobId}`)).data
+}
+
+export async function downloadErpImportArtifact(
+  path: string,
+  filename: string,
+): Promise<void> {
+  const response = await api.get<Blob>(path, { responseType: 'blob' })
+  const url = URL.createObjectURL(response.data)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 export async function previewErpPasteImport(payload: {
   text: string
   operatorLineId: string

@@ -89,9 +89,25 @@ class ErpRedemptionBatchCreateRequest(ApiSchema):
         return self
 
 
+class ErpRedemptionTaskCreateRequest(ErpRedemptionBatchCreateRequest):
+    task_name: str | None = Field(default=None, max_length=200)
+    remote_account_ids: list[str] = Field(min_length=1, max_length=50)
+
+    @field_validator("remote_account_ids")
+    @classmethod
+    def unique_remote_accounts(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("同一任务组不能重复选择远端账号。")
+        return value
+
+
 class ErpRedemptionBatchResponse(ApiSchema):
     id: str
     campaign_id: str
+    task_id: str | None
+    source_id: str | None
+    remote_account_id: str | None
+    execution_order: int
     claim_date_from: date
     claim_date_to: date
     lookback_days: int
@@ -101,6 +117,34 @@ class ErpRedemptionBatchResponse(ApiSchema):
     published_at: datetime | None
     row_version: int
     created_at: datetime
+
+
+class ErpRedemptionTaskSubtask(ApiSchema):
+    batch_id: str
+    execution_order: int
+    source_id: str
+    source_display_name: str
+    remote_account_id: str
+    remote_account_name: str
+    expected_code_count: int
+    imported_code_count: int
+    status: Literal["PLANNED", "READY_LOCAL", "PUBLISHED_LOCAL"]
+
+
+class ErpRedemptionTaskResponse(ApiSchema):
+    id: str
+    campaign_id: str
+    task_name: str
+    claim_date_from: date
+    claim_date_to: date
+    lookback_days: int
+    export_group_key: str
+    status: Literal["PLANNED", "READY_LOCAL", "PUBLISHED_LOCAL"]
+    expected_code_count: int
+    imported_code_count: int
+    row_version: int
+    created_at: datetime
+    subtasks: list[ErpRedemptionTaskSubtask]
 
 
 class ErpRedemptionIssueResponse(ApiSchema):
@@ -120,6 +164,24 @@ class ErpRedemptionIssueResponse(ApiSchema):
     workflow_status: Literal["PENDING_LOCAL_CODE", "CODE_IMPORTED", "PUBLISHED_LOCAL"]
     state: Literal["PENDING", "GENERATED"]
     imported_at: datetime | None
+    remote_workflow_status: Literal[
+        "NOT_STARTED",
+        "RESERVED",
+        "CREATING",
+        "CREATED",
+        "PUBLISHED",
+        "DOWNLOADING",
+        "DOWNLOADED",
+        "FAILED",
+    ]
+    remote_configuration_id: str | None
+    remote_group_key: str | None
+    remote_label_ids: list[int]
+    remote_description: str | None
+    remote_error_code: str | None
+    remote_error_message: str | None
+    remote_created_at: datetime | None
+    remote_downloaded_at: datetime | None
     row_version: int
 
 

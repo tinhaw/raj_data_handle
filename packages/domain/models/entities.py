@@ -87,6 +87,7 @@ class SecurityAuditLog(Base):
     action: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     target_type: Mapped[str | None] = mapped_column(String(80))
     target_id: Mapped[str | None] = mapped_column(String(120))
+    request_id: Mapped[str | None] = mapped_column(String(64), index=True)
     result: Mapped[str] = mapped_column(String(30), nullable=False, default="success")
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
@@ -688,6 +689,160 @@ class SourceConfig(Base):
     )
 
 
+class RemoteAccount(Base):
+    """One remote login account belonging to a unified analysis/ERP market.
+
+    ``SourceConfig`` remains the market/source master so existing analysis
+    records keep their stable foreign keys. During the migration window an
+    account can explicitly reference the source's historical credential record
+    through ``LEGACY_SOURCE``; managed accounts have an account-specific scope.
+    """
+
+    __tablename__ = "remote_accounts"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id",
+            "login_username",
+            name="uq_remote_account_source_login_username",
+        ),
+        Index("ix_remote_account_source_enabled", "source_id", "enabled"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    # The visible remote login name is not a password or a session token.
+    # Legacy source records may not have it without decrypting old ciphertext.
+    login_username: Mapped[str | None] = mapped_column(String(200))
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    credential_mode: Mapped[str] = mapped_column(String(30), nullable=False, default="MANAGED")
+    encrypted_credentials: Mapped[str | None] = mapped_column(Text)
+    credential_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    credential_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_test_status: Mapped[str | None] = mapped_column(String(30))
+    last_test_request_id: Mapped[str | None] = mapped_column(String(64))
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class RemoteAccountCapability(Base):
+    """An explicit capability grant for one shared remote account."""
+
+    __tablename__ = "remote_account_capabilities"
+
+    account_id: Mapped[str] = mapped_column(
+        ForeignKey("remote_accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    capability: Mapped[str] = mapped_column(String(80), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class RemoteAccountTagSnapshot(Base):
+    """Last locally stored remote tag directory, without any credentials."""
+
+    __tablename__ = "remote_account_tag_snapshots"
+
+    account_id: Mapped[str] = mapped_column(
+        ForeignKey("remote_accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    tags_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    source: Mapped[str] = mapped_column(String(30), nullable=False, default="MANUAL")
+    stale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class RemoteAccountRewardTierPreset(Base):
+    """Per-account reward tiers bound to the tag snapshot used when saved."""
+
+    __tablename__ = "remote_account_reward_tier_presets"
+
+    account_id: Mapped[str] = mapped_column(
+        ForeignKey("remote_accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    tiers_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    tag_snapshot_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    saved_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    saved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class ErpUserAccessProfile(Base):
+    """The local ERP scope envelope for one application user."""
+
+    __tablename__ = "erp_user_access_profiles"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), primary_key=True
+    )
+    all_operators: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class ErpUserRoleGrant(Base):
+    """An ERP role, intentionally separate from the global login role."""
+
+    __tablename__ = "erp_user_role_grants"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), primary_key=True
+    )
+    role: Mapped[str] = mapped_column(String(50), primary_key=True)
+    granted_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
+class ErpUserOperatorScope(Base):
+    """An explicit delivery-company scope for a local ERP user."""
+
+    __tablename__ = "erp_user_operator_scopes"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), primary_key=True
+    )
+    operator_id: Mapped[str] = mapped_column(
+        ForeignKey("erp_operators.id", ondelete="RESTRICT"), primary_key=True
+    )
+    granted_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
 class DataSyncRun(Base):
     """One append-only execution record for a local data synchronization.
 
@@ -1278,6 +1433,39 @@ class ErpDailyBalance(Base):
         return Decimal("0")
 
 
+class ErpAccountingPeriodLock(Base):
+    """A local monthly close lock for one ERP delivery line."""
+
+    __tablename__ = "erp_accounting_period_locks"
+    __table_args__ = (
+        UniqueConstraint(
+            "operator_line_id",
+            "month_start",
+            name="uq_erp_period_lock_line_month",
+        ),
+        Index("ix_erp_period_lock_month_status", "month_start", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    operator_line_id: Mapped[str] = mapped_column(
+        ForeignKey("erp_operator_lines.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    month_start: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="LOCKED")
+    locked_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    unlock_reason: Mapped[str | None] = mapped_column(String(500))
+    unlocked_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    unlocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
 class ErpImportJob(Base):
     """A local ERP ledger import preview and its eventual commit result."""
 
@@ -1287,6 +1475,8 @@ class ErpImportJob(Base):
     source_type: Mapped[str] = mapped_column(String(30), nullable=False)
     original_filename: Mapped[str | None] = mapped_column(String(500))
     file_sha256: Mapped[str | None] = mapped_column(String(64), index=True)
+    source_storage_key: Mapped[str | None] = mapped_column(String(500))
+    source_size_bytes: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="PREVIEW_READY")
     conflict_strategy: Mapped[str] = mapped_column(
         String(30), nullable=False, default="SKIP_EXISTING"
@@ -1387,6 +1577,33 @@ class ErpRedemptionCampaignTier(Base):
     row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
+class ErpRedemptionTask(Base):
+    """One local redemption task group spanning one or more market subtasks."""
+
+    __tablename__ = "erp_redemption_tasks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    campaign_id: Mapped[str] = mapped_column(
+        ForeignKey("erp_redemption_campaigns.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    task_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    claim_date_from: Mapped[date] = mapped_column(Date, nullable=False)
+    claim_date_to: Mapped[date] = mapped_column(Date, nullable=False)
+    lookback_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    export_group_key: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="PLANNED")
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
 class ErpRedemptionCodeBatch(Base):
     """A local task batch; it does not represent a remote publication."""
 
@@ -1398,6 +1615,16 @@ class ErpRedemptionCodeBatch(Base):
         nullable=False,
         index=True,
     )
+    task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("erp_redemption_tasks.id", ondelete="SET NULL"), index=True
+    )
+    remote_account_id: Mapped[str | None] = mapped_column(
+        ForeignKey("remote_accounts.id", ondelete="RESTRICT"), index=True
+    )
+    source_id: Mapped[str | None] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="RESTRICT"), index=True
+    )
+    execution_order: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     claim_date_from: Mapped[date] = mapped_column(Date, nullable=False)
     claim_date_to: Mapped[date] = mapped_column(Date, nullable=False)
     lookback_days: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -1409,6 +1636,80 @@ class ErpRedemptionCodeBatch(Base):
     )
     row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class ErpRedemptionRemotePlan(Base):
+    """Local snapshot and state machine for one future remote redemption workflow.
+
+    The plan contains no password, TOTP value, bearer token, cookie or remote
+    response payload. Credentials remain owned by the unified ``RemoteAccount``.
+    """
+
+    __tablename__ = "erp_redemption_remote_plans"
+    __table_args__ = (
+        Index(
+            "ix_erp_redemption_remote_plan_status_schedule",
+            "workflow_status",
+            "scheduled_publish_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("erp_redemption_code_batches.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    remote_account_id: Mapped[str] = mapped_column(
+        ForeignKey("remote_accounts.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    redemption_type: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="SEVEN_DAY_DEPOSIT"
+    )
+    workflow_status: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="AWAITING_CREATE_AUTHORIZATION", index=True
+    )
+
+    publish_environment: Mapped[str] = mapped_column(String(20), nullable=False, default="test")
+    flow_times: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    creation_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    activity_recharge: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    activity_recharge_count: Mapped[int | None] = mapped_column(Integer)
+    activity_id: Mapped[int | None] = mapped_column(Integer)
+    key_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    single_user_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    single_key_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=2000)
+    require_bind_bank_card: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    require_bind_phone: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    check_uuid: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    uuid_reward_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    check_login_ip: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    login_ip_reward_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    check_register_ip: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    register_ip_reward_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    publish_mode: Mapped[str | None] = mapped_column(String(20))
+    scheduled_publish_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    fallback_to_scheduled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    publish_note: Mapped[str | None] = mapped_column(Text)
+    remote_publish_task_id: Mapped[str | None] = mapped_column(String(255))
+    schedule_cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    reserved_operation: Mapped[str | None] = mapped_column(String(20))
+    reservation_id: Mapped[str | None] = mapped_column(String(36), unique=True)
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_message: Mapped[str | None] = mapped_column(String(500))
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
@@ -1460,6 +1761,17 @@ class ErpRedemptionCodeIssue(Base):
     )
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING")
     imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    remote_workflow_status: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="NOT_STARTED", index=True
+    )
+    remote_configuration_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    remote_group_key: Mapped[str | None] = mapped_column(String(255))
+    remote_label_ids_json: Mapped[list[int]] = mapped_column(JSON, nullable=False, default=list)
+    remote_description: Mapped[str | None] = mapped_column(String(500))
+    remote_error_code: Mapped[str | None] = mapped_column(String(80))
+    remote_error_message: Mapped[str | None] = mapped_column(String(500))
+    remote_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    remote_downloaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(
@@ -1468,3 +1780,46 @@ class ErpRedemptionCodeIssue(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )
+
+
+class ErpRedemptionRemoteExecution(Base):
+    """A safe, append-only attempt record around a future adapter invocation."""
+
+    __tablename__ = "erp_redemption_remote_executions"
+    __table_args__ = (
+        UniqueConstraint(
+            "plan_id",
+            "operation",
+            "attempt_number",
+            name="uq_erp_redemption_remote_execution_attempt",
+        ),
+        Index("ix_erp_redemption_remote_execution_plan_requested", "plan_id", "requested_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    plan_id: Mapped[str] = mapped_column(
+        ForeignKey("erp_redemption_remote_plans.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    issue_id: Mapped[str | None] = mapped_column(
+        ForeignKey("erp_redemption_code_issues.id", ondelete="SET NULL"), index=True
+    )
+    operation: Mapped[str] = mapped_column(String(20), nullable=False)
+    trigger_type: Mapped[str] = mapped_column(String(20), nullable=False, default="MANUAL")
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="RESERVED", index=True)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    reservation_id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    remote_request_id: Mapped[str | None] = mapped_column(String(120))
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_message: Mapped[str | None] = mapped_column(String(500))
+    result_metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    requested_by: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL")
+    )
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

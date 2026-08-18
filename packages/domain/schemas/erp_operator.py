@@ -74,6 +74,23 @@ class ErpOperatorResponse(ApiSchema):
     updated_at: datetime
 
 
+class ErpOperatorDeleteImpactResponse(ApiSchema):
+    operator_id: str
+    operator_name: str
+    delivery_line_count: int
+    ledger_count: int
+    locked_period_count: int
+    has_history: bool
+    can_delete_without_purge: bool
+
+
+class ErpOperatorDeleteRequest(ApiSchema):
+    row_version: int | None = Field(default=None, ge=0)
+    purge_history: bool = False
+    confirmation_name: str | None = Field(default=None, max_length=200)
+    reason: str | None = Field(default=None, max_length=500)
+
+
 class ErpDeliveryLineCreateRequest(ApiSchema):
     name: str = Field(min_length=1, max_length=120)
     asset: Literal["USDT", "USDC"] = "USDT"

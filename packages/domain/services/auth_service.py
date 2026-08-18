@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from packages.common.request_context import get_request_id
 from packages.common.security import (
     SecurityValidationError,
     create_session_jwt,
@@ -75,6 +76,7 @@ async def write_audit(
             action=action,
             target_type=target_type,
             target_id=target_id,
+            request_id=get_request_id(),
             result=result,
             metadata_json=metadata or {},
         )

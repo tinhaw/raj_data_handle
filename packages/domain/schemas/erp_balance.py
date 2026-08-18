@@ -92,6 +92,37 @@ class ErpBalanceCalculationPreview(ApiSchema):
     closing_balance: Decimal
 
 
+class ErpBalanceImpactRecord(ApiSchema):
+    id: str
+    business_date: date
+    previous_opening_balance: Decimal
+    recalculated_opening_balance: Decimal
+    previous_closing_balance: Decimal
+    recalculated_closing_balance: Decimal
+
+
+class ErpBalanceImpactPreview(ApiSchema):
+    current: ErpBalanceCalculationPreview
+    impacted_records: list[ErpBalanceImpactRecord]
+    blocking_reasons: list[str]
+
+
+class ErpDailyBalanceReopenRequest(ApiSchema):
+    row_version: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class ErpDailyBalanceBatchRequest(ApiSchema):
+    records: list[ErpDailyBalanceWriteRequest] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def reject_duplicate_records(self) -> ErpDailyBalanceBatchRequest:
+        keys = [(record.operator_line_id, record.business_date) for record in self.records]
+        if len(keys) != len(set(keys)):
+            raise ValueError("批量日结不能包含重复的投放线和业务日期。")
+        return self
+
+
 class ErpDailyBalanceResponse(ErpBalanceCalculationPreview):
     id: str
     operator_line_id: str

@@ -1,7 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 import { recordPageAccess } from '../api/auth'
-import { currentUser, ensureAuth } from '../stores/auth'
+import { currentUser, ensureAuth, ensureErpAccess, hasErpPermission } from '../stores/auth'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -17,11 +17,11 @@ const router = createRouter({
     },
     {
       path: '/workspace',
-      component: () => import('../views/ErpMigrationView.vue'),
+      component: () => import('../views/ErpDashboardView.vue'),
       meta: {
         navKey: '/workspace',
         title: '工作台',
-        migrationDescription: '统一工作台将汇总 ERP 业务进度与数据对账状态。',
+        erpPermission: 'ERP_WORKSPACE_VIEW',
       },
     },
     {
@@ -30,6 +30,7 @@ const router = createRouter({
       meta: {
         navKey: '/erp/operators',
         title: '投放公司与投放线',
+        erpPermission: 'ERP_OPERATOR_VIEW',
       },
     },
     {
@@ -38,6 +39,7 @@ const router = createRouter({
       meta: {
         navKey: '/erp/balances',
         title: '输入台账',
+        erpPermission: 'ERP_LEDGER_VIEW',
       },
     },
     {
@@ -46,6 +48,7 @@ const router = createRouter({
       meta: {
         navKey: '/erp/imports',
         title: '导入中心',
+        erpPermission: 'ERP_IMPORT',
       },
     },
     {
@@ -54,6 +57,7 @@ const router = createRouter({
       meta: {
         navKey: '/erp/redemption',
         title: '兑换码管理',
+        erpPermission: 'ERP_REDEMPTION_VIEW',
       },
     },
     {
@@ -62,16 +66,25 @@ const router = createRouter({
       meta: {
         navKey: '/erp/reports',
         title: '汇总报表',
+        erpPermission: 'ERP_REPORT_VIEW',
+      },
+    },
+    {
+      path: '/erp/audit',
+      component: () => import('../views/ErpAuditView.vue'),
+      meta: {
+        navKey: '/erp/audit',
+        erpPermission: 'ERP_AUDIT_VIEW',
+        title: '审计日志',
       },
     },
     {
       path: '/erp/remote-connections',
-      component: () => import('../views/ErpMigrationView.vue'),
+      component: () => import('../views/RemoteAccountsView.vue'),
       meta: {
         navKey: '/erp/remote-connections',
-        admin: true,
-        title: 'ERP 业务授权',
-        migrationDescription: '在统一的远端账号体系中，为已配置账号授予 ERP 兑换业务能力。',
+        erpPermission: 'ERP_REDEMPTION_VIEW',
+        title: '远端账号与业务授权',
       },
     },
     {
@@ -152,8 +165,12 @@ router.beforeEach(async (to) => {
   if (!user) {
     return { path: '/login', query: { redirect: to.fullPath } }
   }
+  await ensureErpAccess()
   if (to.meta.admin && user.role !== 'admin') {
     return '/workspace'
+  }
+  if (typeof to.meta.erpPermission === 'string' && !hasErpPermission(to.meta.erpPermission)) {
+    return '/batches'
   }
   return true
 })
