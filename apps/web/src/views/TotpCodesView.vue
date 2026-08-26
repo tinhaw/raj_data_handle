@@ -273,7 +273,7 @@ onBeforeUnmount(() => {
           <div class="account-identity">
             <span class="account-icon"><el-icon><Key /></el-icon></span>
             <div>
-              <h2>{{ item.displayName }}</h2>
+              <h2 :title="item.displayName">{{ item.displayName }}</h2>
               <span>{{ item.accountName }}</span>
             </div>
           </div>
@@ -452,7 +452,8 @@ onBeforeUnmount(() => {
 }
 
 .code-card__header {
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   margin-bottom: 28px;
 }
@@ -460,6 +461,11 @@ onBeforeUnmount(() => {
 .account-identity {
   min-width: 0;
   gap: 11px;
+}
+
+.account-identity > div {
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .account-icon {
