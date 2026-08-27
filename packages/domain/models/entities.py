@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -712,13 +713,12 @@ class RemoteAccount(Base):
     source_id: Mapped[str] = mapped_column(
         ForeignKey("source_configs.source_id", ondelete="RESTRICT"),
         nullable=False,
-        index=True,
     )
     # The visible remote login name is not a password or a session token.
     # Legacy source records may not have it without decrypting old ciphertext.
     login_username: Mapped[str | None] = mapped_column(String(200))
     display_name: Mapped[str] = mapped_column(String(120), nullable=False)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     credential_mode: Mapped[str] = mapped_column(String(30), nullable=False, default="MANAGED")
     encrypted_credentials: Mapped[str | None] = mapped_column(Text)
     credential_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -839,6 +839,45 @@ class ErpUserOperatorScope(Base):
     )
     granted_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
     granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
+class ErpCompatibilityIdMap(Base):
+    """Stable legacy numeric ID for a canonical ERP or remote-account record.
+
+    The online ERP API exposes numeric identifiers while Raj Data Handle uses
+    UUID/string identifiers.  This table is deliberately secret-free and does
+    not own the referenced records; it only preserves the public compatibility
+    contract during the high-fidelity migration.
+    """
+
+    __tablename__ = "erp_compatibility_id_maps"
+    __table_args__ = (
+        UniqueConstraint(
+            "entity_type",
+            "canonical_id",
+            name="uq_erp_compatibility_id_map_canonical",
+        ),
+        Index(
+            "ix_erp_compatibility_id_map_entity_legacy",
+            "entity_type",
+            "legacy_id",
+            unique=True,
+        ),
+    )
+
+    mapping_id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    # Kept separate from the internal surrogate because online IDs overlap
+    # across entity types (for example operator 1 and remote account 1).
+    legacy_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    canonical_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
 
@@ -1240,12 +1279,16 @@ class ErpOperator(Base):
     """A delivery company migrated from the ERP local business domain."""
 
     __tablename__ = "erp_operators"
+    __table_args__ = (
+        Index("ix_erp_operator_name", "name"),
+        Index("ix_erp_operator_status", "status"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     code: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     operator_type: Mapped[str] = mapped_column(String(20), nullable=False, default="COMPANY")
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="ACTIVE", index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="ACTIVE")
     contact_name: Mapped[str | None] = mapped_column(String(200))
     contact_value: Mapped[str | None] = mapped_column(String(200))
     remark: Mapped[str | None] = mapped_column(Text)
@@ -1272,7 +1315,7 @@ class ErpOperatorLine(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     operator_id: Mapped[str] = mapped_column(
-        ForeignKey("erp_operators.id", ondelete="RESTRICT"), nullable=False, index=True
+        ForeignKey("erp_operators.id", ondelete="RESTRICT"), nullable=False
     )
     code: Mapped[str] = mapped_column(String(50), nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -1321,7 +1364,7 @@ class ErpDailyBalance(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     operator_line_id: Mapped[str] = mapped_column(
-        ForeignKey("erp_operator_lines.id", ondelete="RESTRICT"), nullable=False, index=True
+        ForeignKey("erp_operator_lines.id", ondelete="RESTRICT"), nullable=False
     )
     business_date: Mapped[date] = mapped_column(Date, nullable=False)
     opening_balance: Mapped[Decimal] = mapped_column(
@@ -1403,7 +1446,7 @@ class ErpDailyBalance(Base):
         default=Decimal("0"),
     )
     calculation_scale: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="DRAFT", index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="DRAFT")
     source_type: Mapped[str] = mapped_column(String(20), nullable=False, default="MANUAL")
     remark: Mapped[str | None] = mapped_column(Text)
     row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -1448,7 +1491,7 @@ class ErpAccountingPeriodLock(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     operator_line_id: Mapped[str] = mapped_column(
-        ForeignKey("erp_operator_lines.id", ondelete="RESTRICT"), nullable=False, index=True
+        ForeignKey("erp_operator_lines.id", ondelete="RESTRICT"), nullable=False
     )
     month_start: Mapped[date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="LOCKED")
@@ -1608,6 +1651,11 @@ class ErpRedemptionCodeBatch(Base):
     """A local task batch; it does not represent a remote publication."""
 
     __tablename__ = "erp_redemption_code_batches"
+    __table_args__ = (
+        Index("ix_erp_redemption_batch_task_id", "task_id"),
+        Index("ix_erp_redemption_batch_remote_account_id", "remote_account_id"),
+        Index("ix_erp_redemption_batch_source_id", "source_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     campaign_id: Mapped[str] = mapped_column(
@@ -1616,13 +1664,13 @@ class ErpRedemptionCodeBatch(Base):
         index=True,
     )
     task_id: Mapped[str | None] = mapped_column(
-        ForeignKey("erp_redemption_tasks.id", ondelete="SET NULL"), index=True
+        ForeignKey("erp_redemption_tasks.id", ondelete="SET NULL")
     )
     remote_account_id: Mapped[str | None] = mapped_column(
-        ForeignKey("remote_accounts.id", ondelete="RESTRICT"), index=True
+        ForeignKey("remote_accounts.id", ondelete="RESTRICT")
     )
     source_id: Mapped[str | None] = mapped_column(
-        ForeignKey("source_configs.source_id", ondelete="RESTRICT"), index=True
+        ForeignKey("source_configs.source_id", ondelete="RESTRICT")
     )
     execution_order: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     claim_date_from: Mapped[date] = mapped_column(Date, nullable=False)
@@ -1729,6 +1777,10 @@ class ErpRedemptionCodeIssue(Base):
             "campaign_tier_id",
             name="uq_erp_redemption_issue",
         ),
+        Index(
+            "ix_erp_redemption_issue_remote_workflow_status",
+            "remote_workflow_status",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
@@ -1762,7 +1814,7 @@ class ErpRedemptionCodeIssue(Base):
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING")
     imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     remote_workflow_status: Mapped[str] = mapped_column(
-        String(30), nullable=False, default="NOT_STARTED", index=True
+        String(30), nullable=False, default="NOT_STARTED"
     )
     remote_configuration_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     remote_group_key: Mapped[str | None] = mapped_column(String(255))
@@ -1819,7 +1871,7 @@ class ErpRedemptionRemoteExecution(Base):
         ForeignKey("app_users.id", ondelete="SET NULL")
     )
     requested_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=utcnow, index=True
+        DateTime(timezone=True), nullable=False, default=utcnow
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.dependencies import get_auth_context, require_erp_permission
 from packages.common.database import get_db_session
 from packages.domain.schemas.erp_access import (
+    ErpCompatibilitySessionResponse,
     ErpEffectiveAccessResponse,
     ErpRoleDefinition,
     ErpUserAccessResponse,
@@ -21,6 +22,10 @@ from packages.domain.services.erp_access_service import (
     get_erp_access_snapshot,
     role_definitions,
     update_erp_access,
+)
+from packages.domain.services.erp_compatibility_id_service import (
+    ErpCompatibilityIdError,
+    get_erp_compatibility_ids,
 )
 
 router = APIRouter(prefix="/erp/access", tags=["erp-access"])
@@ -53,6 +58,47 @@ async def get_my_access(
         role_grants=snapshot.role_grants,
         all_operators=snapshot.all_operators,
         operator_ids=snapshot.operator_ids,
+        effective_permissions=sorted(snapshot.effective_permissions),
+    )
+
+
+@router.get(
+    "/compatibility-session",
+    response_model=ErpCompatibilitySessionResponse,
+    include_in_schema=False,
+)
+async def get_compatibility_session(
+    auth: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_db_session),
+) -> ErpCompatibilitySessionResponse:
+    """Expose the current identity to the internal high-fidelity ERP adapter.
+
+    Authentication still happens through the existing HttpOnly session cookie
+    and ``auth_sessions`` row. This endpoint is deliberately read-only and
+    never returns the cookie, password hashes or any remote-account secret.
+    """
+
+    snapshot = await get_erp_access_snapshot(session, user_id=auth.user.id)
+    try:
+        operator_ids = await get_erp_compatibility_ids(
+            session,
+            entity_type="operator",
+            canonical_ids=snapshot.operator_ids,
+        )
+    except ErpCompatibilityIdError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    return ErpCompatibilitySessionResponse(
+        user_id=auth.user.id,
+        username=auth.user.username,
+        display_name=auth.user.display_name,
+        global_role=auth.user.role,
+        expires_at=auth.expires_at,
+        role_grants=snapshot.role_grants,
+        all_operators=snapshot.all_operators,
+        operator_ids=[operator_ids[operator_id] for operator_id in snapshot.operator_ids],
         effective_permissions=sorted(snapshot.effective_permissions),
     )
 

@@ -73,6 +73,35 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  erp-compat:
+    build:
+      context: ..
+      dockerfile: deploy/erp-compat.Dockerfile
+    environment:
+      SPRING_DATASOURCE_URL: ${ERP_COMPAT_DATABASE_URL:?ERP_COMPAT_DATABASE_URL is required}
+      SPRING_DATASOURCE_USERNAME: ${ERP_COMPAT_DATABASE_USERNAME:?ERP_COMPAT_DATABASE_USERNAME is required}
+      SPRING_DATASOURCE_PASSWORD: ${ERP_COMPAT_DATABASE_PASSWORD:?ERP_COMPAT_DATABASE_PASSWORD is required}
+      ERP_COMPATIBILITY_MODE_ENABLED: "true"
+      ERP_COMPAT_STANDALONE_AUTH_ENABLED: "false"
+      ERP_COMPAT_FLYWAY_ENABLED: "false"
+      ERP_COMPAT_DDL_AUTO: none
+      ERP_COMPAT_IDENTITY_URL: http://api:8000/api/v1/erp/access/compatibility-session
+      ERP_COMPAT_REMOTE_REGISTRY_URL: http://api:8000/api/v1/erp/remote-accounts/compatibility-registry
+      ERP_COMPAT_SESSION_COOKIE_NAME: raj_session
+      ERP_COMPAT_REMOTE_OPERATIONS_ENABLED: "false"
+      ERP_STORAGE_LOCAL_PATH: /app/runtime/erp-compat
+    volumes:
+      - file-storage:/app/runtime
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+    restart: unless-stopped
+
   web:
     build:
       context: ..
@@ -83,6 +112,8 @@ services:
       - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-18080}:80"
     depends_on:
       api:
+        condition: service_healthy
+      erp-compat:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/health"]

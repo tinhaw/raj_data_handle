@@ -40,6 +40,9 @@ from packages.domain.schemas.remote_account import (
     RewardTierPresetWrite,
 )
 from packages.domain.services.auth_service import write_audit
+from packages.domain.services.erp_compatibility_id_service import (
+    register_erp_compatibility_id,
+)
 from packages.domain.services.remote_account_identity import (
     RemoteAccountIdentityValidationError,
     normalize_remote_username,
@@ -216,6 +219,11 @@ async def create_remote_account(
     session.add(account)
     try:
         await session.flush()
+        await register_erp_compatibility_id(
+            session,
+            entity_type="remote_account",
+            canonical_id=account.id,
+        )
     except IntegrityError as exc:
         await session.rollback()
         raise RemoteAccountConflictError("该盘口下的远端登录账号已存在。") from exc

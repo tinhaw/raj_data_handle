@@ -70,6 +70,50 @@ class RemoteAccountResponse(ApiSchema):
     updated_at: datetime
 
 
+class ErpCompatibilityRemoteMarket(ApiSchema):
+    id: int
+    canonical_id: str
+    code: str
+    name: str
+    base_url: str | None
+    enabled: bool
+    row_version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ErpCompatibilityRemoteConnection(ApiSchema):
+    id: int
+    canonical_id: str
+    username: str | None
+    market_id: int
+    canonical_market_id: str
+    market_code: str
+    market_name: str
+    market_enabled: bool
+    base_url: str | None
+    has_password: bool
+    has_totp_secret: bool
+    has_active_session: bool = False
+    session_expires_at: datetime | None = None
+    last_logged_in_at: datetime | None = None
+    enabled: bool
+    last_checked_at: datetime | None
+    last_error: str | None
+    row_version: int
+    created_at: datetime
+    updated_at: datetime
+    capabilities: dict[str, bool]
+    tag_ids: list[int] = Field(default_factory=list)
+
+
+class ErpCompatibilityRemoteRegistry(ApiSchema):
+    """Secret-free SourceConfig + RemoteAccount view for the old ERP contract."""
+
+    markets: list[ErpCompatibilityRemoteMarket]
+    connections: list[ErpCompatibilityRemoteConnection]
+
+
 class RemoteTag(ApiSchema):
     id: int = Field(ge=1)
     name: str = Field(min_length=1, max_length=200)

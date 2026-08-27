@@ -17,65 +17,72 @@ const router = createRouter({
     },
     {
       path: '/workspace',
-      component: () => import('../views/ErpDashboardView.vue'),
+      component: () => import('../components/ErpCompatibilityModule.vue'),
       meta: {
         navKey: '/workspace',
         title: '工作台',
         erpPermission: 'ERP_WORKSPACE_VIEW',
+        erpCompatComponent: '../../../erp-compat/web/src/modules/dashboard/DashboardPage.vue',
       },
     },
     {
       path: '/erp/operators',
-      component: () => import('../views/ErpOperatorsView.vue'),
+      component: () => import('../components/ErpCompatibilityModule.vue'),
       meta: {
         navKey: '/erp/operators',
         title: '投放公司与投放线',
         erpPermission: 'ERP_OPERATOR_VIEW',
+        erpCompatComponent: '../../../erp-compat/web/src/modules/operators/OperatorsPage.vue',
       },
     },
     {
       path: '/erp/balances',
-      component: () => import('../views/ErpBalancesView.vue'),
+      component: () => import('../components/ErpCompatibilityModule.vue'),
       meta: {
         navKey: '/erp/balances',
         title: '输入台账',
         erpPermission: 'ERP_LEDGER_VIEW',
+        erpCompatComponent: '../../../erp-compat/web/src/modules/balances/BalanceLedgerPage.vue',
       },
     },
     {
       path: '/erp/imports',
-      component: () => import('../views/ErpImportsView.vue'),
+      component: () => import('../components/ErpCompatibilityModule.vue'),
       meta: {
         navKey: '/erp/imports',
         title: '导入中心',
         erpPermission: 'ERP_IMPORT',
+        erpCompatComponent: '../../../erp-compat/web/src/modules/imports/ImportCenterPage.vue',
       },
     },
     {
       path: '/erp/redemption',
-      component: () => import('../views/ErpRedemptionView.vue'),
+      component: () => import('../components/ErpCompatibilityModule.vue'),
       meta: {
         navKey: '/erp/redemption',
         title: '兑换码管理',
         erpPermission: 'ERP_REDEMPTION_VIEW',
+        erpCompatComponent: '../../../erp-compat/web/src/modules/redemption/RedemptionCampaignPage.vue',
       },
     },
     {
       path: '/erp/reports',
-      component: () => import('../views/ErpReportsView.vue'),
+      component: () => import('../components/ErpCompatibilityModule.vue'),
       meta: {
         navKey: '/erp/reports',
         title: '汇总报表',
         erpPermission: 'ERP_REPORT_VIEW',
+        erpCompatComponent: '../../../erp-compat/web/src/modules/reports/ReportsPage.vue',
       },
     },
     {
       path: '/erp/audit',
-      component: () => import('../views/ErpAuditView.vue'),
+      component: () => import('../components/ErpCompatibilityModule.vue'),
       meta: {
         navKey: '/erp/audit',
         erpPermission: 'ERP_AUDIT_VIEW',
         title: '审计日志',
+        erpCompatComponent: '../../../erp-compat/web/src/modules/audit/AuditPage.vue',
       },
     },
     {
@@ -86,6 +93,75 @@ const router = createRouter({
         erpPermission: 'ERP_REDEMPTION_VIEW',
         title: '远端账号与业务授权',
       },
+    },
+    // Preserve links embedded in the deployed ERP source while keeping the
+    // merged application's canonical navigation under /workspace and /erp/*.
+    { path: '/dashboard', redirect: '/workspace' },
+    { path: '/operators', redirect: '/erp/operators' },
+    { path: '/balances', redirect: '/erp/balances' },
+    { path: '/imports', redirect: '/erp/imports' },
+    { path: '/redemption', redirect: '/erp/redemption' },
+    { path: '/reports', redirect: '/erp/reports' },
+    { path: '/audit', redirect: '/erp/audit' },
+    {
+      path: '/erp-preview',
+      component: () => import('../components/ErpCompatibilityFrame.vue'),
+      children: [
+        {
+          path: '',
+          redirect: '/erp-preview/dashboard',
+        },
+        {
+          path: 'dashboard',
+          component: () => import('../components/ErpCompatibilityModule.vue'),
+          meta: { navKey: '/workspace', title: '工作台 · 原版预览', erpPermission: 'ERP_WORKSPACE_VIEW', erpCompatComponent: '../../../erp-compat/web/src/modules/dashboard/DashboardPage.vue' },
+        },
+        {
+          path: 'operators',
+          component: () => import('../components/ErpCompatibilityModule.vue'),
+          meta: { navKey: '/erp/operators', title: '投放公司与投放线 · 原版预览', erpPermission: 'ERP_OPERATOR_VIEW', erpCompatComponent: '../../../erp-compat/web/src/modules/operators/OperatorsPage.vue' },
+        },
+        {
+          path: 'balances',
+          component: () => import('../components/ErpCompatibilityModule.vue'),
+          meta: { navKey: '/erp/balances', title: '输入台账 · 原版预览', erpPermission: 'ERP_LEDGER_VIEW', erpCompatComponent: '../../../erp-compat/web/src/modules/balances/BalanceLedgerPage.vue' },
+        },
+        {
+          path: 'imports',
+          component: () => import('../components/ErpCompatibilityModule.vue'),
+          meta: { navKey: '/erp/imports', title: '导入中心 · 原版预览', erpPermission: 'ERP_IMPORT', erpCompatComponent: '../../../erp-compat/web/src/modules/imports/ImportCenterPage.vue' },
+        },
+        {
+          path: 'redemption',
+          component: () => import('../components/ErpCompatibilityModule.vue'),
+          meta: { navKey: '/erp/redemption', title: '兑换码管理 · 原版预览', erpPermission: 'ERP_REDEMPTION_VIEW', erpCompatComponent: '../../../erp-compat/web/src/modules/redemption/RedemptionCampaignPage.vue' },
+        },
+        {
+          path: 'reports',
+          component: () => import('../components/ErpCompatibilityModule.vue'),
+          meta: { navKey: '/erp/reports', title: '汇总报表 · 原版预览', erpPermission: 'ERP_REPORT_VIEW', erpCompatComponent: '../../../erp-compat/web/src/modules/reports/ReportsPage.vue' },
+        },
+        {
+          path: 'audit',
+          component: () => import('../components/ErpCompatibilityModule.vue'),
+          meta: { navKey: '/erp/audit', title: '审计日志 · 原版预览', erpPermission: 'ERP_AUDIT_VIEW', erpCompatComponent: '../../../erp-compat/web/src/modules/audit/AuditPage.vue' },
+        },
+        {
+          path: 'remote-connections',
+          component: () => import('../components/ErpCompatibilityModule.vue'),
+          meta: { navKey: '/erp/remote-connections', title: '远端连接 · 原版预览', erpPermission: 'ERP_REDEMPTION_VIEW', erpCompatComponent: '../../../erp-compat/web/src/modules/redemption/RemoteConnectionsPage.vue' },
+        },
+        {
+          path: 'users',
+          component: () => import('../components/ErpCompatibilityModule.vue'),
+          meta: { navKey: '/settings/users', title: '用户与权限 · 原版预览', admin: true, erpPermission: 'ERP_ACCESS_MANAGE', erpCompatComponent: '../../../erp-compat/web/src/modules/users/UsersPage.vue' },
+        },
+        {
+          path: 'settings',
+          component: () => import('../components/ErpCompatibilityModule.vue'),
+          meta: { navKey: '/settings/system', title: '系统设置 · 原版预览', admin: true, erpCompatComponent: '../../../erp-compat/web/src/modules/settings/SettingsPage.vue' },
+        },
+      ],
     },
     {
       path: '/batches',

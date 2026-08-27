@@ -71,6 +71,11 @@ def test_renderer_reads_rds_credentials_from_local_env_and_url_encodes_password(
         "postgresql+asyncpg://data_handle_user:p%40ss%20word%3A%27%26@"
         "rds.example.test:5433/data_handle"
     )
+    assert values["ERP_COMPAT_DATABASE_URL"] == (
+        "jdbc:postgresql://rds.example.test:5433/data_handle"
+    )
+    assert values["ERP_COMPAT_DATABASE_USERNAME"] == "data_handle_user"
+    assert values["ERP_COMPAT_DATABASE_PASSWORD"] == "p@ss word:'&"
     quoted_url = renderer.ensure_compose_env_safe("RAJ_DATABASE_URL", values["RAJ_DATABASE_URL"])
     assert quoted_url.startswith("'")
     assert values["RAJ_CORS_ORIGINS"] == '["http://203.0.113.10:18080"]'

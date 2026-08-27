@@ -32,6 +32,9 @@ from packages.domain.schemas.erp_operator import (
     ErpOperatorResponse,
 )
 from packages.domain.services.auth_service import write_audit
+from packages.domain.services.erp_compatibility_id_service import (
+    register_erp_compatibility_id,
+)
 
 
 class ErpOperatorError(ValueError):
@@ -147,6 +150,11 @@ async def create_erp_operator(
     session.add(operator)
     try:
         await session.flush()
+        await register_erp_compatibility_id(
+            session,
+            entity_type="operator",
+            canonical_id=operator.id,
+        )
     except IntegrityError as exc:
         await session.rollback()
         raise ErpOperatorConflictError("投放公司名称或编号已存在。") from exc
@@ -411,6 +419,11 @@ async def create_erp_operator_line(
     session.add(line)
     try:
         await session.flush()
+        await register_erp_compatibility_id(
+            session,
+            entity_type="operator_line",
+            canonical_id=line.id,
+        )
     except IntegrityError as exc:
         await session.rollback()
         raise ErpOperatorConflictError("投放线名称或编号已存在。") from exc

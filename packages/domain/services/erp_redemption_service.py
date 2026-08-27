@@ -32,6 +32,9 @@ from packages.domain.schemas.erp_redemption import (
     ErpRedemptionTierResponse,
 )
 from packages.domain.services.auth_service import write_audit
+from packages.domain.services.erp_compatibility_id_service import (
+    register_erp_compatibility_id,
+)
 
 
 class ErpRedemptionError(ValueError):
@@ -237,18 +240,30 @@ async def create_erp_redemption_campaign(
     )
     session.add(campaign)
     await session.flush()
+    await register_erp_compatibility_id(
+        session,
+        entity_type="redemption_campaign",
+        canonical_id=campaign.id,
+    )
+    created_tiers: list[ErpRedemptionCampaignTier] = []
     for index, tier in enumerate(request.tiers, start=1):
-        session.add(
-            ErpRedemptionCampaignTier(
-                campaign_id=campaign.id,
-                display_name=tier.display_name.strip() if tier.display_name else None,
-                min_deposit_amount=tier.min_deposit_amount,
-                bonus_amount=tier.bonus_amount,
-                bonus_max_amount=tier.bonus_max_amount or tier.bonus_amount,
-                sort_order=tier.sort_order if tier.sort_order is not None else index,
-            )
+        created_tier = ErpRedemptionCampaignTier(
+            campaign_id=campaign.id,
+            display_name=tier.display_name.strip() if tier.display_name else None,
+            min_deposit_amount=tier.min_deposit_amount,
+            bonus_amount=tier.bonus_amount,
+            bonus_max_amount=tier.bonus_max_amount or tier.bonus_amount,
+            sort_order=tier.sort_order if tier.sort_order is not None else index,
         )
+        session.add(created_tier)
+        created_tiers.append(created_tier)
     await session.flush()
+    for tier in created_tiers:
+        await register_erp_compatibility_id(
+            session,
+            entity_type="redemption_campaign_tier",
+            canonical_id=tier.id,
+        )
     result = await _campaign_response(session, campaign)
     await write_audit(
         session,
@@ -298,25 +313,37 @@ async def create_erp_redemption_batch(
     )
     session.add(batch)
     await session.flush()
+    await register_erp_compatibility_id(
+        session,
+        entity_type="redemption_batch",
+        canonical_id=batch.id,
+    )
     claims = [request.claim_date_from + timedelta(days=offset) for offset in range(day_count)]
+    created_issues: list[ErpRedemptionCodeIssue] = []
     for claim_date in claims:
         for tier in tiers:
-            session.add(
-                ErpRedemptionCodeIssue(
-                    campaign_id=campaign.id,
-                    campaign_tier_id=tier.id,
-                    batch_id=batch.id,
-                    claim_date=claim_date,
-                    deposit_window_start=claim_date - timedelta(days=campaign.lookback_days),
-                    deposit_window_end=claim_date - timedelta(days=1),
-                    tier_name=tier.display_name,
-                    min_deposit_amount=tier.min_deposit_amount,
-                    bonus_amount=tier.bonus_amount,
-                    bonus_max_amount=tier.bonus_max_amount,
-                    created_by=actor_user_id,
-                )
+            issue = ErpRedemptionCodeIssue(
+                campaign_id=campaign.id,
+                campaign_tier_id=tier.id,
+                batch_id=batch.id,
+                claim_date=claim_date,
+                deposit_window_start=claim_date - timedelta(days=campaign.lookback_days),
+                deposit_window_end=claim_date - timedelta(days=1),
+                tier_name=tier.display_name,
+                min_deposit_amount=tier.min_deposit_amount,
+                bonus_amount=tier.bonus_amount,
+                bonus_max_amount=tier.bonus_max_amount,
+                created_by=actor_user_id,
             )
+            session.add(issue)
+            created_issues.append(issue)
     await session.flush()
+    for issue in created_issues:
+        await register_erp_compatibility_id(
+            session,
+            entity_type="redemption_issue",
+            canonical_id=issue.id,
+        )
     result = await _batch_detail(session, batch)
     await write_audit(
         session,
@@ -422,6 +449,12 @@ async def create_erp_redemption_task(
     )
     session.add(task)
     await session.flush()
+    await register_erp_compatibility_id(
+        session,
+        entity_type="redemption_task",
+        canonical_id=task.id,
+    )
+    created_issues: list[ErpRedemptionCodeIssue] = []
     for order, account_id in enumerate(request.remote_account_ids, start=1):
         account = next(account for account in accounts if account.id == account_id)
         batch = ErpRedemptionCodeBatch(
@@ -438,25 +471,36 @@ async def create_erp_redemption_task(
         )
         session.add(batch)
         await session.flush()
+        await register_erp_compatibility_id(
+            session,
+            entity_type="redemption_batch",
+            canonical_id=batch.id,
+        )
         for offset in range(day_count):
             claim_date = request.claim_date_from + timedelta(days=offset)
             for tier in tiers:
-                session.add(
-                    ErpRedemptionCodeIssue(
-                        campaign_id=campaign.id,
-                        campaign_tier_id=tier.id,
-                        batch_id=batch.id,
-                        claim_date=claim_date,
-                        deposit_window_start=claim_date - timedelta(days=campaign.lookback_days),
-                        deposit_window_end=claim_date - timedelta(days=1),
-                        tier_name=tier.display_name,
-                        min_deposit_amount=tier.min_deposit_amount,
-                        bonus_amount=tier.bonus_amount,
-                        bonus_max_amount=tier.bonus_max_amount,
-                        created_by=actor_user_id,
-                    )
+                issue = ErpRedemptionCodeIssue(
+                    campaign_id=campaign.id,
+                    campaign_tier_id=tier.id,
+                    batch_id=batch.id,
+                    claim_date=claim_date,
+                    deposit_window_start=claim_date - timedelta(days=campaign.lookback_days),
+                    deposit_window_end=claim_date - timedelta(days=1),
+                    tier_name=tier.display_name,
+                    min_deposit_amount=tier.min_deposit_amount,
+                    bonus_amount=tier.bonus_amount,
+                    bonus_max_amount=tier.bonus_max_amount,
+                    created_by=actor_user_id,
                 )
+                session.add(issue)
+                created_issues.append(issue)
     await session.flush()
+    for issue in created_issues:
+        await register_erp_compatibility_id(
+            session,
+            entity_type="redemption_issue",
+            canonical_id=issue.id,
+        )
     result = await _task_response(session, task)
     await write_audit(
         session,

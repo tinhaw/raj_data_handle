@@ -36,6 +36,9 @@ from packages.domain.services.data_dictionary_service import (
     sync_payment_channel_names,
     sync_payment_channels,
 )
+from packages.domain.services.erp_compatibility_id_service import (
+    register_erp_compatibility_id,
+)
 from packages.domain.services.remote_charge_service import RajAdminChargeClient, RemoteChargeError
 from packages.domain.services.remote_scoring_review_service import (
     RemoteScoringReviewError,
@@ -442,6 +445,11 @@ async def upsert_source(
     source.updated_by = actor_user_id
     if creating:
         await session.flush()
+        await register_erp_compatibility_id(
+            session,
+            entity_type="source",
+            canonical_id=source.source_id,
+        )
         await ensure_charge_statuses(session, source_id=source.source_id)
         await ensure_spin_order_statuses(session, source_id=source.source_id)
     await write_audit(

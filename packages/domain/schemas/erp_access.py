@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import Field, field_validator
@@ -47,4 +48,23 @@ class ErpEffectiveAccessResponse(ApiSchema):
     role_grants: list[ErpRole]
     all_operators: bool
     operator_ids: list[str]
+    effective_permissions: list[str]
+
+
+class ErpCompatibilitySessionResponse(ApiSchema):
+    """Authenticated identity envelope consumed by the ERP compatibility service.
+
+    It intentionally contains no password, session token, remote credential or
+    legacy ERP user identifier. The caller must forward the existing
+    ``raj_session`` cookie; the main API remains the only session authority.
+    """
+
+    user_id: int
+    username: str
+    display_name: str
+    global_role: Literal["admin", "user"]
+    expires_at: datetime
+    role_grants: list[ErpRole]
+    all_operators: bool
+    operator_ids: list[int]
     effective_permissions: list[str]

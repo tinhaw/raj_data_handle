@@ -1,0 +1,157 @@
+.erp-compat-page {
+  color: #182230;
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+}
+
+.erp-compat-page .page-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.erp-compat-page .page-title-row h2 {
+  margin: 0;
+  color: #101828;
+  font-size: 20px;
+  line-height: 1.4;
+}
+
+.erp-compat-page .page-subtitle {
+  margin: 5px 0 0;
+  color: #667085;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.erp-compat-page .page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.erp-compat-page .panel {
+  margin-bottom: 18px;
+  background: #fff;
+  border: 1px solid #eaecf0;
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.02);
+}
+
+.erp-compat-page .panel--padded {
+  padding: 20px;
+}
+
+.erp-compat-page .filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px 16px;
+  padding: 0;
+}
+
+.erp-compat-page .filter-bar .el-form-item {
+  margin: 0;
+}
+
+.erp-compat-page .filter-bar .el-select {
+  width: auto;
+}
+
+.erp-compat-page .table-card {
+  overflow: hidden;
+  padding: 0;
+}
+
+.erp-compat-page .table-card .el-table {
+  --el-table-header-bg-color: #f9fafb;
+  --el-table-border-color: #eaecf0;
+  --el-table-row-hover-bg-color: #f8fbff;
+  cursor: default;
+}
+
+.erp-compat-page .table-card .el-table th.el-table__cell {
+  color: #475467;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.erp-compat-page .table-card .el-table td.el-table__cell {
+  color: #344054;
+  font-size: 13px;
+}
+
+.erp-compat-page .money {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.erp-compat-page .money--negative {
+  color: #d92d20;
+  font-weight: 650;
+}
+
+.erp-compat-page .money--positive {
+  color: #027a48;
+}
+
+.erp-compat-page .muted {
+  color: #98a2b3;
+}
+
+.erp-compat-page .hint {
+  color: #667085;
+  font-size: 12px;
+}
+
+.erp-compat-page .required-note {
+  color: #d92d20;
+}
+
+.erp-compat-page .warning-row td {
+  background: #fffaeb !important;
+}
+
+.erp-compat-page .table-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 16px;
+  color: #667085;
+  font-size: 12px;
+  border-top: 1px solid #eaecf0;
+}
+
+.erp-compat-page .empty-panel {
+  display: grid;
+  min-height: 220px;
+  padding: 36px;
+  color: #667085;
+  text-align: center;
+  background: #fff;
+  border: 1px solid #eaecf0;
+  border-radius: 12px;
+  place-items: center;
+}
+
+.erp-compat-page .field-note {
+  margin-top: 5px;
+  color: #98a2b3;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.erp-compat-page .el-button--primary {
+  --el-button-bg-color: #155eef;
+  --el-button-border-color: #155eef;
+  --el-button-hover-bg-color: #004eeb;
+  --el-button-hover-border-color: #004eeb;
+}
+
+.erp-compat-page .el-input__wrapper.is-focus,
+.erp-compat-page .el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px #155eef inset !important;
+}

@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import require_erp_permission
 from packages.common.database import get_db_session
+from packages.domain.models import RemoteAccountTagSnapshot, SourceConfig
 from packages.domain.schemas.remote_account import (
+    ErpCompatibilityRemoteConnection,
+    ErpCompatibilityRemoteMarket,
+    ErpCompatibilityRemoteRegistry,
     RemoteAccountCapabilityUpdateRequest,
     RemoteAccountCreateRequest,
     RemoteAccountPatchRequest,
@@ -21,6 +26,10 @@ from packages.domain.services.auth_service import AuthContext
 from packages.domain.services.erp_access_service import (
     ERP_PERMISSION_REDEMPTION_VIEW,
     ERP_PERMISSION_REMOTE_ACCOUNT_MANAGE,
+)
+from packages.domain.services.erp_compatibility_id_service import (
+    ErpCompatibilityIdError,
+    get_erp_compatibility_ids,
 )
 from packages.domain.services.remote_account_service import (
     RemoteAccountError,
@@ -36,8 +45,17 @@ from packages.domain.services.remote_account_service import (
     update_remote_account,
     update_remote_account_capabilities,
 )
+from packages.domain.services.source_service import list_sources
 
 router = APIRouter(prefix="/erp/remote-accounts", tags=["erp-remote-accounts"])
+
+
+def _credential_configured(item: RemoteAccountView) -> bool:
+    return (
+        bool(item.source.encrypted_credentials)
+        if item.account.credential_mode == "LEGACY_SOURCE"
+        else bool(item.account.encrypted_credentials)
+    )
 
 
 def _response(item: RemoteAccountView) -> RemoteAccountResponse:
@@ -54,9 +72,7 @@ def _response(item: RemoteAccountView) -> RemoteAccountResponse:
         display_name=account.display_name,
         enabled=account.enabled,
         credential_mode=account.credential_mode,
-        credential_configured=(
-            bool(source.encrypted_credentials) if is_legacy else bool(account.encrypted_credentials)
-        ),
+        credential_configured=_credential_configured(item),
         credential_updated_at=(
             source.credential_updated_at if is_legacy else account.credential_updated_at
         ),
@@ -68,11 +84,113 @@ def _response(item: RemoteAccountView) -> RemoteAccountResponse:
     )
 
 
+def _compatibility_registry(
+    items: list[RemoteAccountView],
+    *,
+    sources: list[SourceConfig],
+    source_ids: dict[str, int],
+    account_ids: dict[str, int],
+    tag_ids: dict[str, list[int]] | None = None,
+) -> ErpCompatibilityRemoteRegistry:
+    return ErpCompatibilityRemoteRegistry(
+        markets=[
+            ErpCompatibilityRemoteMarket(
+                id=source_ids[source.source_id],
+                canonical_id=source.source_id,
+                code=source.source_id.upper(),
+                name=source.display_name,
+                base_url=source.base_url,
+                enabled=source.enabled,
+                row_version=source.config_version,
+                created_at=source.created_at,
+                updated_at=source.updated_at,
+            )
+            for source in sorted(
+                sources, key=lambda source: (source.display_order, source.source_id)
+            )
+        ],
+        connections=[
+            ErpCompatibilityRemoteConnection(
+                id=account_ids[item.account.id],
+                canonical_id=item.account.id,
+                username=item.account.login_username,
+                market_id=source_ids[item.source.source_id],
+                canonical_market_id=item.source.source_id,
+                market_code=item.source.source_id.upper(),
+                market_name=item.source.display_name,
+                market_enabled=item.source.enabled,
+                base_url=item.source.base_url,
+                has_password=_credential_configured(item),
+                has_totp_secret=_credential_configured(item),
+                enabled=item.account.enabled,
+                last_checked_at=item.account.last_tested_at,
+                last_error=(
+                    None
+                    if item.account.last_test_status in {None, "SUCCESS", "OK"}
+                    else item.account.last_test_status
+                ),
+                row_version=item.account.credential_version,
+                created_at=item.account.created_at,
+                updated_at=item.account.updated_at,
+                capabilities=item.capabilities,
+                tag_ids=(tag_ids or {}).get(item.account.id, []),
+            )
+            for item in items
+        ],
+    )
+
+
 @router.get("/capabilities")
 async def get_capabilities(
     _: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REMOTE_ACCOUNT_MANAGE)),
 ) -> list[dict[str, str]]:
     return capability_definitions()
+
+
+@router.get(
+    "/compatibility-registry",
+    response_model=ErpCompatibilityRemoteRegistry,
+    include_in_schema=False,
+)
+async def get_compatibility_remote_registry(
+    _: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REDEMPTION_VIEW)),
+    session: AsyncSession = Depends(get_db_session),
+) -> ErpCompatibilityRemoteRegistry:
+    """Return the unified account registry without credentials or live tokens."""
+    items = await list_remote_accounts(session)
+    sources = await list_sources(session)
+    snapshots = list(await session.scalars(select(RemoteAccountTagSnapshot)))
+    tag_ids = {
+        snapshot.account_id: [
+            int(tag["id"])
+            for tag in snapshot.tags_json
+            if isinstance(tag, dict) and isinstance(tag.get("id"), int)
+        ]
+        for snapshot in snapshots
+    }
+    try:
+        source_ids = await get_erp_compatibility_ids(
+            session,
+            entity_type="source",
+            canonical_ids=[source.source_id for source in sources],
+        )
+        account_ids = await get_erp_compatibility_ids(
+            session,
+            entity_type="remote_account",
+            canonical_ids=[item.account.id for item in items],
+        )
+    except ErpCompatibilityIdError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    return _compatibility_registry(
+        items,
+        sources=sources,
+        source_ids=source_ids,
+        account_ids=account_ids,
+        tag_ids=tag_ids,
+    )
 
 
 @router.get("", response_model=list[RemoteAccountResponse])
