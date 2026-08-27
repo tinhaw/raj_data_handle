@@ -42,6 +42,35 @@ def test_web_image_includes_erp_compatibility_source_tree() -> None:
     assert "ln -s /app/node_modules /node_modules" in dockerfile
 
 
+def test_compatibility_page_waits_for_bridged_session_before_mounting() -> None:
+    module = (ROOT / "apps/web/src/components/ErpCompatibilityModule.vue").read_text(
+        encoding="utf-8"
+    )
+
+    assert "const sessionReady = ref(false)" in module
+    assert "if (session && !session.ready) await session.restore()" in module
+    assert "sessionReady.value = true" in module
+    assert '<component v-if="sessionReady" :is="page" />' in module
+
+
+def test_deployed_erp_paths_keep_working_after_entry_cutover() -> None:
+    router = (ROOT / "apps/web/src/router/index.ts").read_text(encoding="utf-8")
+    expected_redirects = {
+        "/dashboard": "/workspace",
+        "/operators": "/erp/operators",
+        "/balances": "/erp/balances",
+        "/imports": "/erp/imports",
+        "/redemption": "/erp/redemption",
+        "/reports": "/erp/reports",
+        "/audit": "/erp/audit",
+        "/remote-connections": "/erp/remote-connections",
+        "/users": "/settings/users",
+        "/settings": "/settings/system",
+    }
+    for source, target in expected_redirects.items():
+        assert f"{{ path: '{source}', redirect: '{target}' }}" in router
+
+
 def test_release_wrapper_reuses_one_strict_ssh_connection() -> None:
     push_script = (ROOT / "deploy" / "push-rajluck.sh").read_text(encoding="utf-8")
 

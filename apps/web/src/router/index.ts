@@ -103,6 +103,9 @@ const router = createRouter({
     { path: '/redemption', redirect: '/erp/redemption' },
     { path: '/reports', redirect: '/erp/reports' },
     { path: '/audit', redirect: '/erp/audit' },
+    { path: '/remote-connections', redirect: '/erp/remote-connections' },
+    { path: '/users', redirect: '/settings/users' },
+    { path: '/settings', redirect: '/settings/system' },
     {
       path: '/erp-preview',
       component: () => import('../components/ErpCompatibilityFrame.vue'),
