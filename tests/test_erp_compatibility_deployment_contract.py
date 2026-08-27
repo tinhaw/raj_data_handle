@@ -71,6 +71,16 @@ def test_deployed_erp_paths_keep_working_after_entry_cutover() -> None:
         assert f"{{ path: '{source}', redirect: '{target}' }}" in router
 
 
+def test_legacy_erp_entry_cutover_redirects_only_safe_reads() -> None:
+    nginx = (ROOT / "deploy/nginx.erp-entry-cutover.conf").read_text(encoding="utf-8")
+
+    assert "server_name erp.aiggtj.com;" in nginx
+    assert "return 302 https://analysis.ailuckdg.com$request_uri;" in nginx
+    assert "if ($request_method !~ ^(GET|HEAD)$)" in nginx
+    assert "return 405;" in nginx
+    assert "Cache-Control \"no-store\"" in nginx
+
+
 def test_release_wrapper_reuses_one_strict_ssh_connection() -> None:
     push_script = (ROOT / "deploy" / "push-rajluck.sh").read_text(encoding="utf-8")
 
