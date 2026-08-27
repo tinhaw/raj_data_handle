@@ -1,14 +1,16 @@
 # P5 ERP 历史数据快照迁移演练
 
-状态：演练工具、稳定业务键目录解析器与合成全链路样例已完成。2026-08-27 已取得旧 ERP
-与 `data_handle` 两个生产一致性备份；真实历史先后在全新 0037 PostgreSQL 和由生产 0034
-恢复的隔离克隆上完成全量演练。生产 schema、数据导入、应用发布与切换均未执行。
+状态：演练工具、稳定业务键目录解析器、双快照演练和生产切换均已完成。2026-08-27 已取得
+旧 ERP 与 `data_handle` 的最终可恢复备份；生产 `data_handle` 已完成 0035–0037、最终历史
+导入、应用发布和旧域名入口切换。远端业务操作保持禁用。
 
 ## 1. 固定边界
 
-`deploy/rehearse_erp_snapshot.py` 只接受数据库名或 SQLite 文件名中明确包含
-`snapshot` / `rehearsal` 的源和目标，且硬拒绝生产 `data_handle`。默认只预检；写入还
-必须同时传入 `--apply --confirm-isolated-rehearsal P5-ISOLATED-REHEARSAL`。
+`deploy/rehearse_erp_snapshot.py` 默认只接受数据库名或 SQLite 文件名中明确包含
+`snapshot` / `rehearsal` 的隔离目标。生产 `data_handle` 只有在显式选择
+`--target-mode production-cutover` 并提供生产确认串时才可访问。默认只预检；隔离写入还
+必须同时传入 `--apply --confirm-isolated-rehearsal P5-ISOLATED-REHEARSAL`，生产写入使用
+单独的 `P5-PRODUCTION-CUTOVER` 门。
 
 `deploy/prepare_erp_p5_directory_mapping.py` 使用旧用户名、盘口代码、远端登录名和当前
 `source_id` 等稳定业务键生成上述工具需要的数字 ID / UUID 映射。它同样硬拒绝生产库；
@@ -161,7 +163,7 @@ schema 后和历史导入后的精确行数基线，`alembic-check.final.txt` �
 6. 每行规范化摘要一致，审计记录的操作人和时间线可追溯；
 7. 目标中不存在旧密码、TOTP、Token 或 Session 表/字段副本。
 
-真实快照演练通过仍不等于获准生产迁移。生产执行前必须依次完成：
+在本次生产执行前，以下前置条件已依次完成：
 
 1. 重新核对生产 revision、`data_handle` 可恢复备份、回退负责人和执行窗口；
 2. 旧 ERP 停写后生成最终一致性备份，并与本次基线比较新增/变更范围；
@@ -169,3 +171,23 @@ schema 后和历史导入后的精确行数基线，`alembic-check.final.txt` �
 4. 发布应用、验证页面/API/导出后再切换路由。失败时只回切旧 ERP 路由，不降级或清理 RDS；
 5. 切换后由管理员重新录入远端凭据，并分别授权所需能力。远端连接检测、标签同步、兑换码
    创建/发布/取消/下载仍须逐项授权，不能作为数据迁移的一部分自动执行。
+
+## 5. 生产执行结果
+
+2026-08-27 的获批执行窗口完成了以下操作：
+
+- 旧 ERP 停写后生成最终备份 `erp-20260827T143234Z-168092`，数据库 dump、文件归档及
+  manifest 的 SHA-256 均已在服务端和本机复核；旧数据库继续运行以保留快速回退能力；
+- `data_handle` 的可恢复基线为 `data-handle-20260827T123023Z`，生产 Alembic 从 0034
+  升级到 `20260827_0037`，最终 `alembic check` 无漂移；
+- 4 个旧操作人映射到当前用户，3 个盘口映射到 `SourceConfig`，3 个旧兑换账号创建为同一
+  `RemoteAccount` 主数据中的独立占位记录，均停用、无凭据、无 capability；
+- 12 张业务表共导入 3,950 行：2,513 条审计、1,187 条兑换码、27 个批次、27 个活动、
+  19 个任务等数量与最终快照一致；硬关联孤儿为 0，12 个 sequence 已同步；
+- API、ERP 兼容服务、Web、Redis 和 worker 已发布并通过健康检查；生产运行时继续设置
+  `ERP_COMPAT_REMOTE_OPERATIONS_ENABLED=false`；
+- `erp.aiggtj.com` 的 GET/HEAD 入口通过独立 Nginx 302 到合并系统，非读取请求返回 405。
+  Chrome 验收确认 19 个任务组、450/450 导入记录、审计页和统一远端账号页均正常。
+
+回退不降级或清理 `data_handle`：停止入口重定向容器，再启动旧 ERP 的 API、Web 和
+edge-proxy 即可。远端凭据重录及能力授权是切换后的独立管理工作，不属于本次迁移执行。

@@ -56,7 +56,8 @@ def test_online_erp_baseline_uses_cloud_first_compatibility_strategy() -> None:
         "target_database": "data_handle",
         "shared_identity": True,
         "shared_remote_accounts": True,
-        "production_execution_authorized": False,
+        "production_cutover_executed": True,
+        "remote_operations_execution_authorized": False,
     }
 
 
