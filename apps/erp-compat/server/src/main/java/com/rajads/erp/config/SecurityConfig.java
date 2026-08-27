@@ -5,7 +5,6 @@ import com.rajads.erp.identity.IdentityService;
 import com.rajads.erp.identity.SessionUserRefreshFilter;
 import com.rajads.erp.shared.ApiError;
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -33,7 +32,6 @@ import java.util.List;
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
-@EnableConfigurationProperties(ErpProperties.class)
 @ConditionalOnProperty(prefix = "erp.compatibility", name = "standalone-auth-enabled", havingValue = "true")
 public class SecurityConfig {
     @Bean

@@ -1,9 +1,12 @@
 package com.rajads.erp;
 
+import com.rajads.erp.config.ErpProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
 @SpringBootApplication
+@EnableConfigurationProperties(ErpProperties.class)
 public class ErpApplication {
     public static void main(String[] args) {
         requireExplicitCompatibilityActivation(System.getenv());
