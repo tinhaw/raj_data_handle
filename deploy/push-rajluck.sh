@@ -123,7 +123,14 @@ SSH_TARGET="${SSH_TARGET_OVERRIDE:-$DEPLOYMENT_SSH_USER@$DEPLOYMENT_SSH_HOST}"
 
 umask 077
 RENDERED_ENV="$(mktemp "${TMPDIR:-/tmp}/raj-data-handle-rajluck.XXXXXX")"
+SSH_CONTROL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/raj-data-handle-ssh.XXXXXX")"
+SSH_CONTROL_PATH="$SSH_CONTROL_DIR/control"
 cleanup() {
+    if [[ -S "$SSH_CONTROL_PATH" ]]; then
+        ssh -p "$DEPLOYMENT_SSH_PORT" -o "ControlPath=$SSH_CONTROL_PATH" \
+            -O exit "$SSH_TARGET" >/dev/null 2>&1 || true
+    fi
+    rmdir "$SSH_CONTROL_DIR" >/dev/null 2>&1 || true
     rm -f "$RENDERED_ENV"
     if [[ -n "$SOURCE_ARCHIVE" ]]; then rm -f "$SOURCE_ARCHIVE"; fi
 }
@@ -143,6 +150,11 @@ SSH_OPTIONS=(
     -o KbdInteractiveAuthentication=no
     -o PreferredAuthentications=publickey
     -o StrictHostKeyChecking=yes
+    -o ConnectionAttempts=3
+    -o ConnectTimeout=10
+    -o ControlMaster=auto
+    -o ControlPersist=60
+    -o "ControlPath=$SSH_CONTROL_PATH"
 )
 if [[ -n "$IDENTITY_FILE" ]]; then SSH_OPTIONS+=(-i "$IDENTITY_FILE"); fi
 if [[ -n "$KNOWN_HOSTS_FILE" ]]; then SSH_OPTIONS+=(-o "UserKnownHostsFile=$KNOWN_HOSTS_FILE"); fi
@@ -153,6 +165,11 @@ SCP_OPTIONS=(
     -o KbdInteractiveAuthentication=no
     -o PreferredAuthentications=publickey
     -o StrictHostKeyChecking=yes
+    -o ConnectionAttempts=3
+    -o ConnectTimeout=10
+    -o ControlMaster=auto
+    -o ControlPersist=60
+    -o "ControlPath=$SSH_CONTROL_PATH"
 )
 if [[ -n "$IDENTITY_FILE" ]]; then SCP_OPTIONS+=(-i "$IDENTITY_FILE"); fi
 if [[ -n "$KNOWN_HOSTS_FILE" ]]; then SCP_OPTIONS+=(-o "UserKnownHostsFile=$KNOWN_HOSTS_FILE"); fi

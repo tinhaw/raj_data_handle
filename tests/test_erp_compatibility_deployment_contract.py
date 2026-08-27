@@ -33,3 +33,13 @@ def test_source_upload_excludes_erp_compatibility_build_artifacts() -> None:
     assert "--exclude='apps/erp-compat/web/dist'" in push_script
     assert "--exclude='apps/erp-compat/server/target'" in push_script
     assert "--exclude='apps/erp-compat/server/var'" in push_script
+
+
+def test_release_wrapper_reuses_one_strict_ssh_connection() -> None:
+    push_script = (ROOT / "deploy" / "push-rajluck.sh").read_text(encoding="utf-8")
+
+    assert "ControlMaster=auto" in push_script
+    assert "ControlPersist=60" in push_script
+    assert 'ControlPath=$SSH_CONTROL_PATH' in push_script
+    assert "StrictHostKeyChecking=yes" in push_script
+    assert "PreferredAuthentications=publickey" in push_script
