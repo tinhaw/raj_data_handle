@@ -24,3 +24,12 @@ def test_web_proxy_exposes_only_the_compatibility_api_mount() -> None:
 
     assert "location /erp-api/" in nginx
     assert "proxy_pass http://erp-compat:8080/;" in nginx
+
+
+def test_source_upload_excludes_erp_compatibility_build_artifacts() -> None:
+    push_script = (ROOT / "deploy" / "push-rajluck.sh").read_text(encoding="utf-8")
+
+    assert "--exclude='apps/erp-compat/web/node_modules'" in push_script
+    assert "--exclude='apps/erp-compat/web/dist'" in push_script
+    assert "--exclude='apps/erp-compat/server/target'" in push_script
+    assert "--exclude='apps/erp-compat/server/var'" in push_script

@@ -211,6 +211,10 @@ if [[ "$UPLOAD_SOURCE" == true ]]; then
         --no-mac-metadata \
         --exclude='apps/web/node_modules' \
         --exclude='apps/web/dist' \
+        --exclude='apps/erp-compat/web/node_modules' \
+        --exclude='apps/erp-compat/web/dist' \
+        --exclude='apps/erp-compat/server/target' \
+        --exclude='apps/erp-compat/server/var' \
         --exclude='**/__pycache__' \
         --exclude='**/*.pyc' \
         --exclude='__pycache__' \
