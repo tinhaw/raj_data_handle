@@ -344,7 +344,11 @@ def _synthetic_canonical_id(entity_type: str, legacy_id: int) -> str:
 def _normalize(value: Any) -> Any:
     if isinstance(value, Decimal):
         return format(value, "f")
-    if isinstance(value, (datetime, date)):
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(UTC)
+        return value.isoformat()
+    if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, bytes):
         return hashlib.sha256(value).hexdigest()
@@ -1175,7 +1179,14 @@ def _verify_target(
     if counts != inventory["counts"]:
         raise RehearsalError("目标表行数校验失败。")
     if digests != expected_digests:
-        raise RehearsalError("目标表逐行摘要校验失败。")
+        mismatched_tables = sorted(
+            table_name
+            for table_name in set(digests) | set(expected_digests)
+            if digests.get(table_name) != expected_digests.get(table_name)
+        )
+        raise RehearsalError(
+            "目标表逐行摘要校验失败：" + "、".join(mismatched_tables) + "。"
+        )
     if amount_sums != inventory["amount_sums"]:
         raise RehearsalError("目标金额汇总校验失败。")
     audit_table = target_meta.tables["erp_compat_audit_logs"]

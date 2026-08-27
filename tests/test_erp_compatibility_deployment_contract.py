@@ -35,6 +35,13 @@ def test_source_upload_excludes_erp_compatibility_build_artifacts() -> None:
     assert "--exclude='apps/erp-compat/server/var'" in push_script
 
 
+def test_web_image_includes_erp_compatibility_source_tree() -> None:
+    dockerfile = Path("deploy/web.Dockerfile").read_text(encoding="utf-8")
+
+    assert "COPY apps/erp-compat/web /erp-compat/web" in dockerfile
+    assert "ln -s /app/node_modules /node_modules" in dockerfile
+
+
 def test_release_wrapper_reuses_one_strict_ssh_connection() -> None:
     push_script = (ROOT / "deploy" / "push-rajluck.sh").read_text(encoding="utf-8")
 

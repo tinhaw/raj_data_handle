@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -25,11 +25,28 @@ from deploy.rehearse_erp_snapshot import (
     TARGET_MODE_PRODUCTION,
     RehearsalError,
     RehearsalManifest,
+    _normalize,
     rehearse_snapshot,
     validate_isolated_urls,
     validate_target_urls,
 )
 from packages.common.settings import get_settings
+
+
+def test_p5_digest_normalizes_timezone_aware_datetimes_to_utc() -> None:
+    utc_value = datetime(2026, 8, 27, 12, 42, 56, 425791, tzinfo=UTC)
+    hong_kong_value = datetime(
+        2026,
+        8,
+        27,
+        20,
+        42,
+        56,
+        425791,
+        tzinfo=timezone(timedelta(hours=8)),
+    )
+
+    assert _normalize(utc_value) == _normalize(hong_kong_value)
 
 
 def _upgrade_target(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
