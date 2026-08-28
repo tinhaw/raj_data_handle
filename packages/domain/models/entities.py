@@ -20,6 +20,7 @@ from sqlalchemy import (
     Text,
     Time,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -707,6 +708,13 @@ class RemoteAccount(Base):
             name="uq_remote_account_source_login_username",
         ),
         Index("ix_remote_account_source_enabled", "source_id", "enabled"),
+        Index(
+            "uq_remote_account_source_default",
+            "source_id",
+            unique=True,
+            postgresql_where=text("is_default"),
+            sqlite_where=text("is_default = 1"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
@@ -719,6 +727,10 @@ class RemoteAccount(Base):
     login_username: Mapped[str | None] = mapped_column(String(200))
     display_name: Mapped[str] = mapped_column(String(120), nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Background analysis jobs always use the single enabled default account
+    # for a market. Other enabled accounts remain available for explicitly
+    # selected ERP work and as ready-to-promote backups.
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     credential_mode: Mapped[str] = mapped_column(String(30), nullable=False, default="MANAGED")
     encrypted_credentials: Mapped[str | None] = mapped_column(Text)
     credential_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

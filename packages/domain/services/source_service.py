@@ -39,6 +39,11 @@ from packages.domain.services.data_dictionary_service import (
 from packages.domain.services.erp_compatibility_id_service import (
     register_erp_compatibility_id,
 )
+from packages.domain.services.remote_account_credentials import (
+    RemoteAccountCredentialsError,
+    decrypt_remote_account_credentials,
+    resolve_default_remote_account_credentials,
+)
 from packages.domain.services.remote_charge_service import RajAdminChargeClient, RemoteChargeError
 from packages.domain.services.remote_scoring_review_service import (
     RemoteScoringReviewError,
@@ -430,10 +435,14 @@ async def upsert_source(
     requested_enabled = getattr(request, "enabled", None)
     if requested_enabled is not None:
         if requested_enabled:
-            if not source.base_url or not source.encrypted_credentials:
-                raise SourceValidationError("启用前必须配置 Base URL 和完整远端凭据。")
-            if source.last_test_status != "passed":
-                raise SourceValidationError("启用前必须通过最近一次完整连接测试。")
+            if not source.base_url:
+                raise SourceValidationError("启用前必须配置 Base URL。")
+            credential_envelope = await resolve_default_remote_account_credentials(
+                session,
+                source=source,
+            )
+            if credential_envelope is None:
+                raise SourceValidationError("启用前必须配置一个已启用的默认远端账号。")
         if source.enabled != requested_enabled:
             source.enabled = requested_enabled
             changed_fields.append("enabled")
@@ -644,18 +653,22 @@ async def test_source_connection(
     actor_user_id: int,
 ) -> tuple[SourceConfig, str]:
     source = await get_source(session, source_id)
-    if not source.base_url or not source.encrypted_credentials:
-        raise SourceValidationError("请先保存 Base URL 和完整远端凭据。")
+    if not source.base_url:
+        raise SourceValidationError("请先保存 Base URL。")
     request_id = uuid.uuid4().hex
     settings = get_settings()
+    credential_envelope = await resolve_default_remote_account_credentials(
+        session,
+        source=source,
+    )
+    if credential_envelope is None:
+        raise SourceValidationError("请先配置一个已启用的默认远端账号。")
     try:
-        credentials = decrypt_credentials(
-            source.encrypted_credentials,
-            source_id=source.source_id,
-            credential_version=source.credential_version,
+        credentials = decrypt_remote_account_credentials(
+            credential_envelope,
             settings=settings,
         )
-    except SecurityValidationError as exc:
+    except RemoteAccountCredentialsError as exc:
         raise SourceValidationError("已保存凭据无法解密，请清除后重新配置。") from exc
     test_status = "failed"
     synced_channels = 0

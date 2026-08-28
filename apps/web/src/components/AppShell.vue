@@ -193,11 +193,11 @@ onBeforeUnmount(() => {
           </el-menu-item>
           <el-menu-item v-if="isAdmin" index="/settings/sources">
             <el-icon><Connection /></el-icon>
-            <template #title>远端账号与盘口</template>
+            <template #title>盘口配置</template>
           </el-menu-item>
           <el-menu-item v-if="hasErpPermission('ERP_REDEMPTION_VIEW')" index="/erp/remote-connections">
             <el-icon><Connection /></el-icon>
-            <template #title>ERP 业务授权</template>
+            <template #title>远端账号</template>
           </el-menu-item>
           <el-menu-item v-if="isAdmin" index="/settings/data-dictionaries">
             <el-icon><Collection /></el-icon>

@@ -1,17 +1,15 @@
 <script setup lang="ts">
-import { Edit, Plus, Refresh, Setting } from '@element-plus/icons-vue'
+import { Edit, Plus, Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import {
   createRemoteAccount,
   fetchRemoteTagSnapshot,
   fetchRewardTierPreset,
-  fetchRemoteAccountCapabilities,
   fetchRemoteAccounts,
   updateRemoteAccount,
-  updateRemoteAccountCapabilities,
   saveRemoteTagSnapshot,
   saveRewardTierPreset,
 } from '../api/remoteAccounts'
@@ -19,25 +17,21 @@ import { fetchAllSources } from '../api/sources'
 import { apiErrorMessage } from '../api/client'
 import type {
   RemoteAccount,
-  RemoteAccountCapabilityDefinition,
   RemoteTag,
   RewardTierPresetTier,
   SourceConfig,
 } from '../types'
-import { formatDateTime } from '../ui'
 import { hasErpPermission } from '../stores/auth'
 
 const router = useRouter()
+const route = useRoute()
 const loading = ref(false)
 const saving = ref(false)
 const accounts = ref<RemoteAccount[]>([])
 const sources = ref<SourceConfig[]>([])
-const capabilityDefinitions = ref<RemoteAccountCapabilityDefinition[]>([])
 const accountDialogVisible = ref(false)
-const capabilityDialogVisible = ref(false)
 const presetDialogVisible = ref(false)
 const editingAccount = ref<RemoteAccount | null>(null)
-const capabilityAccount = ref<RemoteAccount | null>(null)
 const presetAccount = ref<RemoteAccount | null>(null)
 const presetTags = ref<RemoteTag[]>([])
 const presetTiers = ref<RewardTierPresetTier[]>([])
@@ -48,8 +42,8 @@ const accountForm = reactive({
   password: '',
   totpSecret: '',
   enabled: true,
+  isDefault: false,
 })
-const capabilityValues = reactive<Record<string, boolean>>({})
 
 const selectedSource = computed(
   () => sources.value.find((source) => source.sourceId === accountForm.sourceId) || null,
@@ -62,16 +56,14 @@ async function load(): Promise<void> {
   loading.value = true
   try {
     const canManage = hasErpPermission('ERP_REMOTE_ACCOUNT_MANAGE')
-    const [nextSources, nextAccounts, nextCapabilities] = await Promise.all([
+    const [nextSources, nextAccounts] = await Promise.all([
       canManage ? fetchAllSources() : Promise.resolve([]),
       fetchRemoteAccounts(),
-      canManage ? fetchRemoteAccountCapabilities() : Promise.resolve([]),
     ])
     sources.value = nextSources
     accounts.value = nextAccounts
-    capabilityDefinitions.value = nextCapabilities
   } catch (error) {
-    ElMessage.error(apiErrorMessage(error, '远端账号与业务授权加载失败。'))
+    ElMessage.error(apiErrorMessage(error, '远端账号加载失败。'))
   } finally {
     loading.value = false
   }
@@ -85,10 +77,23 @@ function resetAccountForm(): void {
   accountForm.password = ''
   accountForm.totpSecret = ''
   accountForm.enabled = true
+  accountForm.isDefault = false
 }
 
 function openCreateAccount(): void {
+  if (!sources.value.length) {
+    ElMessage.warning('请先创建盘口，再为盘口配置远端账号。')
+    void router.push('/settings/sources')
+    return
+  }
   resetAccountForm()
+  const requestedSourceId = String(route.query.sourceId || '')
+  accountForm.sourceId = sources.value.some((source) => source.sourceId === requestedSourceId)
+    ? requestedSourceId
+    : sources.value[0]?.sourceId || ''
+  accountForm.isDefault = !accounts.value.some(
+    (account) => account.sourceId === accountForm.sourceId && account.isDefault,
+  )
   accountDialogVisible.value = true
 }
 
@@ -100,7 +105,15 @@ function openEditAccount(account: RemoteAccount): void {
   accountForm.password = ''
   accountForm.totpSecret = ''
   accountForm.enabled = account.enabled
+  accountForm.isDefault = account.isDefault
   accountDialogVisible.value = true
+}
+
+function selectSource(sourceId: string): void {
+  if (editingAccount.value) return
+  accountForm.isDefault = !accounts.value.some(
+    (account) => account.sourceId === sourceId && account.isDefault,
+  )
 }
 
 function validateAccount(): boolean {
@@ -108,13 +121,15 @@ function validateAccount(): boolean {
     ElMessage.warning('请填写远端账号显示名称。')
     return false
   }
-  if (editingAccount.value) return true
   if (!accountForm.sourceId || !accountForm.loginUsername.trim()) {
     ElMessage.warning('请选择所属盘口，并填写远端登录账号。')
     return false
   }
-  if (!accountForm.password || !accountForm.totpSecret.trim()) {
-    ElMessage.warning('新建远端账号必须同时填写密码和 TOTP Secret。')
+  if (
+    (!editingAccount.value || isLegacyAccount.value) &&
+    (!accountForm.password || !accountForm.totpSecret.trim())
+  ) {
+    ElMessage.warning('请同时填写密码和 TOTP Secret。')
     return false
   }
   return true
@@ -128,20 +143,24 @@ async function saveAccount(): Promise<void> {
       const payload: {
         displayName?: string
         enabled?: boolean
+        isDefault?: boolean
         loginUsername?: string
         credentials?: { password?: string; totpSecret?: string }
       } = {
         displayName: accountForm.displayName.trim(),
         enabled: accountForm.enabled,
       }
-      if (!isLegacyAccount.value && accountForm.loginUsername.trim()) {
+      if (accountForm.loginUsername.trim()) {
         payload.loginUsername = accountForm.loginUsername.trim()
       }
-      if (!isLegacyAccount.value && (accountForm.password || accountForm.totpSecret.trim())) {
+      if (accountForm.password || accountForm.totpSecret.trim()) {
         payload.credentials = {
           password: accountForm.password || undefined,
           totpSecret: accountForm.totpSecret.trim() || undefined,
         }
+      }
+      if (accountForm.isDefault && !editingAccount.value.isDefault) {
+        payload.isDefault = true
       }
       await updateRemoteAccount(editingAccount.value.id, payload)
       ElMessage.success('远端账号已更新。')
@@ -151,12 +170,13 @@ async function saveAccount(): Promise<void> {
         loginUsername: accountForm.loginUsername.trim(),
         displayName: accountForm.displayName.trim(),
         enabled: accountForm.enabled,
+        isDefault: accountForm.isDefault,
         credentials: {
           password: accountForm.password,
           totpSecret: accountForm.totpSecret.trim(),
         },
       })
-      ElMessage.success('远端账号已创建。')
+      ElMessage.success('远端账号已创建，并已获得该盘口的全部功能。需要时请在盘口配置中启用盘口。')
     }
     accountDialogVisible.value = false
     await load()
@@ -165,36 +185,6 @@ async function saveAccount(): Promise<void> {
   } finally {
     saving.value = false
   }
-}
-
-function openCapabilities(account: RemoteAccount): void {
-  capabilityAccount.value = account
-  for (const key of Object.keys(capabilityValues)) delete capabilityValues[key]
-  for (const definition of capabilityDefinitions.value) {
-    capabilityValues[definition.code] = Boolean(account.capabilities[definition.code])
-  }
-  capabilityDialogVisible.value = true
-}
-
-async function saveCapabilities(): Promise<void> {
-  if (!capabilityAccount.value) return
-  saving.value = true
-  try {
-    await updateRemoteAccountCapabilities(capabilityAccount.value.id, { ...capabilityValues })
-    ElMessage.success('账号能力授权已保存；这不会触发任何远端操作。')
-    capabilityDialogVisible.value = false
-    await load()
-  } catch (error) {
-    ElMessage.error(apiErrorMessage(error, '账号能力授权保存失败。'))
-  } finally {
-    saving.value = false
-  }
-}
-
-function enabledCapabilityLabels(account: RemoteAccount): string[] {
-  return capabilityDefinitions.value
-    .filter((definition) => account.capabilities[definition.code])
-    .map((definition) => definition.label)
 }
 
 async function openPreset(account: RemoteAccount): Promise<void> {
@@ -249,7 +239,12 @@ async function savePreset(): Promise<void> {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  if (route.query.create === '1' && hasErpPermission('ERP_REMOTE_ACCOUNT_MANAGE')) {
+    openCreateAccount()
+  }
+})
 </script>
 
 <template>
@@ -257,8 +252,8 @@ onMounted(load)
     <header class="page-header">
       <div>
         <span class="page-eyebrow">Unified remote accounts</span>
-        <h1>远端账号与业务授权</h1>
-        <p>一个远端账号归属一个盘口；分析读取与 ERP 能力通过同一账号单独授权。</p>
+        <h1>远端账号</h1>
+        <p>账号创建时选择所属盘口；启用后可处理该盘口的数据分析、ERP 和其他远端功能。</p>
       </div>
       <div class="header-actions">
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
@@ -268,9 +263,9 @@ onMounted(load)
     </header>
 
     <el-alert
-      title="远端动作保持禁用"
-      description="此页只保存本地账号与能力授权；不会测试连接、同步标签、创建或发布兑换码。即使勾选 ERP 能力，未来实际远端动作仍需逐项取得授权。"
-      type="warning"
+      title="配置顺序：先配置盘口，再创建账号"
+      description="每个盘口可配置多个账号；自动同步和后台任务使用唯一的默认账号，其他启用账号可作为备用或由业务任务明确选择。所有账号固定具备完整功能，无需逐项授权。"
+      type="info"
       show-icon
       :closable="false"
     />
@@ -288,8 +283,14 @@ onMounted(load)
             <strong>{{ row.loginUsername || row.displayName }}</strong>
             <small class="table-subtext">{{ row.displayName }}</small>
             <el-tag v-if="row.credentialMode === 'LEGACY_SOURCE'" type="info" size="small">
-              历史分析凭据
+              待重新配置
             </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="用途" width="130" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.isDefault" type="primary">默认账号</el-tag>
+            <span v-else class="muted">备用 / 指定</span>
           </template>
         </el-table-column>
         <el-table-column label="凭据" width="115" align="center">
@@ -299,14 +300,11 @@ onMounted(load)
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="能力授权" min-width="250">
+        <el-table-column label="功能" width="120" align="center">
           <template #default="{ row }">
-            <div v-if="enabledCapabilityLabels(row).length" class="capability-tags">
-              <el-tag v-for="label in enabledCapabilityLabels(row)" :key="label" effect="plain">
-                {{ label }}
-              </el-tag>
-            </div>
-            <span v-else class="muted">未授予能力</span>
+            <el-tag :type="row.credentialConfigured ? 'success' : 'info'" effect="plain">
+              {{ row.credentialConfigured ? '全部功能' : '配置后启用' }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="115" align="center">
@@ -316,21 +314,14 @@ onMounted(load)
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="最近远端测试" min-width="180">
+        <el-table-column v-if="hasErpPermission('ERP_REMOTE_ACCOUNT_MANAGE')" label="操作" width="230" fixed="right">
           <template #default="{ row }">
-            <div>{{ row.lastTestStatus || '未测试' }}</div>
-            <small class="table-subtext">{{ formatDateTime(row.lastTestedAt) }}</small>
-          </template>
-        </el-table-column>
-        <el-table-column v-if="hasErpPermission('ERP_REMOTE_ACCOUNT_MANAGE')" label="操作" width="285" fixed="right">
-          <template #default="{ row }">
-            <el-button text type="primary" :icon="Edit" @click="openEditAccount(row)">
-              编辑账号
-            </el-button>
-            <el-button text type="primary" :icon="Setting" @click="openCapabilities(row)">
-              授权
-            </el-button>
-            <el-button text type="primary" @click="openPreset(row)">标签/档位</el-button>
+            <div class="account-actions">
+              <el-button text type="primary" :icon="Edit" @click="openEditAccount(row)">
+                配置账号
+              </el-button>
+              <el-button text type="primary" @click="openPreset(row)">标签/档位</el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -344,14 +335,19 @@ onMounted(load)
       <el-form label-position="top">
         <el-alert
           v-if="isLegacyAccount"
-          title="历史默认账号只引用现有分析凭据"
-          description="为避免复制或解密既有凭据，本阶段只能修改显示名称与启用状态。后续凭据接管会与分析读取链路一起迁移。"
-          type="info"
+          title="请重新配置这个历史账号"
+          description="填写登录账号、密码和 TOTP Secret 后，分析与 ERP 会统一使用这条账号记录；旧盘口凭据不再参与账号选择。"
+          type="warning"
           show-icon
           :closable="false"
         />
         <el-form-item label="所属盘口">
-          <el-select v-model="accountForm.sourceId" :disabled="Boolean(editingAccount)" style="width: 100%">
+          <el-select
+            v-model="accountForm.sourceId"
+            :disabled="Boolean(editingAccount)"
+            style="width: 100%"
+            @change="selectSource"
+          >
             <el-option
               v-for="source in sources"
               :key="source.sourceId"
@@ -365,58 +361,52 @@ onMounted(load)
         </el-form-item>
         <div class="form-grid">
           <el-form-item label="远端登录账号">
-            <el-input v-model="accountForm.loginUsername" :disabled="isLegacyAccount" autocomplete="username" />
+            <el-input v-model="accountForm.loginUsername" autocomplete="username" />
           </el-form-item>
           <el-form-item label="账号显示名称">
             <el-input v-model="accountForm.displayName" placeholder="例如 RajWin 主账号" />
           </el-form-item>
         </div>
         <div class="form-grid">
-          <el-form-item :label="editingAccount ? '登录密码（留空不修改）' : '登录密码'">
+          <el-form-item :label="editingAccount && !isLegacyAccount ? '登录密码（留空不修改）' : '登录密码'">
             <el-input
               v-model="accountForm.password"
-              :disabled="isLegacyAccount"
               type="password"
               show-password
               autocomplete="new-password"
             />
           </el-form-item>
-          <el-form-item :label="editingAccount ? 'TOTP Secret（留空不修改）' : 'TOTP Secret'">
+          <el-form-item :label="editingAccount && !isLegacyAccount ? 'TOTP Secret（留空不修改）' : 'TOTP Secret'">
             <el-input
               v-model="accountForm.totpSecret"
-              :disabled="isLegacyAccount"
               type="password"
               show-password
               autocomplete="off"
             />
           </el-form-item>
         </div>
-        <el-form-item label="启用账号">
-          <el-switch v-model="accountForm.enabled" />
-        </el-form-item>
+        <div class="form-grid">
+          <el-form-item label="启用账号">
+            <el-switch
+              v-model="accountForm.enabled"
+              :disabled="Boolean(editingAccount?.isDefault)"
+            />
+            <span v-if="editingAccount?.isDefault" class="field-help">
+              默认账号不能直接停用，请先将其他账号设为默认。
+            </span>
+          </el-form-item>
+          <el-form-item label="默认账号">
+            <el-switch
+              v-model="accountForm.isDefault"
+              :disabled="Boolean(editingAccount?.isDefault)"
+            />
+            <span class="field-help">自动同步和后台任务使用默认账号。</span>
+          </el-form-item>
+        </div>
       </el-form>
       <template #footer>
         <el-button @click="accountDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="saveAccount">保存</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="capabilityDialogVisible" title="授予账号能力" width="620px">
-      <p class="dialog-lead">
-        {{ capabilityAccount?.displayName }}：能力是本地服务端校验项，不会立即调用任何远端系统。
-      </p>
-      <div class="capability-options">
-        <el-checkbox
-          v-for="definition in capabilityDefinitions"
-          :key="definition.code"
-          v-model="capabilityValues[definition.code]"
-        >
-          {{ definition.label }}
-        </el-checkbox>
-      </div>
-      <template #footer>
-        <el-button @click="capabilityDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="saveCapabilities">保存授权</el-button>
       </template>
     </el-dialog>
 
@@ -459,21 +449,11 @@ onMounted(load)
   font-size: 12px;
 }
 
-.capability-tags {
+.account-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.dialog-lead {
-  margin: 0 0 16px;
-  color: var(--ink-muted);
-  line-height: 1.6;
-}
-
-.capability-options {
-  display: grid;
-  gap: 14px;
+  flex-wrap: nowrap;
+  align-items: center;
+  white-space: nowrap;
 }
 
 .preset-heading { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 10px; }

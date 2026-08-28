@@ -7,11 +7,15 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from packages.common.security import SecurityValidationError, decrypt_credentials
 from packages.common.settings import Settings, get_settings
 from packages.domain.models import DataDictionaryEntry, SourceConfig
 from packages.domain.schemas.data_dictionary import DataDictionaryEntryResponse
 from packages.domain.services.auth_service import write_audit
+from packages.domain.services.remote_account_credentials import (
+    RemoteAccountCredentialsError,
+    decrypt_remote_account_credentials,
+    resolve_default_remote_account_credentials,
+)
 from packages.domain.services.remote_charge_service import RemoteChargeError
 from packages.domain.services.remote_spin_service import RajAdminSpinClient
 from packages.domain.services.remote_withdraw_service import RajAdminWithdrawClient
@@ -329,14 +333,18 @@ async def sync_remote_user_source_channels(
         raise DataDictionaryNotFoundError("盘口配置不存在。")
     if not source.enabled:
         raise DataDictionaryValidationError("所选盘口尚未启用。")
-    if not source.base_url or not source.encrypted_credentials:
+    if not source.base_url:
         raise DataDictionaryValidationError("所选盘口缺少远端地址或凭据。")
     current_settings = settings or get_settings()
+    credential_envelope = await resolve_default_remote_account_credentials(
+        session,
+        source=source,
+    )
+    if credential_envelope is None:
+        raise DataDictionaryValidationError("所选盘口缺少默认远端账号或完整凭据。")
     try:
-        credentials = decrypt_credentials(
-            source.encrypted_credentials,
-            source_id=source.source_id,
-            credential_version=source.credential_version,
+        credentials = decrypt_remote_account_credentials(
+            credential_envelope,
             settings=current_settings,
         )
         async with RajAdminSpinClient(
@@ -353,7 +361,7 @@ async def sync_remote_user_source_channels(
             channels=channels,
             now=fetched_at,
         )
-    except (KeyError, SecurityValidationError) as exc:
+    except (KeyError, RemoteAccountCredentialsError) as exc:
         raise DataDictionaryValidationError("已保存的盘口凭据不完整或无法解密。") from exc
     except (DataDictionarySyncError, RemoteChargeError) as exc:
         raise DataDictionaryRemoteSyncError(
@@ -741,18 +749,22 @@ async def sync_remote_withdraw_statuses(
         raise DataDictionaryNotFoundError("盘口配置不存在。")
     if not source.enabled:
         raise DataDictionaryValidationError("所选盘口尚未启用。")
-    if not source.base_url or not source.encrypted_credentials:
+    if not source.base_url:
         raise DataDictionaryValidationError("所选盘口缺少远端地址或凭据。")
 
     current_settings = settings or get_settings()
+    credential_envelope = await resolve_default_remote_account_credentials(
+        session,
+        source=source,
+    )
+    if credential_envelope is None:
+        raise DataDictionaryValidationError("所选盘口缺少默认远端账号或完整凭据。")
     try:
-        credentials = decrypt_credentials(
-            source.encrypted_credentials,
-            source_id=source.source_id,
-            credential_version=source.credential_version,
+        credentials = decrypt_remote_account_credentials(
+            credential_envelope,
             settings=current_settings,
         )
-    except SecurityValidationError as exc:
+    except RemoteAccountCredentialsError as exc:
         raise DataDictionaryValidationError("已保存的盘口凭据无法解密。") from exc
     try:
         username = credentials["username"]

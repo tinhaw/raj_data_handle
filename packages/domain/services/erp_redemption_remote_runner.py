@@ -12,7 +12,6 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from packages.common.security import SecurityValidationError, decrypt_credentials
 from packages.common.settings import Settings
 from packages.domain.models import (
     ErpRedemptionCodeIssue,
@@ -39,7 +38,11 @@ from packages.domain.services.erp_redemption_remote_plan_service import (
     mark_erp_redemption_remote_execution_running,
     reserve_erp_redemption_remote_execution,
 )
-from packages.domain.services.remote_account_identity import remote_account_credential_scope
+from packages.domain.services.remote_account_credentials import (
+    RemoteAccountCredentialsError,
+    credential_envelope_for_account,
+    decrypt_remote_account_credentials,
+)
 
 
 class ErpRedemptionRemoteRunnerError(ValueError):
@@ -49,30 +52,14 @@ class ErpRedemptionRemoteRunnerError(ValueError):
 def _credentials(
     account: RemoteAccount, source: SourceConfig, settings: Settings
 ) -> tuple[str, str, str]:
-    try:
-        if account.credential_mode == "LEGACY_SOURCE":
-            values = decrypt_credentials(
-                source.encrypted_credentials or "",
-                source_id=source.source_id,
-                credential_version=source.credential_version,
-                settings=settings,
-            )
-            username = values.get("username") or account.login_username
-        else:
-            values = decrypt_credentials(
-                account.encrypted_credentials or "",
-                source_id=remote_account_credential_scope(account.id),
-                credential_version=account.credential_version,
-                settings=settings,
-            )
-            username = account.login_username
-    except SecurityValidationError as exc:
-        raise ErpRedemptionRemoteRunnerError("统一远端账号凭据不可用。") from exc
-    password = values.get("password")
-    totp_secret = values.get("totp_secret")
-    if not username or not password or not totp_secret:
+    envelope = credential_envelope_for_account(account=account, source=source)
+    if envelope is None:
         raise ErpRedemptionRemoteRunnerError("统一远端账号凭据配置不完整。")
-    return username, password, totp_secret
+    try:
+        values = decrypt_remote_account_credentials(envelope, settings=settings)
+    except RemoteAccountCredentialsError as exc:
+        raise ErpRedemptionRemoteRunnerError("统一远端账号凭据不可用。") from exc
+    return values["username"], values["password"], values["totp_secret"]
 
 
 def _options(plan: ErpRedemptionRemotePlan) -> RemoteCreationOptions:

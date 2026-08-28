@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from packages.common.security import SecurityValidationError, decrypt_credentials
 from packages.common.settings import Settings, get_settings
 from packages.domain.models import (
     OrderReconciliationResult,
@@ -29,6 +28,11 @@ from packages.domain.services.payment_import_service import (
 from packages.domain.services.reconciliation_engine import (
     ReconciliationDecision,
     compare_with_remote_orders,
+)
+from packages.domain.services.remote_account_credentials import (
+    RemoteAccountCredentialsError,
+    decrypt_remote_account_credentials,
+    resolve_default_remote_account_credentials,
 )
 from packages.domain.services.remote_charge_service import (
     RajAdminChargeClient,
@@ -177,14 +181,17 @@ async def execute_reconciliation_batch(
             source is None
             or not source.enabled
             or not source.base_url
-            or not source.encrypted_credentials
             or source.config_version != batch.source_config_version
         ):
             raise ReconciliationExecutionError("盘口配置已变化或不可用，请创建重新比对版本。")
-        credentials = decrypt_credentials(
-            source.encrypted_credentials,
-            source_id=source.source_id,
-            credential_version=source.credential_version,
+        credential_envelope = await resolve_default_remote_account_credentials(
+            session,
+            source=source,
+        )
+        if credential_envelope is None:
+            raise ReconciliationExecutionError("盘口尚未配置可用的默认远端账号。")
+        credentials = decrypt_remote_account_credentials(
+            credential_envelope,
             settings=current_settings,
         )
         detection, template = _template_snapshot(batch)
@@ -214,7 +221,7 @@ async def execute_reconciliation_batch(
         ValueError,
         PaymentImportError,
         ReconciliationExecutionError,
-        SecurityValidationError,
+        RemoteAccountCredentialsError,
     ) as exc:
         batch.error_category = "validation_error"
         batch.error_message = str(exc)[:500]

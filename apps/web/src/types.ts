@@ -96,6 +96,7 @@ export interface RemoteAccount {
   loginUsername: string | null
   displayName: string
   enabled: boolean
+  isDefault: boolean
   credentialMode: 'MANAGED' | 'LEGACY_SOURCE'
   credentialConfigured: boolean
   credentialUpdatedAt: string | null

@@ -10,7 +10,6 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from packages.common.security import decrypt_credentials
 from packages.common.settings import Settings, get_settings
 from packages.domain.models import SourceConfig, WithdrawOrderRefreshState, WithdrawOrderSnapshot
 from packages.domain.services.auth_service import write_audit
@@ -28,6 +27,11 @@ from packages.domain.services.data_sync_run_service import (
     get_sync_run_for_update,
     mark_sync_run_running,
     supersede_sync_run,
+)
+from packages.domain.services.remote_account_credentials import (
+    RemoteAccountCredentialEnvelope,
+    decrypt_remote_account_credentials,
+    resolve_default_remote_account_credentials,
 )
 from packages.domain.services.remote_withdraw_service import (
     RajAdminWithdrawClient,
@@ -73,6 +77,8 @@ class _RefreshClaim:
     source_id: str
     base_url: str
     encrypted_credentials: str
+    credential_scope: str
+    login_username: str | None
     credential_version: int
     business_timezone: str
     started_at: datetime
@@ -132,8 +138,14 @@ def _parse_wall_time(value: object, *, timezone_name: str) -> datetime | None:
         return None
 
 
-def _eligible(source: SourceConfig) -> bool:
-    return bool(source.enabled and source.base_url and source.encrypted_credentials)
+async def _credentials_for_source(
+    session: AsyncSession,
+    *,
+    source: SourceConfig,
+) -> RemoteAccountCredentialEnvelope | None:
+    if not source.enabled or not source.base_url:
+        return None
+    return await resolve_default_remote_account_credentials(session, source=source)
 
 
 async def _state(
@@ -260,14 +272,18 @@ async def queue_withdraw_order_refreshes(
                 .where(
                     SourceConfig.enabled.is_(True),
                     SourceConfig.base_url.is_not(None),
-                    SourceConfig.encrypted_credentials.is_not(None),
                 )
                 .order_by(SourceConfig.source_id)
             )
         )
+        sources = [
+            source
+            for source in sources
+            if await _credentials_for_source(session, source=source) is not None
+        ]
     if not sources:
         raise WithdrawOrderRefreshValidationError("没有可同步的已启用盘口。")
-    if source_id and not _eligible(sources[0]):
+    if source_id and await _credentials_for_source(session, source=sources[0]) is None:
         raise WithdrawOrderRefreshValidationError("所选盘口尚未启用或缺少远端读取凭据。")
 
     ids: list[str] = []
@@ -333,12 +349,14 @@ async def _claim_due(
             .where(
                 SourceConfig.enabled.is_(True),
                 SourceConfig.base_url.is_not(None),
-                SourceConfig.encrypted_credentials.is_not(None),
             )
             .order_by(SourceConfig.source_id)
         )
     )
     for source in sources:
+        credential_envelope = await _credentials_for_source(session, source=source)
+        if credential_envelope is None:
+            continue
         state = await _state(session, source_id=source.source_id, now=now)
         automatic_day = _automatic_export_day(
             date_mode=retention.withdraw_order_export_date_mode,
@@ -430,8 +448,10 @@ async def _claim_due(
         return _RefreshClaim(
             source_id=source.source_id,
             base_url=source.base_url or "",
-            encrypted_credentials=source.encrypted_credentials or "",
-            credential_version=source.credential_version,
+            encrypted_credentials=credential_envelope.encrypted_credentials,
+            credential_scope=credential_envelope.credential_scope,
+            login_username=credential_envelope.login_username,
+            credential_version=credential_envelope.credential_version,
             business_timezone=source.business_timezone,
             started_at=now,
             window_start=window_start,
@@ -859,10 +879,16 @@ async def _execute(
     settings: Settings,
 ) -> WithdrawOrderRefreshRunResult:
     try:
-        credentials = decrypt_credentials(
-            claim.encrypted_credentials,
-            source_id=claim.source_id,
-            credential_version=claim.credential_version,
+        credentials = decrypt_remote_account_credentials(
+            RemoteAccountCredentialEnvelope(
+                source_id=claim.source_id,
+                account_id=None,
+                login_username=claim.login_username,
+                encrypted_credentials=claim.encrypted_credentials,
+                credential_scope=claim.credential_scope,
+                credential_version=claim.credential_version,
+                credential_mode="CLAIM",
+            ),
             settings=settings,
         )
         async with RajAdminWithdrawClient(

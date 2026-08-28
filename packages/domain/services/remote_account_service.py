@@ -130,6 +130,84 @@ async def _get_source(session: AsyncSession, source_id: str) -> SourceConfig:
     return source
 
 
+async def _default_account(
+    session: AsyncSession,
+    *,
+    source_id: str,
+) -> RemoteAccount | None:
+    return await session.scalar(
+        select(RemoteAccount).where(
+            RemoteAccount.source_id == source_id,
+            RemoteAccount.is_default.is_(True),
+        )
+    )
+
+
+def _grant_all_capabilities(
+    session: AsyncSession,
+    *,
+    account_id: str,
+    actor_user_id: int,
+) -> None:
+    session.add_all(
+        [
+            RemoteAccountCapability(
+                account_id=account_id,
+                capability=capability,
+                enabled=True,
+                updated_by=actor_user_id,
+            )
+            for capability in REMOTE_ACCOUNT_CAPABILITIES
+        ]
+    )
+
+
+async def _ensure_all_capabilities(
+    session: AsyncSession,
+    *,
+    account_id: str,
+    actor_user_id: int,
+) -> bool:
+    rows = {
+        row.capability: row
+        for row in await session.scalars(
+            select(RemoteAccountCapability).where(
+                RemoteAccountCapability.account_id == account_id
+            )
+        )
+    }
+    changed = False
+    for capability in REMOTE_ACCOUNT_CAPABILITIES:
+        row = rows.get(capability)
+        if row is None:
+            session.add(
+                RemoteAccountCapability(
+                    account_id=account_id,
+                    capability=capability,
+                    enabled=True,
+                    updated_by=actor_user_id,
+                )
+            )
+            changed = True
+        elif not row.enabled:
+            row.enabled = True
+            row.updated_by = actor_user_id
+            changed = True
+    return changed
+
+
+async def _make_default(
+    session: AsyncSession,
+    *,
+    account: RemoteAccount,
+) -> None:
+    current = await _default_account(session, source_id=account.source_id)
+    if current is not None and current.id != account.id:
+        current.is_default = False
+        await session.flush()
+    account.is_default = True
+
+
 async def list_remote_accounts(session: AsyncSession) -> list[RemoteAccountView]:
     rows = (
         await session.execute(
@@ -198,12 +276,17 @@ async def create_remote_account(
     credentials = _credentials_input(request.credentials)
     if set(credentials) != {"password", "totp_secret"}:
         raise RemoteAccountValidationError("新建远端账号必须同时填写密码和 TOTP Secret。")
+    if request.is_default and not request.enabled:
+        raise RemoteAccountValidationError("默认账号必须处于启用状态。")
+    current_default = await _default_account(session, source_id=source.source_id)
+    make_default = bool(request.is_default) or (request.enabled and current_default is None)
     account = RemoteAccount(
         id=str(uuid.uuid4()),
         source_id=source.source_id,
         login_username=login_username,
         display_name=_normalize_display_name(request.display_name),
         enabled=request.enabled,
+        is_default=False,
         credential_mode=MANAGED_CREDENTIAL_MODE,
         created_by=actor_user_id,
         updated_by=actor_user_id,
@@ -217,6 +300,13 @@ async def create_remote_account(
     )
     account.credential_updated_at = datetime.now(UTC)
     session.add(account)
+    _grant_all_capabilities(
+        session,
+        account_id=account.id,
+        actor_user_id=actor_user_id,
+    )
+    if make_default:
+        await _make_default(session, account=account)
     try:
         await session.flush()
         await register_erp_compatibility_id(
@@ -233,7 +323,12 @@ async def create_remote_account(
         actor_user_id=actor_user_id,
         target_type="remote_account",
         target_id=account.id,
-        metadata={"source_id": account.source_id, "credential_mode": account.credential_mode},
+        metadata={
+            "source_id": account.source_id,
+            "credential_mode": account.credential_mode,
+            "is_default": account.is_default,
+            "capabilities": "ALL",
+        },
     )
     await session.commit()
     return await get_remote_account(session, account_id=account.id)
@@ -248,18 +343,14 @@ async def update_remote_account(
     settings: Settings | None = None,
 ) -> RemoteAccountView:
     account = await _get_account(session, account_id)
+    source = await _get_source(session, account.source_id)
     changed_fields: list[str] = []
     if request.display_name is not None:
         display_name = _normalize_display_name(request.display_name)
         if display_name != account.display_name:
             account.display_name = display_name
             changed_fields.append("display_name")
-    if request.enabled is not None and request.enabled != account.enabled:
-        account.enabled = request.enabled
-        changed_fields.append("enabled")
     if request.login_username is not None:
-        if account.credential_mode == LEGACY_SOURCE_CREDENTIAL_MODE:
-            raise RemoteAccountValidationError("历史默认账号不能在此修改登录名，请先完成凭据接管。")
         try:
             login_username = normalize_remote_username(request.login_username)
         except RemoteAccountIdentityValidationError as exc:
@@ -271,11 +362,27 @@ async def update_remote_account(
     credentials = _credentials_input(request.credentials)
     if request.credentials is not None:
         if account.credential_mode == LEGACY_SOURCE_CREDENTIAL_MODE:
-            raise RemoteAccountValidationError(
-                "历史默认账号仍引用原数据源凭据，当前阶段不能复制或重写。"
+            if request.login_username is None or set(credentials) != {
+                "password",
+                "totp_secret",
+            }:
+                raise RemoteAccountValidationError(
+                    "接管历史账号必须同时填写登录账号、密码和 TOTP Secret。"
+                )
+            account.credential_mode = MANAGED_CREDENTIAL_MODE
+            account.credential_version = 1
+            account.encrypted_credentials = encrypt_credentials(
+                credentials,
+                source_id=remote_account_credential_scope(account.id),
+                credential_version=account.credential_version,
+                settings=settings,
             )
+            account.credential_updated_at = datetime.now(UTC)
+            account.last_test_status = None
+            changed_fields.extend(["credential_mode", "credentials"])
+            credentials = {}
         existing: dict[str, str] = {}
-        if account.encrypted_credentials:
+        if credentials and account.encrypted_credentials:
             try:
                 existing = decrypt_credentials(
                     account.encrypted_credentials,
@@ -285,10 +392,10 @@ async def update_remote_account(
                 )
             except SecurityValidationError as exc:
                 raise RemoteAccountValidationError("已保存凭据无法解密，请重新完整配置。") from exc
-        existing.update(credentials)
-        if set(existing) != {"password", "totp_secret"}:
-            raise RemoteAccountValidationError("远端账号必须同时保存密码和 TOTP Secret。")
         if credentials:
+            existing.update(credentials)
+            if set(existing) != {"password", "totp_secret"}:
+                raise RemoteAccountValidationError("远端账号必须同时保存密码和 TOTP Secret。")
             account.credential_version += 1
             account.encrypted_credentials = encrypt_credentials(
                 existing,
@@ -299,6 +406,42 @@ async def update_remote_account(
             account.credential_updated_at = datetime.now(UTC)
             account.last_test_status = None
             changed_fields.append("credentials")
+
+    if request.enabled is not None and request.enabled != account.enabled:
+        if not request.enabled and account.is_default:
+            raise RemoteAccountValidationError("默认账号不能直接停用，请先将其他账号设为默认账号。")
+        account.enabled = request.enabled
+        changed_fields.append("enabled")
+
+    if account.enabled:
+        configured = bool(
+            source.encrypted_credentials
+            if account.credential_mode == LEGACY_SOURCE_CREDENTIAL_MODE
+            else account.login_username and account.encrypted_credentials
+        )
+        if not configured:
+            raise RemoteAccountValidationError("凭据未完整配置的账号不能启用。")
+        if not account.is_default and await _default_account(
+            session,
+            source_id=account.source_id,
+        ) is None:
+            await _make_default(session, account=account)
+            changed_fields.append("is_default")
+
+    if request.is_default is not None and request.is_default != account.is_default:
+        if not request.is_default:
+            raise RemoteAccountValidationError("请将另一个账号设为默认账号，系统会自动完成切换。")
+        if not account.enabled:
+            raise RemoteAccountValidationError("默认账号必须处于启用状态。")
+        await _make_default(session, account=account)
+        changed_fields.append("is_default")
+
+    if await _ensure_all_capabilities(
+        session,
+        account_id=account.id,
+        actor_user_id=actor_user_id,
+    ):
+        changed_fields.append("capabilities")
 
     if changed_fields:
         account.updated_by = actor_user_id
@@ -330,6 +473,8 @@ async def update_remote_account_capabilities(
     unknown = set(request.capabilities) - set(REMOTE_ACCOUNT_CAPABILITIES)
     if unknown:
         raise RemoteAccountValidationError("包含不支持的远端账号能力。")
+    if any(not enabled for enabled in request.capabilities.values()):
+        raise RemoteAccountValidationError("统一远端账号固定拥有全部业务能力，不能单独停用能力。")
     rows = {
         row.capability: row
         for row in await session.scalars(
@@ -337,7 +482,8 @@ async def update_remote_account_capabilities(
         )
     }
     changed: list[str] = []
-    for capability, enabled in request.capabilities.items():
+    for capability in REMOTE_ACCOUNT_CAPABILITIES:
+        enabled = True
         row = rows.get(capability)
         if row is None:
             session.add(

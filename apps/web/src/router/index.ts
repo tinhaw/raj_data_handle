@@ -91,7 +91,7 @@ const router = createRouter({
       meta: {
         navKey: '/erp/remote-connections',
         erpPermission: 'ERP_REDEMPTION_VIEW',
-        title: '远端账号与业务授权',
+        title: '远端账号',
       },
     },
     // Preserve links embedded in the deployed ERP source while keeping the

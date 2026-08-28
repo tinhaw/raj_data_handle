@@ -71,6 +71,7 @@ def _response(item: RemoteAccountView) -> RemoteAccountResponse:
         login_username=account.login_username,
         display_name=account.display_name,
         enabled=account.enabled,
+        is_default=account.is_default,
         credential_mode=account.credential_mode,
         credential_configured=_credential_configured(item),
         credential_updated_at=(
@@ -140,7 +141,7 @@ def _compatibility_registry(
     )
 
 
-@router.get("/capabilities")
+@router.get("/capabilities", include_in_schema=False)
 async def get_capabilities(
     _: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REMOTE_ACCOUNT_MANAGE)),
 ) -> list[dict[str, str]]:
@@ -237,7 +238,11 @@ async def patch_remote_account(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
-@router.put("/{account_id}/capabilities", response_model=RemoteAccountResponse)
+@router.put(
+    "/{account_id}/capabilities",
+    response_model=RemoteAccountResponse,
+    include_in_schema=False,
+)
 async def put_remote_account_capabilities(
     account_id: str,
     payload: RemoteAccountCapabilityUpdateRequest,

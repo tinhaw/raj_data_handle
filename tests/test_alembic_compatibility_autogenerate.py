@@ -28,7 +28,10 @@ def test_autogenerate_keeps_canonical_tables_and_indexes_visible() -> None:
 
 def test_orm_index_names_match_the_deployed_schema_contract() -> None:
     expected = {
-        "remote_accounts": {"ix_remote_account_source_enabled"},
+        "remote_accounts": {
+            "ix_remote_account_source_enabled",
+            "uq_remote_account_source_default",
+        },
         "erp_operators": {"ix_erp_operator_name", "ix_erp_operator_status"},
         "erp_operator_lines": {"ix_erp_operator_line_operator_status"},
         "erp_daily_balances": {

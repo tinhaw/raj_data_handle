@@ -21,6 +21,7 @@ class RemoteAccountCreateRequest(ApiSchema):
     login_username: str = Field(min_length=1, max_length=200)
     display_name: str = Field(min_length=1, max_length=120)
     enabled: bool = True
+    is_default: bool | None = None
     credentials: RemoteAccountCredentialsWrite
 
 
@@ -28,6 +29,7 @@ class RemoteAccountPatchRequest(ApiSchema):
     login_username: str | None = Field(default=None, min_length=1, max_length=200)
     display_name: str | None = Field(default=None, min_length=1, max_length=120)
     enabled: bool | None = None
+    is_default: bool | None = None
     credentials: RemoteAccountCredentialsWrite | None = None
 
     @model_validator(mode="after")
@@ -36,6 +38,7 @@ class RemoteAccountPatchRequest(ApiSchema):
             self.login_username is None
             and self.display_name is None
             and self.enabled is None
+            and self.is_default is None
             and self.credentials is None
         ):
             raise ValueError("至少需要提供一个待更新字段。")
@@ -60,6 +63,7 @@ class RemoteAccountResponse(ApiSchema):
     login_username: str | None
     display_name: str
     enabled: bool
+    is_default: bool
     credential_mode: RemoteAccountCredentialMode
     credential_configured: bool
     credential_updated_at: datetime | None

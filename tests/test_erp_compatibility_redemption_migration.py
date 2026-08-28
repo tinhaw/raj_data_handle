@@ -145,6 +145,18 @@ def test_0037_projects_redemption_state_and_unified_remote_account(
                 """,
                 (remote_account_id,),
             ).fetchone()[0]
+            default_and_capabilities = connection.execute(
+                """
+                SELECT account.is_default, count(capability.capability),
+                       sum(CASE WHEN capability.enabled THEN 1 ELSE 0 END)
+                FROM remote_accounts AS account
+                LEFT JOIN remote_account_capabilities AS capability
+                  ON capability.account_id = account.id
+                WHERE account.id = ?
+                GROUP BY account.id, account.is_default
+                """,
+                (remote_account_id,),
+            ).fetchone()
 
         assert campaign is not None and campaign[0] > 9_000_000_000_000
         assert campaign[1:] == ("ONLINE-RED", 4)
@@ -166,5 +178,6 @@ def test_0037_projects_redemption_state_and_unified_remote_account(
         assert issue[4:6] == ("CREATED", "remote-config-1")
         assert json.loads(issue[6]) == [901, 902]
         assert issue[7:] == ("compat:issue-uuid", 6)
+        assert default_and_capabilities == (1, 8, 8)
     finally:
         get_settings.cache_clear()

@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from packages.common.security import SecurityValidationError, decrypt_credentials
 from packages.common.settings import Settings
-from packages.domain.models import Base, RemoteAccount
+from packages.domain.models import Base, RemoteAccount, SourceConfig
 from packages.domain.schemas.remote_account import (
     RemoteAccountCapabilityUpdateRequest,
     RemoteAccountCreateRequest,
@@ -17,6 +17,10 @@ from packages.domain.schemas.remote_account import (
     RewardTierPresetWrite,
 )
 from packages.domain.schemas.source import SourceCreateRequest
+from packages.domain.services.remote_account_credentials import (
+    decrypt_remote_account_credentials,
+    resolve_default_remote_account_credentials,
+)
 from packages.domain.services.remote_account_identity import remote_account_credential_scope
 from packages.domain.services.remote_account_service import (
     LEGACY_SOURCE_CREDENTIAL_MODE,
@@ -41,7 +45,7 @@ def development_settings() -> Settings:
 
 
 @pytest.mark.asyncio
-async def test_managed_remote_account_has_own_credential_scope_and_explicit_capabilities() -> None:
+async def test_managed_remote_account_has_own_scope_full_capabilities_and_default() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -71,7 +75,8 @@ async def test_managed_remote_account_has_own_credential_scope_and_explicit_capa
         )
 
         assert account.account.credential_mode == "MANAGED"
-        assert account.capabilities["ANALYSIS_READ"] is False
+        assert account.account.is_default is True
+        assert all(account.capabilities.values())
         with pytest.raises(SecurityValidationError):
             decrypt_credentials(
                 account.account.encrypted_credentials or "",
@@ -85,6 +90,15 @@ async def test_managed_remote_account_has_own_credential_scope_and_explicit_capa
             credential_version=account.account.credential_version,
             settings=settings,
         ) == {"password": "test-password", "totp_secret": "JBSWY3DPEHPK3PXP"}
+        source = await session.get(SourceConfig, "rajwin")
+        assert source is not None
+        envelope = await resolve_default_remote_account_credentials(session, source=source)
+        assert envelope is not None and envelope.account_id == account.account.id
+        assert decrypt_remote_account_credentials(envelope, settings=settings) == {
+            "username": "reader-1",
+            "password": "test-password",
+            "totp_secret": "JBSWY3DPEHPK3PXP",
+        }
 
         updated = await update_remote_account_capabilities(
             session,
@@ -106,7 +120,67 @@ async def test_managed_remote_account_has_own_credential_scope_and_explicit_capa
 
 
 @pytest.mark.asyncio
-async def test_legacy_source_account_cannot_copy_or_overwrite_existing_source_credentials() -> None:
+async def test_setting_another_account_default_switches_the_market_default() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings = development_settings()
+
+    async with factory() as session:
+        await create_source(
+            session,
+            request=SourceCreateRequest(source_id="rajwin", display_name="RajWin"),
+            actor_user_id=1,
+            settings=settings,
+        )
+        first = await create_remote_account(
+            session,
+            request=RemoteAccountCreateRequest(
+                source_id="rajwin",
+                login_username="reader-1",
+                display_name="主账号",
+                credentials=RemoteAccountCredentialsWrite(
+                    password="password-1",
+                    totp_secret="JBSWY3DPEHPK3PXP",
+                ),
+            ),
+            actor_user_id=1,
+            settings=settings,
+        )
+        second = await create_remote_account(
+            session,
+            request=RemoteAccountCreateRequest(
+                source_id="rajwin",
+                login_username="reader-2",
+                display_name="备用账号",
+                credentials=RemoteAccountCredentialsWrite(
+                    password="password-2",
+                    totp_secret="JBSWY3DPEHPK3PXP",
+                ),
+            ),
+            actor_user_id=1,
+            settings=settings,
+        )
+        assert first.account.is_default
+        assert not second.account.is_default
+
+        switched = await update_remote_account(
+            session,
+            account_id=second.account.id,
+            request=RemoteAccountPatchRequest(is_default=True),
+            actor_user_id=1,
+            settings=settings,
+        )
+        await session.refresh(first.account)
+        assert switched.account.is_default
+        assert not first.account.is_default
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_legacy_source_account_requires_complete_credentials_for_takeover() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -127,7 +201,7 @@ async def test_legacy_source_account_cannot_copy_or_overwrite_existing_source_cr
         session.add(legacy)
         await session.commit()
 
-        with pytest.raises(RemoteAccountValidationError, match="不能复制或重写"):
+        with pytest.raises(RemoteAccountValidationError, match="同时填写"):
             await update_remote_account(
                 session,
                 account_id=legacy.id,
@@ -137,6 +211,23 @@ async def test_legacy_source_account_cannot_copy_or_overwrite_existing_source_cr
                 actor_user_id=1,
                 settings=development_settings(),
             )
+
+        taken_over = await update_remote_account(
+            session,
+            account_id=legacy.id,
+            request=RemoteAccountPatchRequest(
+                login_username="reader-legacy",
+                credentials=RemoteAccountCredentialsWrite(
+                    password="new-password",
+                    totp_secret="JBSWY3DPEHPK3PXP",
+                ),
+            ),
+            actor_user_id=1,
+            settings=development_settings(),
+        )
+        assert taken_over.account.credential_mode == "MANAGED"
+        assert taken_over.account.login_username == "reader-legacy"
+        assert taken_over.account.encrypted_credentials
 
     await engine.dispose()
 

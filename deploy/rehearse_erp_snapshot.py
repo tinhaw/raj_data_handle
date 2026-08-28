@@ -415,8 +415,8 @@ def _source_version(connection: Connection, metadata: sa.MetaData) -> str:
 
 def _target_version(connection: Connection, metadata: sa.MetaData) -> str:
     version = connection.scalar(sa.select(metadata.tables["alembic_version"].c.version_num))
-    if version != "20260827_0037":
-        raise RehearsalError("目标演练库必须先升级到 Alembic 20260827_0037。")
+    if version != "20260828_0038":
+        raise RehearsalError("目标演练库必须先升级到 Alembic 20260828_0038。")
     return str(version)
 
 

@@ -21,6 +21,7 @@ export async function createRemoteAccount(payload: {
   loginUsername: string
   displayName: string
   enabled: boolean
+  isDefault?: boolean
   credentials: { password: string; totpSecret: string }
 }): Promise<RemoteAccount> {
   return (await api.post<RemoteAccount>('/erp/remote-accounts', payload)).data
@@ -32,6 +33,7 @@ export async function updateRemoteAccount(
     loginUsername?: string
     displayName?: string
     enabled?: boolean
+    isDefault?: boolean
     credentials?: { password?: string; totpSecret?: string }
   },
 ): Promise<RemoteAccount> {

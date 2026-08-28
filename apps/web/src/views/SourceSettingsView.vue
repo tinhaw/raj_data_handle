@@ -35,6 +35,7 @@ const form = reactive({
   scoringApiKey: '',
   initialReviewV1ApiBaseUrl: '',
   initialReviewV1ApiKey: '',
+  enabled: false,
 })
 
 async function load(): Promise<void> {
@@ -61,6 +62,7 @@ function resetForm(): void {
   form.scoringApiKey = ''
   form.initialReviewV1ApiBaseUrl = ''
   form.initialReviewV1ApiKey = ''
+  form.enabled = false
 }
 
 function openCreate(): void {
@@ -81,6 +83,7 @@ function openEdit(row: SourceConfig): void {
   form.scoringApiKey = ''
   form.initialReviewV1ApiBaseUrl = row.initialReviewV1ApiBaseUrl || ''
   form.initialReviewV1ApiKey = ''
+  form.enabled = row.enabled
   sourceDialogVisible.value = true
 }
 
@@ -90,6 +93,7 @@ function payload(): Record<string, unknown> {
     baseUrl: form.baseUrl.trim() || null,
     businessTimezone: form.businessTimezone.trim(),
     currency: form.currency.trim(),
+    ...(editingSourceId.value === null ? {} : { enabled: form.enabled }),
     scoringApi: {
       baseUrl: form.scoringApiBaseUrl.trim() || null,
       apiKey: form.scoringApiKey || null,
@@ -126,7 +130,7 @@ async function save(): Promise<void> {
   try {
     if (editingSourceId.value === null) {
       await createSource({ sourceId: form.sourceId.trim(), enabled: false, ...payload() })
-      ElMessage.success('盘口草稿已创建，请在“ERP 业务授权”配置远端账号。')
+      ElMessage.success('盘口已创建，请继续创建所属远端账号。')
     } else {
       await updateSource(editingSourceId.value, payload())
       ElMessage.success('盘口配置已保存。')
@@ -187,14 +191,14 @@ onMounted(load)
       </div>
       <div class="header-actions">
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
-        <el-button @click="router.push('/erp/remote-connections')">ERP 业务授权</el-button>
+        <el-button @click="router.push('/erp/remote-connections')">远端账号</el-button>
         <el-button type="primary" :icon="Plus" @click="openCreate">新建盘口</el-button>
       </div>
     </header>
 
     <el-alert
-      title="账号和盘口分离维护"
-      description="此页只维护盘口主数据；远端登录账号与 ERP 能力统一在“ERP 业务授权”维护。为保持远端操作禁用，此页不提供连接测试或标签同步。"
+      title="先配置盘口，再创建账号"
+      description="盘口保存 Base URL、时区和 API 配置；远端登录账号在“远端账号”中创建，并必须选择所属盘口。首个启用账号会自动成为该盘口的默认账号。"
       type="info"
       show-icon
       :closable="false"
@@ -269,7 +273,13 @@ onMounted(load)
           <template #default="{ row }">
             <div class="source-actions">
               <el-button text type="primary" :icon="Edit" @click="openEdit(row)">编辑盘口</el-button>
-              <el-button text type="primary" @click="router.push('/erp/remote-connections')">管理账号</el-button>
+              <el-button
+                text
+                type="primary"
+                @click="router.push({ path: '/erp/remote-connections', query: { sourceId: row.sourceId, create: '1' } })"
+              >
+                新建账号
+              </el-button>
               <el-tooltip :content="row.enabled ? '请先按批准流程停用盘口再删除' : '永久删除盘口'">
                 <span>
                   <el-button
@@ -307,6 +317,10 @@ onMounted(load)
         <el-form-item label="远端后台 Base URL">
           <el-input v-model="form.baseUrl" placeholder="https://remote-admin.example.com" />
           <span class="field-help">填写后台根地址；不要附带 /api、查询参数或接口路径。</span>
+        </el-form-item>
+        <el-form-item v-if="editingSourceId !== null" label="启用盘口">
+          <el-switch v-model="form.enabled" />
+          <span class="field-help">启用前必须已有一个启用且凭据完整的默认账号。</span>
         </el-form-item>
         <el-divider content-position="left">评分审核 API（可选，按盘口配置）</el-divider>
         <el-form-item label="评分审核 API Base URL">
