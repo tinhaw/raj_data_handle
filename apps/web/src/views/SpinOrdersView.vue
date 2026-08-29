@@ -33,6 +33,7 @@ type TwoHourSeriesGroup = {
 }
 
 const LOCAL_CACHE_POLL_INTERVAL_MS = 5_000
+const TWO_HOUR_POINT_SIZE = 7
 const TWO_HOUR_LINE_WIDTH_PREFERENCE_KEY_PREFIX = 'raj-spin-order-line-width'
 const TWO_HOUR_LINE_WIDTH_OPTIONS: Array<{
   value: TwoHourLineWidthPreference
@@ -189,6 +190,7 @@ const twoHourSeriesOption = computed<EChartsOption>(() => {
     ? selectedTwoHourSeriesGroups.value
     : groups
   const singleSeries = visibleGroups.length === 1
+  const hasExplicitSeriesSelection = selectedTwoHourSeriesKeys.value.length > 0
   return {
     color: ['#2fa69d', '#4f8bc9', '#e9a23b', '#8a67d6', '#d76d80', '#6f849c'],
     tooltip: { trigger: 'axis', confine: true },
@@ -196,7 +198,22 @@ const twoHourSeriesOption = computed<EChartsOption>(() => {
       ? { show: false }
       : { type: 'scroll', bottom: 0, textStyle: { color: '#53657a' } },
     grid: { left: 52, right: 26, top: 28, bottom: singleSeries ? 38 : 60, containLabel: true },
-    xAxis: { type: 'category', data: categories, axisLabel: { color: '#66798f', rotate: 28 } },
+    xAxis: {
+      type: 'category',
+      data: categories,
+      axisTick: {
+        show: true,
+        alignWithLabel: true,
+        interval: 0,
+        length: 1,
+        lineStyle: {
+          color: '#111827',
+          width: TWO_HOUR_POINT_SIZE,
+          cap: 'round',
+        },
+      },
+      axisLabel: { color: '#66798f', rotate: 28 },
+    },
     yAxis: { type: 'value', minInterval: 1, name: '申请人数', axisLabel: { color: '#66798f' } },
     series: visibleGroups.map((group) => {
       const values = new Map(group.points.map((point) => [point.name, point.value]))
@@ -204,8 +221,8 @@ const twoHourSeriesOption = computed<EChartsOption>(() => {
         name: group.label,
         type: 'line',
         smooth: true,
-        showSymbol: singleSeries,
-        symbolSize: singleSeries ? 7 : undefined,
+        showSymbol: hasExplicitSeriesSelection,
+        symbolSize: hasExplicitSeriesSelection ? TWO_HOUR_POINT_SIZE : undefined,
         lineStyle: { width: twoHourLineWidth.value },
         areaStyle: singleSeries ? { opacity: 0.08 } : undefined,
         emphasis: { focus: 'series' },
