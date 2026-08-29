@@ -13,6 +13,7 @@ import {
   startSpinOrderRefresh,
 } from '../api/spinOrders'
 import ChartPanel from '../components/ChartPanel.vue'
+import { currentUser } from '../stores/auth'
 import type {
   SourceConfig,
   SpinChannelSummaryResponse,
@@ -24,6 +25,7 @@ import type {
 import { businessFullDayRange, formatDateTime } from '../ui'
 
 type SpinTab = 'orders' | 'channels'
+type TwoHourLineWidthPreference = 'thin' | 'medium' | 'thick'
 type TwoHourSeriesGroup = {
   key: string
   label: string
@@ -31,6 +33,16 @@ type TwoHourSeriesGroup = {
 }
 
 const LOCAL_CACHE_POLL_INTERVAL_MS = 5_000
+const TWO_HOUR_LINE_WIDTH_PREFERENCE_KEY_PREFIX = 'raj-spin-order-line-width'
+const TWO_HOUR_LINE_WIDTH_OPTIONS: Array<{
+  value: TwoHourLineWidthPreference
+  label: string
+  width: number
+}> = [
+  { value: 'thin', label: '细', width: 1 },
+  { value: 'medium', label: '中', width: 2 },
+  { value: 'thick', label: '粗', width: 3 },
+]
 
 const SPIN_CONFIG_OPTIONS = [
   { value: '10001', label: '10001（200转盘）' },
@@ -81,7 +93,8 @@ const manualRefreshDialogVisible = ref(false)
 const manualRefreshQueryRange = ref<SpinOrderRefreshRange>('today')
 const response = ref<SpinOrderQueryResponse | null>(null)
 const channelSummaryResponse = ref<SpinChannelSummaryResponse | null>(null)
-const selectedTwoHourSeriesKey = ref('')
+const selectedTwoHourSeriesKeys = ref<string[]>([])
+const twoHourLineWidthPreference = ref<TwoHourLineWidthPreference>('thin')
 const rows = ref<SpinOrder[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -155,16 +168,27 @@ const twoHourSeriesGroups = computed<TwoHourSeriesGroup[]>(() => {
   }
   return [...groups.values()].sort((left, right) => left.label.localeCompare(right.label, 'zh-CN'))
 })
-const selectedTwoHourSeries = computed(() =>
-  twoHourSeriesGroups.value.find((group) => group.key === selectedTwoHourSeriesKey.value),
+const selectedTwoHourSeriesGroups = computed(() => {
+  const selectedKeys = new Set(selectedTwoHourSeriesKeys.value)
+  return twoHourSeriesGroups.value.filter((group) => selectedKeys.has(group.key))
+})
+const selectedTwoHourSeriesLabels = computed(() =>
+  selectedTwoHourSeriesGroups.value.map((group) => group.label).join('、'),
+)
+const twoHourLineWidth = computed(() =>
+  TWO_HOUR_LINE_WIDTH_OPTIONS.find(
+    (option) => option.value === twoHourLineWidthPreference.value,
+  )?.width || 1,
 )
 const twoHourSeriesOption = computed<EChartsOption>(() => {
   const groups = twoHourSeriesGroups.value
   const categories = [...new Set(
     groups.flatMap((group) => group.points.map((point) => point.name)),
   )].sort()
-  const visibleGroups = selectedTwoHourSeries.value ? [selectedTwoHourSeries.value] : groups
-  const singleSeries = Boolean(selectedTwoHourSeries.value)
+  const visibleGroups = selectedTwoHourSeriesKeys.value.length
+    ? selectedTwoHourSeriesGroups.value
+    : groups
+  const singleSeries = visibleGroups.length === 1
   return {
     color: ['#2fa69d', '#4f8bc9', '#e9a23b', '#8a67d6', '#d76d80', '#6f849c'],
     tooltip: { trigger: 'axis', confine: true },
@@ -182,7 +206,7 @@ const twoHourSeriesOption = computed<EChartsOption>(() => {
         smooth: true,
         showSymbol: singleSeries,
         symbolSize: singleSeries ? 7 : undefined,
-        lineStyle: singleSeries ? { width: 3 } : undefined,
+        lineStyle: { width: twoHourLineWidth.value },
         areaStyle: singleSeries ? { opacity: 0.08 } : undefined,
         emphasis: { focus: 'series' },
         data: categories.map((category) => values.get(category) || 0),
@@ -193,13 +217,37 @@ const twoHourSeriesOption = computed<EChartsOption>(() => {
 const twoHourSeriesEmpty = computed(() => !(channelSummaryResponse.value?.timeSeries.length))
 
 watch(twoHourSeriesGroups, (groups) => {
-  if (
-    selectedTwoHourSeriesKey.value &&
-    !groups.some((group) => group.key === selectedTwoHourSeriesKey.value)
-  ) {
-    selectedTwoHourSeriesKey.value = ''
+  const availableKeys = new Set(groups.map((group) => group.key))
+  const retainedKeys = selectedTwoHourSeriesKeys.value.filter((key) => availableKeys.has(key))
+  if (retainedKeys.length !== selectedTwoHourSeriesKeys.value.length) {
+    selectedTwoHourSeriesKeys.value = retainedKeys
   }
 })
+
+function twoHourLineWidthPreferenceKey(): string {
+  return `${TWO_HOUR_LINE_WIDTH_PREFERENCE_KEY_PREFIX}:${currentUser.value?.id || 'current'}`
+}
+
+function loadTwoHourLineWidthPreference(): void {
+  try {
+    const saved = window.localStorage.getItem(twoHourLineWidthPreferenceKey())
+    if (TWO_HOUR_LINE_WIDTH_OPTIONS.some((option) => option.value === saved)) {
+      twoHourLineWidthPreference.value = saved as TwoHourLineWidthPreference
+    }
+  } catch {
+    twoHourLineWidthPreference.value = 'thin'
+  }
+}
+
+function saveTwoHourLineWidthPreference(value: TwoHourLineWidthPreference): void {
+  try {
+    window.localStorage.setItem(twoHourLineWidthPreferenceKey(), value)
+    const label = TWO_HOUR_LINE_WIDTH_OPTIONS.find((option) => option.value === value)?.label || '细'
+    ElMessage.success(`折线粗细已调整为“${label}”，并保存为当前用户偏好。`)
+  } catch {
+    ElMessage.error('折线粗细偏好保存失败，请检查浏览器本地存储权限。')
+  }
+}
 
 function percentage(value: string): string {
   return value === '—' ? value : `${value}%`
@@ -471,6 +519,7 @@ function handleChannelSummaryPageSizeChange(value: number): void {
 }
 
 onMounted(async () => {
+  loadTwoHourLineWidthPreference()
   sourcesLoading.value = true
   try {
     sources.value = await fetchEnabledSources()
@@ -593,18 +642,34 @@ onBeforeUnmount(clearLocalCachePoll)
                 <p>折线中每个点均是对应转盘配置和渠道来源组合下的 UID 去重人数。</p>
               </div>
               <div class="chart-heading-controls">
+                <label class="line-width-selector">
+                  <span>折线粗细</span>
+                  <el-select
+                    v-model="twoHourLineWidthPreference"
+                    aria-label="选择折线粗细"
+                    @change="saveTwoHourLineWidthPreference"
+                  >
+                    <el-option
+                      v-for="option in TWO_HOUR_LINE_WIDTH_OPTIONS"
+                      :key="option.value"
+                      :label="option.label"
+                      :value="option.value"
+                    />
+                  </el-select>
+                </label>
                 <label class="line-selector">
                   <span>查看折线</span>
                   <el-select
-                    v-model="selectedTwoHourSeriesKey"
+                    v-model="selectedTwoHourSeriesKeys"
+                    multiple
                     filterable
-                    placeholder="全部折线"
-                    aria-label="选择要查看的单条折线"
+                    clearable
+                    collapse-tags
+                    collapse-tags-tooltip
+                    :max-collapse-tags="2"
+                    :placeholder="`全部折线（${twoHourSeriesGroups.length}）`"
+                    aria-label="选择要查看的一条或多条折线"
                   >
-                    <el-option
-                      :label="`全部折线（${twoHourSeriesGroups.length}）`"
-                      value=""
-                    />
                     <el-option
                       v-for="group in twoHourSeriesGroups"
                       :key="group.key"
@@ -618,9 +683,12 @@ onBeforeUnmount(clearLocalCachePoll)
                 </el-tag>
               </div>
             </div>
-            <div v-if="selectedTwoHourSeries" class="single-line-notice">
-              当前仅显示：<strong>{{ selectedTwoHourSeries.label }}</strong>
-              <el-button link type="primary" @click="selectedTwoHourSeriesKey = ''">
+            <div v-if="selectedTwoHourSeriesKeys.length" class="line-selection-notice">
+              当前显示 {{ selectedTwoHourSeriesGroups.length }} 条：
+              <strong :title="selectedTwoHourSeriesLabels">
+                {{ selectedTwoHourSeriesLabels }}
+              </strong>
+              <el-button link type="primary" @click="selectedTwoHourSeriesKeys = []">
                 恢复全部折线
               </el-button>
             </div>
@@ -662,10 +730,11 @@ onBeforeUnmount(clearLocalCachePoll)
 .metric-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }.metric-card { min-width: 0; display: grid; gap: 7px; padding: 16px; }.metric-card span, .metric-card small { color: var(--ink-muted); font-size: 12px; }.metric-card strong { overflow: hidden; color: var(--ink-strong); font-size: 22px; text-overflow: ellipsis; white-space: nowrap; }.metric-card--orders { border-top: 3px solid var(--teal); }
 .table-card, .spin-chart-card { overflow: hidden; }.section-heading { padding: 18px 20px; }.table-pagination { display: flex; justify-content: flex-end; padding: 16px 20px; }.code-note { display: block; margin-top: 3px; color: var(--ink-muted); font-size: 11px; font-weight: 500; }.spin-chart-card { padding-bottom: 10px; background: linear-gradient(180deg, #fff 0%, #f8fcfc 100%); }.refresh-range-list { display: grid; gap: 12px; margin-top: 18px; }.refresh-range-list :deep(.el-radio) { height: auto; align-items: flex-start; margin-right: 0; }.refresh-range-list strong, .refresh-range-list small { display: block; }.refresh-range-list small { margin-top: 4px; color: var(--ink-muted); line-height: 1.5; }.queued-note { text-align: right; }
 .chart-heading-controls { display: flex; align-items: flex-end; gap: 12px; }
-.line-selector { display: grid; gap: 6px; color: var(--ink-muted); font-size: 12px; font-weight: 750; }
+.line-selector, .line-width-selector { display: grid; gap: 6px; color: var(--ink-muted); font-size: 12px; font-weight: 750; }
 .line-selector :deep(.el-select) { width: clamp(280px, 30vw, 440px); }
-.single-line-notice { display: flex; align-items: center; gap: 6px; margin: 0 20px 4px; padding: 9px 12px; border: 1px solid #c7e6e1; border-radius: 9px; background: #f0faf8; color: var(--ink-muted); font-size: 12px; }
-.single-line-notice strong { overflow: hidden; color: var(--ink); text-overflow: ellipsis; white-space: nowrap; }
+.line-width-selector :deep(.el-select) { width: 92px; }
+.line-selection-notice { display: flex; align-items: center; gap: 6px; margin: 0 20px 4px; padding: 9px 12px; border: 1px solid #c7e6e1; border-radius: 9px; background: #f0faf8; color: var(--ink-muted); font-size: 12px; }
+.line-selection-notice strong { flex: 1; min-width: 0; overflow: hidden; color: var(--ink); text-overflow: ellipsis; white-space: nowrap; }
 .spin-virtual-orders-table { width: 100%; min-height: 360px; height: clamp(360px, calc(100vh - 430px), 720px); overflow: hidden; border: 1px solid #dce6ee; border-radius: 8px; background: #ffffff; --el-table-border-color: #dce6ee; --el-table-header-bg-color: #f5f8fb; --el-table-row-hover-bg-color: #f7fbfb; --el-table-text-color: #43576a; --el-table-header-text-color: #183955; }
 .spin-virtual-orders-table :deep(.el-table-v2__header-cell) { padding: 0 14px; color: #183955; font-size: 12px; font-weight: 750; }
 .spin-virtual-orders-table :deep(.el-table-v2__row-cell) { padding: 0 14px; color: #43576a; font-size: 12px; }
@@ -674,5 +743,5 @@ onBeforeUnmount(clearLocalCachePoll)
 .spin-virtual-cell { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .spin-virtual-cell-stack { display: grid; min-width: 0; gap: 2px; }.spin-virtual-cell-primary, .spin-virtual-cell-code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.spin-virtual-cell-primary { color: var(--ink); font-size: 12px; }.spin-virtual-cell-code { color: var(--ink-muted); font-size: 11px; font-weight: 500; }
 @media (max-width: 1260px) { .metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }.query-card__grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }.query-field--time-range { grid-column: span 2; } }
-@media (max-width: 820px) { .tab-pane-header, .header-actions, .section-heading, .query-card__footer { align-items: stretch; flex-direction: column; }.header-actions, .chart-heading-controls { width: 100%; }.chart-heading-controls { align-items: stretch; flex-direction: column; }.line-selector :deep(.el-select) { width: 100%; }.single-line-notice { align-items: flex-start; flex-wrap: wrap; }.query-card__grid, .metric-grid { grid-template-columns: 1fr; }.query-field--time-range { grid-column: auto; }.spin-virtual-orders-table { min-height: 320px; height: min(56vh, 520px); }.table-pagination { justify-content: flex-start; overflow-x: auto; } }
+@media (max-width: 820px) { .tab-pane-header, .header-actions, .section-heading, .query-card__footer { align-items: stretch; flex-direction: column; }.header-actions, .chart-heading-controls { width: 100%; }.chart-heading-controls { align-items: stretch; flex-direction: column; }.line-selector :deep(.el-select), .line-width-selector :deep(.el-select) { width: 100%; }.line-selection-notice { align-items: flex-start; flex-wrap: wrap; }.query-card__grid, .metric-grid { grid-template-columns: 1fr; }.query-field--time-range { grid-column: auto; }.spin-virtual-orders-table { min-height: 320px; height: min(56vh, 520px); }.table-pagination { justify-content: flex-start; overflow-x: auto; } }
 </style>
