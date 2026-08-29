@@ -3,7 +3,7 @@ import { Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElTag, TableV2FixedDir } from 'element-plus'
 import type { Column } from 'element-plus'
 import type { EChartsOption } from 'echarts'
-import { computed, h, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 import { apiErrorMessage } from '../api/client'
 import { fetchEnabledSources } from '../api/sources'
@@ -24,6 +24,11 @@ import type {
 import { businessFullDayRange, formatDateTime } from '../ui'
 
 type SpinTab = 'orders' | 'channels'
+type TwoHourSeriesGroup = {
+  key: string
+  label: string
+  points: Array<{ name: string; value: number }>
+}
 
 const LOCAL_CACHE_POLL_INTERVAL_MS = 5_000
 
@@ -76,6 +81,7 @@ const manualRefreshDialogVisible = ref(false)
 const manualRefreshQueryRange = ref<SpinOrderRefreshRange>('today')
 const response = ref<SpinOrderQueryResponse | null>(null)
 const channelSummaryResponse = ref<SpinChannelSummaryResponse | null>(null)
+const selectedTwoHourSeriesKey = ref('')
 const rows = ref<SpinOrder[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -134,32 +140,50 @@ const refreshStatusTagType = computed<'success' | 'warning' | 'danger' | 'info'>
 })
 const refreshInProgress = computed(() => ['queued', 'running'].includes(response.value?.refreshStatus || ''))
 const channelSummaryRows = computed(() => channelSummaryResponse.value?.items || [])
-const twoHourSeriesOption = computed<EChartsOption>(() => {
-  const bySeries = new Map<string, Array<{ name: string; value: number }>>()
+const twoHourSeriesGroups = computed<TwoHourSeriesGroup[]>(() => {
+  const groups = new Map<string, TwoHourSeriesGroup>()
   for (const item of channelSummaryResponse.value?.timeSeries || []) {
-    const name = `${item.spinConfigLabel} · ${item.channelName}`
+    const key = JSON.stringify([item.spinConfigId, item.channelId])
     const point = `${item.date} ${item.bucket}`
-    const current = bySeries.get(name) || []
-    current.push({ name: point, value: item.applicantCount })
-    bySeries.set(name, current)
+    const current = groups.get(key) || {
+      key,
+      label: `${item.spinConfigLabel} · ${item.channelName}`,
+      points: [],
+    }
+    current.points.push({ name: point, value: item.applicantCount })
+    groups.set(key, current)
   }
+  return [...groups.values()].sort((left, right) => left.label.localeCompare(right.label, 'zh-CN'))
+})
+const selectedTwoHourSeries = computed(() =>
+  twoHourSeriesGroups.value.find((group) => group.key === selectedTwoHourSeriesKey.value),
+)
+const twoHourSeriesOption = computed<EChartsOption>(() => {
+  const groups = twoHourSeriesGroups.value
   const categories = [...new Set(
-    [...bySeries.values()].flatMap((points) => points.map((point) => point.name)),
+    groups.flatMap((group) => group.points.map((point) => point.name)),
   )].sort()
+  const visibleGroups = selectedTwoHourSeries.value ? [selectedTwoHourSeries.value] : groups
+  const singleSeries = Boolean(selectedTwoHourSeries.value)
   return {
     color: ['#2fa69d', '#4f8bc9', '#e9a23b', '#8a67d6', '#d76d80', '#6f849c'],
     tooltip: { trigger: 'axis', confine: true },
-    legend: { type: 'scroll', bottom: 0, textStyle: { color: '#53657a' } },
-    grid: { left: 52, right: 26, top: 28, bottom: 60, containLabel: true },
+    legend: singleSeries
+      ? { show: false }
+      : { type: 'scroll', bottom: 0, textStyle: { color: '#53657a' } },
+    grid: { left: 52, right: 26, top: 28, bottom: singleSeries ? 38 : 60, containLabel: true },
     xAxis: { type: 'category', data: categories, axisLabel: { color: '#66798f', rotate: 28 } },
     yAxis: { type: 'value', minInterval: 1, name: '申请人数', axisLabel: { color: '#66798f' } },
-    series: [...bySeries.entries()].map(([name, points]) => {
-      const values = new Map(points.map((point) => [point.name, point.value]))
+    series: visibleGroups.map((group) => {
+      const values = new Map(group.points.map((point) => [point.name, point.value]))
       return {
-        name,
+        name: group.label,
         type: 'line',
         smooth: true,
-        showSymbol: false,
+        showSymbol: singleSeries,
+        symbolSize: singleSeries ? 7 : undefined,
+        lineStyle: singleSeries ? { width: 3 } : undefined,
+        areaStyle: singleSeries ? { opacity: 0.08 } : undefined,
         emphasis: { focus: 'series' },
         data: categories.map((category) => values.get(category) || 0),
       }
@@ -167,6 +191,15 @@ const twoHourSeriesOption = computed<EChartsOption>(() => {
   }
 })
 const twoHourSeriesEmpty = computed(() => !(channelSummaryResponse.value?.timeSeries.length))
+
+watch(twoHourSeriesGroups, (groups) => {
+  if (
+    selectedTwoHourSeriesKey.value &&
+    !groups.some((group) => group.key === selectedTwoHourSeriesKey.value)
+  ) {
+    selectedTwoHourSeriesKey.value = ''
+  }
+})
 
 function percentage(value: string): string {
   return value === '—' ? value : `${value}%`
@@ -553,7 +586,53 @@ onBeforeUnmount(clearLocalCachePoll)
             </div>
             <div class="query-card__footer"><span>每两小时申请人数按“转盘配置 × 渠道来源”分别去重，图中不会跨组相加。</span><el-button type="primary" :icon="Search" :loading="channelSummaryLoading" @click="loadChannelSummary(true)">查询汇总</el-button></div>
           </section>
-          <section class="surface-card spin-chart-card"><div class="section-heading"><div><h2>每 2 小时申请人数</h2><p>折线中每个点均是对应转盘配置和渠道来源组合下的 UID 去重人数。</p></div><el-tag effect="plain">{{ channelSummaryResponse?.businessTimezone || '盘口业务时区' }}</el-tag></div><ChartPanel title="每 2 小时申请人数" :option="twoHourSeriesOption" :empty="twoHourSeriesEmpty" :height="360" plain :show-title="false" /></section>
+          <section class="surface-card spin-chart-card">
+            <div class="section-heading">
+              <div>
+                <h2>每 2 小时申请人数</h2>
+                <p>折线中每个点均是对应转盘配置和渠道来源组合下的 UID 去重人数。</p>
+              </div>
+              <div class="chart-heading-controls">
+                <label class="line-selector">
+                  <span>查看折线</span>
+                  <el-select
+                    v-model="selectedTwoHourSeriesKey"
+                    filterable
+                    placeholder="全部折线"
+                    aria-label="选择要查看的单条折线"
+                  >
+                    <el-option
+                      :label="`全部折线（${twoHourSeriesGroups.length}）`"
+                      value=""
+                    />
+                    <el-option
+                      v-for="group in twoHourSeriesGroups"
+                      :key="group.key"
+                      :label="group.label"
+                      :value="group.key"
+                    />
+                  </el-select>
+                </label>
+                <el-tag effect="plain">
+                  {{ channelSummaryResponse?.businessTimezone || '盘口业务时区' }}
+                </el-tag>
+              </div>
+            </div>
+            <div v-if="selectedTwoHourSeries" class="single-line-notice">
+              当前仅显示：<strong>{{ selectedTwoHourSeries.label }}</strong>
+              <el-button link type="primary" @click="selectedTwoHourSeriesKey = ''">
+                恢复全部折线
+              </el-button>
+            </div>
+            <ChartPanel
+              title="每 2 小时申请人数"
+              :option="twoHourSeriesOption"
+              :empty="twoHourSeriesEmpty"
+              :height="360"
+              plain
+              :show-title="false"
+            />
+          </section>
           <section class="surface-card table-card"><div class="section-heading"><div><h2>渠道来源统计</h2><p>共 {{ channelSummaryResponse?.total || 0 }} 个分组；本地数据更新时间：{{ formatDateTime(channelSummaryResponse?.localUpdatedAt) }}。</p></div><el-tag effect="plain">{{ channelSummaryResponse?.sourceDisplayName || '未选择盘口' }}</el-tag></div><el-table v-loading="channelSummaryLoading" :data="channelSummaryRows" empty-text="当前本地筛选条件下暂无转盘渠道汇总"><el-table-column label="日期" prop="date" min-width="120" fixed="left" /><el-table-column label="转盘配置" min-width="155"><template #default="{ row }">{{ row.spinConfigLabel }}</template></el-table-column><el-table-column label="渠道来源" prop="channelName" min-width="180" /><el-table-column label="申请总订单数" prop="applicationOrderCount" min-width="135" align="right" /><el-table-column label="审核通过订单数" prop="passedOrderCount" min-width="150" align="right" /><el-table-column label="待审核订单数" prop="pendingOrderCount" min-width="135" align="right" /><el-table-column label="已拒绝订单数" prop="rejectedOrderCount" min-width="135" align="right" /><el-table-column label="已挂起订单数" prop="suspendedOrderCount" min-width="135" align="right" /><el-table-column label="订单通过率" min-width="120" align="right"><template #default="{ row }">{{ percentage(row.approvalRate) }}</template></el-table-column><el-table-column label="中奖人数" prop="winnerCount" min-width="110" align="right" /><el-table-column label="审核通过人数" prop="passedWinnerCount" min-width="135" align="right" /><el-table-column label="人数通过率" min-width="120" align="right"><template #default="{ row }">{{ percentage(row.personApprovalRate) }}</template></el-table-column></el-table><div class="table-pagination"><el-pagination background layout="total, sizes, prev, pager, next" :total="channelSummaryResponse?.total || 0" :current-page="channelSummaryPage" :page-size="channelSummaryPageSize" :page-sizes="[20, 50, 100]" @update:current-page="handleChannelSummaryPageChange" @update:page-size="handleChannelSummaryPageSizeChange" /></div></section>
         </div>
       </el-tab-pane>
@@ -582,6 +661,11 @@ onBeforeUnmount(clearLocalCachePoll)
 .query-card { padding: 18px; }.query-card__grid { display: grid; grid-template-columns: minmax(170px, 0.8fr) minmax(300px, 2fr) repeat(3, minmax(160px, 0.8fr)); gap: 14px; }.query-field { display: grid; gap: 7px; color: var(--ink); font-size: 12px; font-weight: 800; }.query-field :deep(.el-select) { width: 100%; }.query-field--time-range { grid-column: span 2; }.query-card__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 16px; color: var(--ink-muted); font-size: 12px; }
 .metric-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }.metric-card { min-width: 0; display: grid; gap: 7px; padding: 16px; }.metric-card span, .metric-card small { color: var(--ink-muted); font-size: 12px; }.metric-card strong { overflow: hidden; color: var(--ink-strong); font-size: 22px; text-overflow: ellipsis; white-space: nowrap; }.metric-card--orders { border-top: 3px solid var(--teal); }
 .table-card, .spin-chart-card { overflow: hidden; }.section-heading { padding: 18px 20px; }.table-pagination { display: flex; justify-content: flex-end; padding: 16px 20px; }.code-note { display: block; margin-top: 3px; color: var(--ink-muted); font-size: 11px; font-weight: 500; }.spin-chart-card { padding-bottom: 10px; background: linear-gradient(180deg, #fff 0%, #f8fcfc 100%); }.refresh-range-list { display: grid; gap: 12px; margin-top: 18px; }.refresh-range-list :deep(.el-radio) { height: auto; align-items: flex-start; margin-right: 0; }.refresh-range-list strong, .refresh-range-list small { display: block; }.refresh-range-list small { margin-top: 4px; color: var(--ink-muted); line-height: 1.5; }.queued-note { text-align: right; }
+.chart-heading-controls { display: flex; align-items: flex-end; gap: 12px; }
+.line-selector { display: grid; gap: 6px; color: var(--ink-muted); font-size: 12px; font-weight: 750; }
+.line-selector :deep(.el-select) { width: clamp(280px, 30vw, 440px); }
+.single-line-notice { display: flex; align-items: center; gap: 6px; margin: 0 20px 4px; padding: 9px 12px; border: 1px solid #c7e6e1; border-radius: 9px; background: #f0faf8; color: var(--ink-muted); font-size: 12px; }
+.single-line-notice strong { overflow: hidden; color: var(--ink); text-overflow: ellipsis; white-space: nowrap; }
 .spin-virtual-orders-table { width: 100%; min-height: 360px; height: clamp(360px, calc(100vh - 430px), 720px); overflow: hidden; border: 1px solid #dce6ee; border-radius: 8px; background: #ffffff; --el-table-border-color: #dce6ee; --el-table-header-bg-color: #f5f8fb; --el-table-row-hover-bg-color: #f7fbfb; --el-table-text-color: #43576a; --el-table-header-text-color: #183955; }
 .spin-virtual-orders-table :deep(.el-table-v2__header-cell) { padding: 0 14px; color: #183955; font-size: 12px; font-weight: 750; }
 .spin-virtual-orders-table :deep(.el-table-v2__row-cell) { padding: 0 14px; color: #43576a; font-size: 12px; }
@@ -590,5 +674,5 @@ onBeforeUnmount(clearLocalCachePoll)
 .spin-virtual-cell { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .spin-virtual-cell-stack { display: grid; min-width: 0; gap: 2px; }.spin-virtual-cell-primary, .spin-virtual-cell-code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.spin-virtual-cell-primary { color: var(--ink); font-size: 12px; }.spin-virtual-cell-code { color: var(--ink-muted); font-size: 11px; font-weight: 500; }
 @media (max-width: 1260px) { .metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }.query-card__grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }.query-field--time-range { grid-column: span 2; } }
-@media (max-width: 820px) { .tab-pane-header, .header-actions, .section-heading, .query-card__footer { align-items: stretch; flex-direction: column; }.header-actions { width: 100%; }.query-card__grid, .metric-grid { grid-template-columns: 1fr; }.query-field--time-range { grid-column: auto; }.spin-virtual-orders-table { min-height: 320px; height: min(56vh, 520px); }.table-pagination { justify-content: flex-start; overflow-x: auto; } }
+@media (max-width: 820px) { .tab-pane-header, .header-actions, .section-heading, .query-card__footer { align-items: stretch; flex-direction: column; }.header-actions, .chart-heading-controls { width: 100%; }.chart-heading-controls { align-items: stretch; flex-direction: column; }.line-selector :deep(.el-select) { width: 100%; }.single-line-notice { align-items: flex-start; flex-wrap: wrap; }.query-card__grid, .metric-grid { grid-template-columns: 1fr; }.query-field--time-range { grid-column: auto; }.spin-virtual-orders-table { min-height: 320px; height: min(56vh, 520px); }.table-pagination { justify-content: flex-start; overflow-x: auto; } }
 </style>
