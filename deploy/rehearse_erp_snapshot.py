@@ -32,6 +32,7 @@ PRODUCTION_CONFIRMATION = "P5-PRODUCTION-CUTOVER"
 TARGET_MODE_ISOLATED = "isolated-rehearsal"
 TARGET_MODE_PRODUCTION = "production-cutover"
 TARGET_MODES = (TARGET_MODE_ISOLATED, TARGET_MODE_PRODUCTION)
+REQUIRED_TARGET_ALEMBIC_VERSION = "20260829_0039"
 MIGRATION_NAMESPACE = uuid.UUID("a245b5c0-ddb4-4c56-82d3-c6778dd3bd95")
 
 ERP_ROLES = frozenset(
@@ -415,8 +416,8 @@ def _source_version(connection: Connection, metadata: sa.MetaData) -> str:
 
 def _target_version(connection: Connection, metadata: sa.MetaData) -> str:
     version = connection.scalar(sa.select(metadata.tables["alembic_version"].c.version_num))
-    if version != "20260828_0038":
-        raise RehearsalError("目标演练库必须先升级到 Alembic 20260828_0038。")
+    if version != REQUIRED_TARGET_ALEMBIC_VERSION:
+        raise RehearsalError(f"目标演练库必须先升级到 Alembic {REQUIRED_TARGET_ALEMBIC_VERSION}。")
     return str(version)
 
 

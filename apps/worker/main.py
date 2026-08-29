@@ -14,6 +14,9 @@ from packages.domain.services.batch_state import TERMINAL_BATCH_STATUSES
 from packages.domain.services.charge_order_refresh_service import (
     run_due_charge_order_refreshes,
 )
+from packages.domain.services.data_dictionary_refresh_service import (
+    run_due_data_dictionary_refreshes,
+)
 from packages.domain.services.reconciliation_execution_service import (
     execute_reconciliation_batch,
 )
@@ -92,6 +95,12 @@ async def process_due_spin_order_refreshes() -> int:
     return len(outcomes)
 
 
+async def process_due_data_dictionary_refreshes() -> int:
+    async with AsyncSessionLocal() as session:
+        outcomes = await run_due_data_dictionary_refreshes(session)
+    return len(outcomes)
+
+
 async def run_due_withdraw_order_refresh_cycle() -> None:
     """Run one protected refresh cycle without exposing remote failure details."""
 
@@ -133,6 +142,20 @@ async def run_due_spin_order_refresh_cycle() -> None:
         logger.warning("spin order refresh cycle failed; retrying later")
 
 
+async def run_due_data_dictionary_refresh_cycle() -> None:
+    try:
+        refreshed_dictionaries = await process_due_data_dictionary_refreshes()
+        if refreshed_dictionaries:
+            logger.info(
+                "data dictionary refresh cycle processed config_count=%s",
+                refreshed_dictionaries,
+            )
+    except SQLAlchemyError:
+        logger.warning("data dictionary refresh schema or database is not ready; retrying later")
+    except Exception:
+        logger.warning("data dictionary refresh cycle failed; retrying later")
+
+
 async def run_withdraw_order_refresh_loop() -> None:
     """Keep cached withdrawal orders current without blocking reconciliation work."""
 
@@ -153,6 +176,12 @@ async def run_spin_order_refresh_loop() -> None:
         await asyncio.sleep(WITHDRAW_ORDER_REFRESH_POLL_SECONDS)
 
 
+async def run_data_dictionary_refresh_loop() -> None:
+    while True:
+        await run_due_data_dictionary_refresh_cycle()
+        await asyncio.sleep(WITHDRAW_ORDER_REFRESH_POLL_SECONDS)
+
+
 async def run() -> None:
     settings = get_settings()
     storage = LocalFileStorage(settings.storage_root, settings.upload_max_bytes)
@@ -169,6 +198,10 @@ async def run() -> None:
     spin_refresh_task = asyncio.create_task(
         run_spin_order_refresh_loop(),
         name="spin-order-refresh-loop",
+    )
+    dictionary_refresh_task = asyncio.create_task(
+        run_data_dictionary_refresh_loop(),
+        name="data-dictionary-refresh-loop",
     )
     try:
         while True:
@@ -199,6 +232,7 @@ async def run() -> None:
         refresh_task.cancel()
         charge_refresh_task.cancel()
         spin_refresh_task.cancel()
+        dictionary_refresh_task.cancel()
         try:
             await refresh_task
         except asyncio.CancelledError:
@@ -209,6 +243,10 @@ async def run() -> None:
             pass
         try:
             await charge_refresh_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await dictionary_refresh_task
         except asyncio.CancelledError:
             pass
 

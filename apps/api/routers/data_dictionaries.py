@@ -9,6 +9,8 @@ from packages.domain.schemas.data_dictionary import (
     ChargeStatusCreateRequest,
     ChargeStatusPatchRequest,
     DataDictionaryEntryResponse,
+    DataDictionaryRefreshConfigResponse,
+    DataDictionaryRefreshConfigUpdateRequest,
     UserSourceChannelSyncResponse,
     WithdrawStatusCreateRequest,
     WithdrawStatusPatchRequest,
@@ -16,6 +18,10 @@ from packages.domain.schemas.data_dictionary import (
     WithdrawStatusSyncResponse,
 )
 from packages.domain.services.auth_service import AuthContext
+from packages.domain.services.data_dictionary_refresh_service import (
+    get_data_dictionary_refresh_config,
+    update_data_dictionary_refresh_config,
+)
 from packages.domain.services.data_dictionary_service import (
     DataDictionaryConflictError,
     DataDictionaryNotFoundError,
@@ -36,6 +42,53 @@ from packages.domain.services.data_dictionary_service import (
 )
 
 router = APIRouter(tags=["data-dictionaries"])
+
+
+@router.get(
+    "/settings/data-dictionaries/{dictionary_type}/auto-refresh",
+    response_model=DataDictionaryRefreshConfigResponse,
+)
+async def data_dictionary_auto_refresh_config(
+    dictionary_type: str,
+    source_id: str,
+    _: AuthContext = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> DataDictionaryRefreshConfigResponse:
+    try:
+        return await get_data_dictionary_refresh_config(
+            session,
+            source_id=source_id,
+            dictionary_type=dictionary_type,
+        )
+    except DataDictionaryNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except DataDictionaryValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.put(
+    "/settings/data-dictionaries/{dictionary_type}/auto-refresh",
+    response_model=DataDictionaryRefreshConfigResponse,
+)
+async def save_data_dictionary_auto_refresh_config(
+    dictionary_type: str,
+    payload: DataDictionaryRefreshConfigUpdateRequest,
+    auth: AuthContext = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> DataDictionaryRefreshConfigResponse:
+    try:
+        return await update_data_dictionary_refresh_config(
+            session,
+            source_id=payload.source_id,
+            dictionary_type=dictionary_type,
+            enabled=payload.enabled,
+            interval_minutes=payload.interval_minutes,
+            actor_user_id=auth.user.id,
+        )
+    except DataDictionaryNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except DataDictionaryValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.get(

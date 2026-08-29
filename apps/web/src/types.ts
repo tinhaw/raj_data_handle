@@ -840,6 +840,12 @@ export interface PaymentChannelBinding {
   active: boolean
 }
 
+export type RemoteDataDictionaryType =
+  | 'withdraw_status'
+  | 'payment_channel'
+  | 'payment_channel_name'
+  | 'user_source_channel'
+
 export interface DataDictionaryEntry {
   id: number
   sourceId: string
@@ -857,6 +863,21 @@ export interface DataDictionaryEntry {
   firstSeenAt: string
   lastSeenAt: string
   updatedAt: string
+}
+
+export interface DataDictionaryRefreshConfig {
+  sourceId: string
+  sourceDisplayName: string
+  dictionaryType: RemoteDataDictionaryType
+  enabled: boolean
+  intervalMinutes: 15 | 30 | 60 | 180 | 360 | 720 | 1440
+  status: 'idle' | 'running' | 'succeeded' | 'failed'
+  lastStartedAt: string | null
+  lastSucceededAt: string | null
+  lastFailedAt: string | null
+  lastError: string | null
+  nextRefreshAt: string | null
+  updatedAt: string | null
 }
 
 export interface WithdrawStatusSyncResult {

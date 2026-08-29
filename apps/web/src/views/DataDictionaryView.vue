@@ -26,6 +26,7 @@ import type {
   WithdrawStatusSyncResult,
 } from '../types'
 import { formatDateTime } from '../ui'
+import DataDictionaryAutoRefreshSettings from '../components/DataDictionaryAutoRefreshSettings.vue'
 
 type EntryState = 'active' | 'inactive' | 'all'
 type EditableStatusType = 'withdraw_status' | 'charge_status'
@@ -566,6 +567,11 @@ onMounted(load)
             </div>
           </div>
 
+          <DataDictionaryAutoRefreshSettings
+            :source-id="statusFilters.sourceId"
+            dictionary-type="withdraw_status"
+          />
+
           <el-alert
             v-if="withdrawStatusSyncFeedback"
             class="sync-feedback"
@@ -832,6 +838,11 @@ onMounted(load)
             </div>
           </div>
 
+          <DataDictionaryAutoRefreshSettings
+            :source-id="paymentChannelFilters.sourceId"
+            dictionary-type="payment_channel"
+          />
+
           <div class="summary-grid">
             <article>
               <span>有效条目</span>
@@ -948,6 +959,11 @@ onMounted(load)
               <code>pay_channel_name</code>
             </div>
           </div>
+
+          <DataDictionaryAutoRefreshSettings
+            :source-id="channelFilters.sourceId"
+            dictionary-type="payment_channel_name"
+          />
 
           <div class="summary-grid">
             <article>
@@ -1121,6 +1137,11 @@ onMounted(load)
               <div class="field-binding"><span>用户详情字段</span><code>channel_id</code></div>
             </div>
           </div>
+
+          <DataDictionaryAutoRefreshSettings
+            :source-id="userSourceChannelFilters.sourceId"
+            dictionary-type="user_source_channel"
+          />
 
           <el-alert
             v-if="userSourceChannelSyncFeedback"

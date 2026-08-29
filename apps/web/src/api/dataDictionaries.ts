@@ -1,9 +1,39 @@
 import { api } from './client'
 import type {
   DataDictionaryEntry,
+  DataDictionaryRefreshConfig,
+  RemoteDataDictionaryType,
   UserSourceChannelSyncResult,
   WithdrawStatusSyncResult,
 } from '../types'
+
+export async function fetchDataDictionaryRefreshConfig(
+  dictionaryType: RemoteDataDictionaryType,
+  sourceId: string,
+): Promise<DataDictionaryRefreshConfig> {
+  return (
+    await api.get<DataDictionaryRefreshConfig>(
+      `/settings/data-dictionaries/${dictionaryType}/auto-refresh`,
+      { params: { source_id: sourceId } },
+    )
+  ).data
+}
+
+export async function updateDataDictionaryRefreshConfig(
+  dictionaryType: RemoteDataDictionaryType,
+  payload: {
+    sourceId: string
+    enabled: boolean
+    intervalMinutes: DataDictionaryRefreshConfig['intervalMinutes']
+  },
+): Promise<DataDictionaryRefreshConfig> {
+  return (
+    await api.put<DataDictionaryRefreshConfig>(
+      `/settings/data-dictionaries/${dictionaryType}/auto-refresh`,
+      payload,
+    )
+  ).data
+}
 
 export async function fetchChargeStatuses(params: {
   sourceId?: string

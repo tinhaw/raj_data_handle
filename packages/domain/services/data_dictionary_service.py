@@ -16,7 +16,7 @@ from packages.domain.services.remote_account_credentials import (
     decrypt_remote_account_credentials,
     resolve_default_remote_account_credentials,
 )
-from packages.domain.services.remote_charge_service import RemoteChargeError
+from packages.domain.services.remote_charge_service import RajAdminChargeClient, RemoteChargeError
 from packages.domain.services.remote_spin_service import RajAdminSpinClient
 from packages.domain.services.remote_withdraw_service import RajAdminWithdrawClient
 
@@ -39,6 +39,14 @@ SPIN_ORDER_STATUS_ENTRIES = (
     ("3", "已挂起"),
 )
 USER_SOURCE_CHANNEL_DICTIONARY = "user_source_channel"
+REMOTE_DATA_DICTIONARY_TYPES = frozenset(
+    {
+        PAYMENT_CHANNEL_DICTIONARY,
+        PAYMENT_CHANNEL_NAME_DICTIONARY,
+        USER_SOURCE_CHANNEL_DICTIONARY,
+        WITHDRAW_STATUS_DICTIONARY,
+    }
+)
 
 
 class DataDictionarySyncError(ValueError):
@@ -95,6 +103,18 @@ class UserSourceChannelRemoteSyncResult:
     remote_total: int
     replaced_entries: int
     entries: list[DataDictionaryEntryResponse]
+
+
+@dataclass(frozen=True, slots=True)
+class PaymentDictionaryRemoteSyncResult:
+    source_id: str
+    source_display_name: str
+    dictionary_type: str
+    fetched_at: datetime
+    remote_total: int
+    created_entries: int
+    updated_entries: int
+    deactivated_entries: int
 
 
 async def ensure_charge_statuses(
@@ -323,10 +343,11 @@ async def sync_remote_user_source_channels(
     session: AsyncSession,
     *,
     source_id: str,
-    actor_user_id: int,
+    actor_user_id: int | None,
     settings: Settings | None = None,
+    trigger_type: str = "manual",
 ) -> UserSourceChannelRemoteSyncResult:
-    """User-triggered, transactional full replacement of channel_id mappings."""
+    """Transactionally replace channel_id mappings after a validated remote read."""
 
     source = await session.get(SourceConfig, source_id)
     if source is None:
@@ -373,7 +394,11 @@ async def sync_remote_user_source_channels(
         actor_user_id=actor_user_id,
         target_type="source",
         target_id=source.source_id,
-        metadata={"remote_total": len(channels), "replaced_entries": replaced_entries},
+        metadata={
+            "remote_total": len(channels),
+            "replaced_entries": replaced_entries,
+            **({"trigger_type": trigger_type} if trigger_type != "manual" else {}),
+        },
     )
     await session.commit()
     return UserSourceChannelRemoteSyncResult(
@@ -531,6 +556,95 @@ async def sync_payment_channels(
         created_entries=created,
         updated_entries=updated,
         deactivated_entries=deactivated,
+    )
+
+
+async def sync_remote_payment_dictionary(
+    session: AsyncSession,
+    *,
+    source_id: str,
+    dictionary_type: str,
+    actor_user_id: int | None,
+    settings: Settings | None = None,
+    trigger_type: str = "manual",
+) -> PaymentDictionaryRemoteSyncResult:
+    """Refresh one payment dictionary through its existing read-only allowlist path."""
+
+    if dictionary_type not in {
+        PAYMENT_CHANNEL_DICTIONARY,
+        PAYMENT_CHANNEL_NAME_DICTIONARY,
+    }:
+        raise DataDictionaryValidationError("不支持的远端支付字典类型。")
+    source = await session.get(SourceConfig, source_id)
+    if source is None:
+        raise DataDictionaryNotFoundError("盘口配置不存在。")
+    if not source.enabled:
+        raise DataDictionaryValidationError("所选盘口尚未启用。")
+    if not source.base_url:
+        raise DataDictionaryValidationError("所选盘口缺少远端地址或凭据。")
+
+    current_settings = settings or get_settings()
+    credential_envelope = await resolve_default_remote_account_credentials(
+        session,
+        source=source,
+    )
+    if credential_envelope is None:
+        raise DataDictionaryValidationError("所选盘口缺少默认远端账号或完整凭据。")
+    try:
+        credentials = decrypt_remote_account_credentials(
+            credential_envelope,
+            settings=current_settings,
+        )
+        async with RajAdminChargeClient(
+            base_url=source.base_url,
+            username=credentials["username"],
+            password=credentials["password"],
+            totp_secret=credentials["totp_secret"],
+        ) as client:
+            if dictionary_type == PAYMENT_CHANNEL_DICTIONARY:
+                channels = await client.fetch_payment_channels()
+                sync_result = await sync_payment_channels(
+                    session,
+                    source_id=source.source_id,
+                    channels=channels,
+                )
+            else:
+                channels = await client.fetch_channels()
+                sync_result = await sync_payment_channel_names(
+                    session,
+                    source_id=source.source_id,
+                    channels=channels,
+                )
+        fetched_at = datetime.now(UTC)
+    except (KeyError, RemoteAccountCredentialsError) as exc:
+        raise DataDictionaryValidationError("已保存的盘口凭据不完整或无法解密。") from exc
+    except (DataDictionarySyncError, RemoteChargeError) as exc:
+        raise DataDictionaryRemoteSyncError("远端支付渠道字典读取或校验失败。") from exc
+
+    await write_audit(
+        session,
+        action=f"data_dictionary.{dictionary_type}.sync",
+        actor_user_id=actor_user_id,
+        target_type="source",
+        target_id=source.source_id,
+        metadata={
+            "remote_total": len(channels),
+            "created_entries": sync_result.created_entries,
+            "updated_entries": sync_result.updated_entries,
+            "deactivated_entries": sync_result.deactivated_entries,
+            **({"trigger_type": trigger_type} if trigger_type != "manual" else {}),
+        },
+    )
+    await session.commit()
+    return PaymentDictionaryRemoteSyncResult(
+        source_id=source.source_id,
+        source_display_name=source.display_name,
+        dictionary_type=dictionary_type,
+        fetched_at=fetched_at,
+        remote_total=len(channels),
+        created_entries=sync_result.created_entries,
+        updated_entries=sync_result.updated_entries,
+        deactivated_entries=sync_result.deactivated_entries,
     )
 
 
@@ -739,10 +853,11 @@ async def sync_remote_withdraw_statuses(
     session: AsyncSession,
     *,
     source_id: str,
-    actor_user_id: int,
+    actor_user_id: int | None,
     settings: Settings | None = None,
+    trigger_type: str = "manual",
 ) -> WithdrawStatusRemoteSyncResult:
-    """Manually refresh a source's local withdrawal-status cache from its remote API."""
+    """Refresh a source's local withdrawal-status cache from its remote API."""
 
     source = await session.get(SourceConfig, source_id)
     if source is None:
@@ -804,6 +919,7 @@ async def sync_remote_withdraw_statuses(
             "remote_total": refresh_result.remote_total,
             "created_entries": refresh_result.created_entries,
             "refreshed_entries": refresh_result.refreshed_entries,
+            **({"trigger_type": trigger_type} if trigger_type != "manual" else {}),
         },
     )
     await session.commit()

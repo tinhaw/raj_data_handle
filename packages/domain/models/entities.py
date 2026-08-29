@@ -9,6 +9,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -1113,6 +1114,43 @@ class DataDictionaryEntry(Base):
         DateTime(timezone=True), nullable=False, default=utcnow
     )
     last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class DataDictionaryRefreshConfig(Base):
+    __tablename__ = "data_dictionary_refresh_configs"
+    __table_args__ = (
+        CheckConstraint(
+            "interval_minutes IN (15, 30, 60, 180, 360, 720, 1440)",
+            name="ck_data_dictionary_refresh_interval",
+        ),
+        Index(
+            "ix_data_dictionary_refresh_due",
+            "enabled",
+            "next_refresh_at",
+        ),
+    )
+
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    dictionary_type: Mapped[str] = mapped_column(String(80), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=360)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="idle")
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(255))
+    next_refresh_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
     updated_at: Mapped[datetime] = mapped_column(
