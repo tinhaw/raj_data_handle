@@ -101,7 +101,9 @@ const publishing = ref(false)
 const cancellingPublishId = ref<string | number>()
 const recoveringPublishId = ref<string | number>()
 const retryingIssueId = ref<string | number>()
-const retryingFailedTasks = ref(false)
+const retryingSelectedFailedTasks = ref(false)
+const selectedFailedIssueIds = ref<Array<string | number>>([])
+const failedIssueTable = ref<{ clearSelection: () => void }>()
 const publishForm = ref<{ mode: 'IMMEDIATE' | 'SCHEDULED'; scheduledTime?: string; fallbackToScheduled: boolean }>({ mode: 'IMMEDIATE', fallbackToScheduled: true })
 const processingGroupIds = ref(new Set<string>())
 const indiaNow = ref('')
@@ -169,8 +171,8 @@ const codeGroupTasks = computed<CodeGroupTask[]>(() => {
     .sort((left, right) => String(right.members.at(-1)?.detail.batch.createdAt || '')
       .localeCompare(String(left.members.at(-1)?.detail.batch.createdAt || '')))
 })
-const failedRemoteCreationCount = computed(() => selectedTaskMembers.value
-  .reduce((total, row) => total + failedRemoteCreationIssues(row).length, 0))
+const failedRemoteCreationCount = computed(() => selectedGroup.value ? failedRemoteCreationIssues(selectedGroup.value).length : 0)
+const selectedFailedIssueCount = computed(() => selectedFailedRemoteCreations().length)
 const tagOptions = computed(() => {
   const tags = new Map<string, RedemptionRemoteTag>()
   // A tag directory belongs to the selected market.  Do not briefly show the
@@ -403,6 +405,22 @@ function failedIssues(row: CodeGroupRow) {
 }
 function failedRemoteCreationIssues(row: CodeGroupRow) {
   return row.detail.issues.filter((issue) => issue.workflowStatus === 'FAILED')
+}
+function isFailedRemoteCreation(issue: RedemptionCodeIssue) {
+  return issue.workflowStatus === 'FAILED'
+}
+function selectedFailedRemoteCreations() {
+  const group = selectedGroup.value
+  if (!group) return []
+  const selectedIds = new Set(selectedFailedIssueIds.value.map(String))
+  return failedRemoteCreationIssues(group).filter((issue) => selectedIds.has(String(issue.id)))
+}
+function updateSelectedFailedIssues(selection: RedemptionCodeIssue[]) {
+  selectedFailedIssueIds.value = selection.filter(isFailedRemoteCreation).map((issue) => issue.id)
+}
+function clearFailedIssueSelection() {
+  selectedFailedIssueIds.value = []
+  failedIssueTable.value?.clearSelection()
 }
 function groupFailureMessage(row: CodeGroupRow) {
   return row.detail.batch.remotePublishError || failedIssues(row)[0]?.remoteError
@@ -1073,6 +1091,7 @@ async function cancelScheduledPublish(row: CodeGroupRow) {
 }
 
 async function openGroupDetail(row: CodeGroupRow) {
+  clearFailedIssueSelection()
   selectedTaskMembers.value = [{ campaign: row.campaign, detail: await api.redemption.batch(row.detail.batch.id) }]
   selectedGroup.value = selectedTaskMembers.value[0]
   activeTaskBatchId.value = String(selectedGroup.value.detail.batch.id)
@@ -1080,6 +1099,7 @@ async function openGroupDetail(row: CodeGroupRow) {
 }
 
 async function openTaskDetail(task: CodeGroupTask) {
+  clearFailedIssueSelection()
   const members = await Promise.all(task.members.map(async (member) => ({
     campaign: member.campaign,
     detail: await api.redemption.batch(member.detail.batch.id),
@@ -1092,13 +1112,19 @@ async function openTaskDetail(task: CodeGroupTask) {
 
 function selectTaskMember(batchId: string | number) {
   const member = selectedTaskMembers.value.find((item) => String(item.detail.batch.id) === String(batchId))
-  if (member) selectedGroup.value = member
+  if (member) {
+    clearFailedIssueSelection()
+    selectedGroup.value = member
+  }
 }
 
 function replaceCodeGroup(replacement: CodeGroupRow) {
   codeGroups.value = codeGroups.value.map((item) => item.detail.batch.id === replacement.detail.batch.id ? replacement : item)
   selectedTaskMembers.value = selectedTaskMembers.value.map((item) => item.detail.batch.id === replacement.detail.batch.id ? replacement : item)
-  if (selectedGroup.value?.detail.batch.id === replacement.detail.batch.id) selectedGroup.value = replacement
+  if (selectedGroup.value?.detail.batch.id === replacement.detail.batch.id) {
+    selectedGroup.value = replacement
+    clearFailedIssueSelection()
+  }
 }
 
 async function retryRemoteCreation(issue: RedemptionCodeIssue) {
@@ -1124,24 +1150,23 @@ async function retryRemoteCreation(issue: RedemptionCodeIssue) {
   }
 }
 
-async function retryFailedRemoteCreations() {
-  const targets = selectedTaskMembers.value.flatMap((row) =>
-    failedRemoteCreationIssues(row).map((issue) => ({ row, issue })),
-  )
+async function retrySelectedFailedRemoteCreations() {
+  const group = selectedGroup.value
+  if (!group) return
+  const targets = selectedFailedRemoteCreations().map((issue) => ({ row: group, issue }))
   if (!targets.length) return
   try {
     await ElMessageBox.confirm(
-      `将按盘口顺序逐项重试 ${targets.length} 条生成失败的远端配置。该操作会再次请求远端创建；如之前请求的结果不确定，请先在远端后台确认不存在同名配置，以避免重复创建。`,
-      '重试失败任务',
+      `将逐项重试当前盘口中已选的 ${targets.length} 条失败子任务。该操作会再次请求远端创建；如之前请求的结果不确定，请先在远端后台确认不存在同名配置，以避免重复创建。`,
+      '批量重试失败子任务',
       { type: 'warning', confirmButtonText: '确认重试', cancelButtonText: '取消' },
     )
   } catch {
     return
   }
 
-  const batchIds = [...new Set(targets.map(({ row }) => row.detail.batch.id))]
-  batchIds.forEach((batchId) => markProcessing(batchId, true))
-  retryingFailedTasks.value = true
+  markProcessing(group.detail.batch.id, true)
+  retryingSelectedFailedTasks.value = true
   let succeeded = 0
   const failures: string[] = []
   try {
@@ -1160,11 +1185,12 @@ async function retryFailedRemoteCreations() {
       }
     }
     ElMessage[failures.length ? 'warning' : 'success'](failures.length
-      ? `${succeeded} 条任务已重试成功，${failures.length} 条仍失败：${failures.join('；')}`
-      : `${succeeded} 条失败任务已全部重新创建，请选择发布方式后发布`)
+      ? `${succeeded} 条已选任务重试成功，${failures.length} 条仍失败：${failures.join('；')}`
+      : `${succeeded} 条已选失败任务已全部重新创建，请选择发布方式后发布`)
   } finally {
-    retryingFailedTasks.value = false
-    batchIds.forEach((batchId) => markProcessing(batchId, false))
+    retryingSelectedFailedTasks.value = false
+    markProcessing(group.detail.batch.id, false)
+    clearFailedIssueSelection()
     await loadCodeGroups()
   }
 }
@@ -1420,16 +1446,17 @@ onUnmounted(() => {
         </el-descriptions>
         <el-alert v-if="selectedGroup.detail.batch.remotePublishError" class="group-detail-error" type="error" :closable="false" show-icon>{{ selectedGroup.detail.batch.remotePublishError }}</el-alert>
         <div v-if="failedRemoteCreationCount" class="group-detail-toolbar">
-          <span>当前任务有 {{ failedRemoteCreationCount }} 条远端配置生成失败。</span>
-          <el-button type="warning" :loading="retryingFailedTasks" @click="retryFailedRemoteCreations">重试失败任务（{{ failedRemoteCreationCount }}）</el-button>
+          <span>当前盘口有 {{ failedRemoteCreationCount }} 条远端配置生成失败；勾选后可批量重试。</span>
+          <el-button type="warning" :disabled="!selectedFailedIssueCount" :loading="retryingSelectedFailedTasks" @click="retrySelectedFailedRemoteCreations">批量重试已选（{{ selectedFailedIssueCount }}）</el-button>
         </div>
-        <el-table :data="selectedGroup.detail.issues" class="group-detail-table">
+        <el-table ref="failedIssueTable" :data="selectedGroup.detail.issues" row-key="id" class="group-detail-table" @selection-change="updateSelectedFailedIssues">
+          <el-table-column type="selection" width="48" :selectable="isFailedRemoteCreation" />
           <el-table-column label="兑换日期" width="118"><template #default="{ row }">{{ formatDate(row.claimDate) }}</template></el-table-column>
           <el-table-column label="充值档位" min-width="150"><template #default="{ row }">{{ row.tierName || `充值 ≥ ${formatAmount(row.minDepositAmount)}` }}</template></el-table-column>
           <el-table-column label="兑换金额" width="128"><template #default="{ row }">{{ formatAmount(row.bonusAmount) }}–{{ formatAmount(row.bonusMaxAmount || row.bonusAmount) }}</template></el-table-column>
           <el-table-column label="状态" width="116"><template #default="{ row }"><el-tag :type="issueStatus(row).type" size="small">{{ issueStatus(row).text }}</el-tag></template></el-table-column>
           <el-table-column label="兑换码 / 备注" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ row.redemptionCode || row.remoteError || '—' }}</template></el-table-column>
-          <el-table-column label="操作" width="96"><template #default="{ row }"><el-button v-if="canRetryRemoteCreation(row)" link type="primary" :loading="retryingIssueId === row.id" :disabled="retryingFailedTasks" @click="retryRemoteCreation(row)">{{ row.workflowStatus === 'CREATING_REMOTE' ? '恢复重试' : '重试创建' }}</el-button></template></el-table-column>
+          <el-table-column label="操作" width="96"><template #default="{ row }"><el-button v-if="canRetryRemoteCreation(row)" link type="primary" :loading="retryingIssueId === row.id" :disabled="retryingSelectedFailedTasks" @click="retryRemoteCreation(row)">{{ row.workflowStatus === 'CREATING_REMOTE' ? '恢复重试' : '重试创建' }}</el-button></template></el-table-column>
         </el-table>
         <div class="drawer-actions">
           <el-button v-if="hasPendingPublishReservation(selectedGroup)" type="warning" :loading="recoveringPublishId === selectedGroup.detail.batch.id" @click="recoverPublishReservation(selectedGroup)">恢复发布</el-button>
