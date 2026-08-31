@@ -101,6 +101,7 @@ const publishing = ref(false)
 const cancellingPublishId = ref<string | number>()
 const recoveringPublishId = ref<string | number>()
 const retryingIssueId = ref<string | number>()
+const retryingFailedTasks = ref(false)
 const publishForm = ref<{ mode: 'IMMEDIATE' | 'SCHEDULED'; scheduledTime?: string; fallbackToScheduled: boolean }>({ mode: 'IMMEDIATE', fallbackToScheduled: true })
 const processingGroupIds = ref(new Set<string>())
 const indiaNow = ref('')
@@ -168,6 +169,8 @@ const codeGroupTasks = computed<CodeGroupTask[]>(() => {
     .sort((left, right) => String(right.members.at(-1)?.detail.batch.createdAt || '')
       .localeCompare(String(left.members.at(-1)?.detail.batch.createdAt || '')))
 })
+const failedRemoteCreationCount = computed(() => selectedTaskMembers.value
+  .reduce((total, row) => total + failedRemoteCreationIssues(row).length, 0))
 const tagOptions = computed(() => {
   const tags = new Map<string, RedemptionRemoteTag>()
   // A tag directory belongs to the selected market.  Do not briefly show the
@@ -397,6 +400,9 @@ function isProcessing(row: CodeGroupRow) { return processingGroupIds.value.has(g
 function isSuccess(row: CodeGroupRow) { return row.detail.batch.status === 'COMPLETED' }
 function failedIssues(row: CodeGroupRow) {
   return row.detail.issues.filter((issue) => issue.workflowStatus === 'FAILED' || (issue.workflowStatus === 'PUBLISHED' && Boolean(issue.remoteError)))
+}
+function failedRemoteCreationIssues(row: CodeGroupRow) {
+  return row.detail.issues.filter((issue) => issue.workflowStatus === 'FAILED')
 }
 function groupFailureMessage(row: CodeGroupRow) {
   return row.detail.batch.remotePublishError || failedIssues(row)[0]?.remoteError
@@ -1118,6 +1124,51 @@ async function retryRemoteCreation(issue: RedemptionCodeIssue) {
   }
 }
 
+async function retryFailedRemoteCreations() {
+  const targets = selectedTaskMembers.value.flatMap((row) =>
+    failedRemoteCreationIssues(row).map((issue) => ({ row, issue })),
+  )
+  if (!targets.length) return
+  try {
+    await ElMessageBox.confirm(
+      `将按盘口顺序逐项重试 ${targets.length} 条生成失败的远端配置。该操作会再次请求远端创建；如之前请求的结果不确定，请先在远端后台确认不存在同名配置，以避免重复创建。`,
+      '重试失败任务',
+      { type: 'warning', confirmButtonText: '确认重试', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+
+  const batchIds = [...new Set(targets.map(({ row }) => row.detail.batch.id))]
+  batchIds.forEach((batchId) => markProcessing(batchId, true))
+  retryingFailedTasks.value = true
+  let succeeded = 0
+  const failures: string[] = []
+  try {
+    for (const [index, { row, issue }] of targets.entries()) {
+      const requestStartedAt = Date.now()
+      try {
+        const detail = await api.redemption.createRemoteConfiguration(issue.id, true)
+        replaceCodeGroup({ campaign: row.campaign, detail })
+        succeeded += 1
+      } catch (error) {
+        failures.push(`${remoteMarketLabel(row)} · ${formatDate(issue.claimDate)}：${error instanceof Error ? error.message : '重试失败'}`)
+      }
+      if (index < targets.length - 1) {
+        const intervalMs = Math.max(1, row.detail.batch.remoteOptions?.creationIntervalSeconds ?? form.value.remoteOptions.creationIntervalSeconds ?? 5) * 1000
+        await wait(Math.max(0, intervalMs - (Date.now() - requestStartedAt)))
+      }
+    }
+    ElMessage[failures.length ? 'warning' : 'success'](failures.length
+      ? `${succeeded} 条任务已重试成功，${failures.length} 条仍失败：${failures.join('；')}`
+      : `${succeeded} 条失败任务已全部重新创建，请选择发布方式后发布`)
+  } finally {
+    retryingFailedTasks.value = false
+    batchIds.forEach((batchId) => markProcessing(batchId, false))
+    await loadCodeGroups()
+  }
+}
+
 async function exportMultiMarketGroup(task: CodeGroupTask) {
   const groupKey = task.exportGroupKey
   if (!groupKey) return
@@ -1368,13 +1419,17 @@ onUnmounted(() => {
           <el-descriptions-item v-if="groupRemark(selectedGroup) !== '—'" label="备注" :span="2">{{ groupRemark(selectedGroup) }}</el-descriptions-item>
         </el-descriptions>
         <el-alert v-if="selectedGroup.detail.batch.remotePublishError" class="group-detail-error" type="error" :closable="false" show-icon>{{ selectedGroup.detail.batch.remotePublishError }}</el-alert>
+        <div v-if="failedRemoteCreationCount" class="group-detail-toolbar">
+          <span>当前任务有 {{ failedRemoteCreationCount }} 条远端配置生成失败。</span>
+          <el-button type="warning" :loading="retryingFailedTasks" @click="retryFailedRemoteCreations">重试失败任务（{{ failedRemoteCreationCount }}）</el-button>
+        </div>
         <el-table :data="selectedGroup.detail.issues" class="group-detail-table">
           <el-table-column label="兑换日期" width="118"><template #default="{ row }">{{ formatDate(row.claimDate) }}</template></el-table-column>
           <el-table-column label="充值档位" min-width="150"><template #default="{ row }">{{ row.tierName || `充值 ≥ ${formatAmount(row.minDepositAmount)}` }}</template></el-table-column>
           <el-table-column label="兑换金额" width="128"><template #default="{ row }">{{ formatAmount(row.bonusAmount) }}–{{ formatAmount(row.bonusMaxAmount || row.bonusAmount) }}</template></el-table-column>
           <el-table-column label="状态" width="116"><template #default="{ row }"><el-tag :type="issueStatus(row).type" size="small">{{ issueStatus(row).text }}</el-tag></template></el-table-column>
           <el-table-column label="兑换码 / 备注" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ row.redemptionCode || row.remoteError || '—' }}</template></el-table-column>
-          <el-table-column label="操作" width="96"><template #default="{ row }"><el-button v-if="canRetryRemoteCreation(row)" link type="primary" :loading="retryingIssueId === row.id" @click="retryRemoteCreation(row)">{{ row.workflowStatus === 'CREATING_REMOTE' ? '恢复重试' : '重试创建' }}</el-button></template></el-table-column>
+          <el-table-column label="操作" width="96"><template #default="{ row }"><el-button v-if="canRetryRemoteCreation(row)" link type="primary" :loading="retryingIssueId === row.id" :disabled="retryingFailedTasks" @click="retryRemoteCreation(row)">{{ row.workflowStatus === 'CREATING_REMOTE' ? '恢复重试' : '重试创建' }}</el-button></template></el-table-column>
         </el-table>
         <div class="drawer-actions">
           <el-button v-if="hasPendingPublishReservation(selectedGroup)" type="warning" :loading="recoveringPublishId === selectedGroup.detail.batch.id" @click="recoverPublishReservation(selectedGroup)">恢复发布</el-button>
@@ -1430,6 +1485,7 @@ onUnmounted(() => {
 .submit-hint { margin: 0; color: #667085; font-size: 12px; }
 .group-detail-summary { margin-bottom: 18px; }
 .group-detail-error { margin-bottom: 14px; }
+.group-detail-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; color: #667085; font-size: 13px; }
 .group-detail-table { --el-table-header-bg-color: #f9fafb; --el-table-border-color: #eaecf0; }
 .task-market-tabs { margin-bottom: 8px; }
 .task-detail-note { margin: 0 0 14px; }
