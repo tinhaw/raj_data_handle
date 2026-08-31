@@ -78,5 +78,6 @@ erp:
     standalone-auth-enabled: ${ERP_COMPAT_STANDALONE_AUTH_ENABLED:false}
     identity-url: ${ERP_COMPAT_IDENTITY_URL:http://api:8000/api/v1/erp/access/compatibility-session}
     remote-registry-url: ${ERP_COMPAT_REMOTE_REGISTRY_URL:http://api:8000/api/v1/erp/remote-accounts/compatibility-registry}
+    remote-accounts-url: ${ERP_COMPAT_REMOTE_ACCOUNTS_URL:http://api:8000/api/v1/erp/remote-accounts}
     session-cookie-name: ${ERP_COMPAT_SESSION_COOKIE_NAME:raj_session}
     remote-operations-enabled: ${ERP_COMPAT_REMOTE_OPERATIONS_ENABLED:false}
