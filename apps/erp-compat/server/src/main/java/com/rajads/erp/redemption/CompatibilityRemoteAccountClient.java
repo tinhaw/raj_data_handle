@@ -38,7 +38,10 @@ public class CompatibilityRemoteAccountClient {
             @Value("${erp.compatibility.remote-accounts-url:http://api:8000/api/v1/erp/remote-accounts}") URI remoteAccountsUri) {
         this.objectMapper = objectMapper;
         this.remoteAccountsUri = remoteAccountsUri;
-        this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
+        this.httpClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(3))
+                .build();
     }
 
     public TagSnapshot tags(String accountId, String cookieName, String cookieValue) {

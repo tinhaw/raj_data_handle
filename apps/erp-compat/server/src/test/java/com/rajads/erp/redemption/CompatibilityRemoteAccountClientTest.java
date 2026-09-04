@@ -24,6 +24,7 @@ class CompatibilityRemoteAccountClientTest {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/accounts/account-uuid/tags", exchange -> {
             assertThat(exchange.getRequestHeaders().getFirst("Cookie")).isEqualTo("raj_session=test-session");
+            assertThat(exchange.getRequestHeaders().getFirst("Upgrade")).isNull();
             if ("POST".equals(exchange.getRequestMethod())) {
                 String requestBody = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
                 assertThat(requestBody).contains("execution_confirmed", "true");
