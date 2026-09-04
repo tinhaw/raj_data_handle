@@ -359,18 +359,28 @@ async def test_unified_account_keeps_tag_snapshot_and_marks_reward_preset_stale(
             request=RewardTierPresetWrite(
                 tiers=[
                     RewardTierPresetTier(
+                        user_type="ALL_USERS",
+                        label_ids=[],
+                        display_name="全部用户",
+                        min_deposit_amount="0",
+                        bonus_amount="1",
+                        bonus_max_amount="3",
+                    ),
+                    RewardTierPresetTier(
                         label_ids=[10],
                         display_name="100-499",
                         min_deposit_amount="100",
                         bonus_amount="10",
                         bonus_max_amount="10",
-                    )
+                    ),
                 ],
                 tag_snapshot=tags,
             ),
             actor_user_id=1,
         )
         assert saved.exists and not saved.stale
+        assert saved.tiers[0].user_type == "ALL_USERS"
+        assert saved.tiers[0].label_ids == []
 
         await save_remote_tag_snapshot(
             session,

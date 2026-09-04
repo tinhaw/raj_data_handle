@@ -99,6 +99,55 @@ async def test_http_adapter_maps_current_cloud_create_contract() -> None:
 
 
 @pytest.mark.asyncio
+async def test_http_adapter_maps_all_users_without_a_label_array() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/system/login":
+            return httpx.Response(200, json={"success": True, "data": {"token": "test-jwt"}})
+        if request.url.path == "/api/common/giftCodeConfig/save":
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={"success": True, "data": {"id": "cfg-all"}})
+        if request.url.path == "/api/common/giftCodeConfig/index":
+            return httpx.Response(200, json={"success": True, "data": {"items": []}})
+        raise AssertionError(request.url)
+
+    grant = ErpRemoteExecutionGrant(
+        account_id="account-1",
+        source_id="rajwin",
+        operation="CREATE",
+        capability="ERP_REDEMPTION_CREATE",
+    )
+    async with RajAdminGiftCodeAdapter(
+        account_id="account-1",
+        source_id="rajwin",
+        base_url="https://remote.example",
+        username="operator",
+        password="password",
+        totp_secret="JBSWY3DPEHPK3PXP",
+        business_timezone="Asia/Shanghai",
+        transport=httpx.MockTransport(handler),
+    ) as adapter:
+        await adapter.create_configuration(
+            grant=grant,
+            command=RemoteCreateCommand(
+                issue_id="issue-all",
+                description="RajWin 2026-08-18 全部用户",
+                claim_date=date(2026, 8, 18),
+                deposit_window_start=date(2026, 8, 11),
+                deposit_window_end=date(2026, 8, 17),
+                label_ids=(),
+                bonus_amount=Decimal("1"),
+                bonus_max_amount=Decimal("3"),
+                options=_options(),
+            ),
+        )
+
+    assert captured["user_type"] == "0"
+    assert "label_array" not in captured
+
+
+@pytest.mark.asyncio
 async def test_http_adapter_downloads_exactly_one_code() -> None:
     workbook = Workbook()
     sheet = workbook.active

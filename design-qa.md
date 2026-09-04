@@ -116,3 +116,63 @@ final result: passed
 - [P3] 当真实盘口存在较多状态时，可根据使用频率调整图例排序或增加颜色主题配置；不影响当前交付。
 
 final result: passed
+
+---
+
+# 批量生成兑换码组用户类型设计 QA
+
+- source visual truth path:
+  - `/var/folders/lq/l_btmc4n5vd9yy00dyg_rybm0000gn/T/codex-clipboard-5400639d-3019-4aeb-9a59-e0f38f3b3361.png`
+  - `/var/folders/lq/l_btmc4n5vd9yy00dyg_rybm0000gn/T/codex-clipboard-b4af0b26-fcab-4693-a621-101c1a214000.png`
+  - `/var/folders/lq/l_btmc4n5vd9yy00dyg_rybm0000gn/T/codex-clipboard-b6a330fe-983e-4e23-91a8-b71867034097.png`
+- implementation screenshot path: `/Users/dinghao/Documents/code/raj_data_handle/artifacts/design-qa/redemption-code-group-audience-raj-console.png`
+- full-view comparison path: `/Users/dinghao/Documents/code/raj_data_handle/artifacts/design-qa/redemption-code-group-audience-raj-console-comparison.png`
+- focused comparison path: `/Users/dinghao/Documents/code/raj_data_handle/artifacts/design-qa/redemption-code-group-audience-raj-console-focused-comparison.png`
+- viewport: 1112 × 1175 CSS px, desktop, light theme
+- pixel dimensions and normalization:
+  - source screenshots: 2560 × 1320 px each; browser chrome and developer tools are part of the captures.
+  - implementation screenshot: 1112 × 1175 px at the in-app browser's default viewport and 1× density.
+  - full-view comparison crops the existing and updated dialogs from the same RAJ CONSOLE product shell, then normalizes both to 920 px width.
+  - focused comparison crops the source audience controls and current tier editor, then normalizes both to 1200 px width.
+- state: authenticated local `apps/web` preview at `/erp/redemption`; RAJ CONSOLE shell visible; “批量生成兑换码组” open; 近 7 天充值 selected; first tier switched to 全部用户 and the remaining tiers remain 标签用户; fake local remote account only, no remote write performed.
+
+**Findings**
+
+- No actionable P0/P1/P2 findings.
+- Fonts and typography: the implementation retains the existing ERP type scale and weights; the new column labels and helper copy remain readable at the target viewport without truncation.
+- Spacing and layout rhythm: the five-column tier grid aligns user type, label, amount bounds, and delete action consistently. The dialog keeps the existing spacing, borders, radii, and vertical rhythm.
+- Colors and visual tokens: the new controls reuse existing Element Plus and ERP semantic tokens. Disabled/non-applicable label content is visibly muted without reducing essential contrast.
+- Image quality and asset fidelity: this dialog contains no new imagery or custom-drawn assets. Existing icons remain library-provided and aligned.
+- Copy and content: “全部用户” and “标签用户” are explicit per tier. The helper text states that only 标签用户 sends label IDs; the obsolete “近 7 天充值（标签 ID 数组）” label was removed.
+- States and interactions: 标签用户 → 全部用户 → 标签用户 → 全部用户 was tested on the first tier. The label `901091` is restored when returning to 标签用户 and cleared again for 全部用户; the other tiers retain their labels. Browser console logs were checked and contained no errors.
+- Accessibility/responsiveness: semantic selects and radios remain keyboard-addressable. The default 1112 × 1175 viewport shows no horizontal clipping or hidden primary action. Narrow/mobile behavior was not evaluated because this is an existing desktop ERP workflow.
+
+**Open Questions**
+
+- None for the requested desktop workflow.
+
+**Implementation Checklist**
+
+- [x] Add explicit per-tier user type.
+- [x] Default existing labeled tiers to 标签用户 with their current label IDs.
+- [x] Clear and omit label IDs for 全部用户.
+- [x] Preserve user type in saved reward-tier presets.
+- [x] Validate incompatible user-type/label combinations on both frontend and backend.
+- [x] Verify both request shapes with automated tests.
+- [x] Render and inspect the dialog in the local browser.
+
+**Focused Region Evidence**
+
+- The focused comparison shows the remote system's two audience states and the RAJ CONSOLE implementation's mixed per-tier state in one image. Both requested choices are explicit, and the label field is only active for 标签用户; no additional focused crop was needed.
+
+**Comparison History**
+
+- Pass 1: [P1] the first preview used the standalone `apps/erp-compat/web` shell and visibly identified itself as Raj ERP, so it was not a valid handoff for the migrated application.
+- Fix: switched the preview entry point to current `apps/web` at `/erp/redemption`, authenticated against an isolated local database, and repeated the audience interaction inside the RAJ CONSOLE shell.
+- Post-fix evidence: `redemption-code-group-audience-raj-console.png` and both `raj-console-comparison` images above. No actionable P0/P1/P2 differences remain.
+
+**Follow-up Polish**
+
+- None required for handoff.
+
+final result: passed

@@ -629,8 +629,10 @@ function normalizeRewardTierPreset(raw: unknown): RedemptionRewardTierPreset {
     stale: Boolean(value.stale),
     tiers: (Array.isArray(value.tiers) ? value.tiers : []).map((rawTier) => {
       const tier = asRecord(rawTier)
+      const labelIds = Array.isArray(tier.labelIds) ? tier.labelIds.map((id) => id as string | number) : []
       return {
-        labelIds: Array.isArray(tier.labelIds) ? tier.labelIds.map((id) => id as string | number) : [],
+        userType: tier.userType === 'ALL_USERS' || (!tier.userType && !labelIds.length) ? 'ALL_USERS' : 'LABEL_USERS',
+        labelIds,
         displayName: String(tier.displayName || ''),
         minDepositAmount: amount(tier.minDepositAmount),
         bonusAmount: amount(tier.bonusAmount),

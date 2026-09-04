@@ -41,7 +41,7 @@ class CompatibilityRemoteRegistryControllerTest {
     private CompatibilityRemoteAccountClient.RewardTierPreset preset() {
         return new CompatibilityRemoteAccountClient.RewardTierPreset(true, false,
                 List.of(new CompatibilityRemoteAccountClient.RewardTierPresetTier(
-                        List.of(901091L), "近7天充值总金额100-499", BigDecimal.valueOf(100), BigDecimal.ONE, BigDecimal.valueOf(3))),
+                        "LABEL_USERS", List.of(901091L), "近7天充值总金额100-499", BigDecimal.valueOf(100), BigDecimal.ONE, BigDecimal.valueOf(3))),
                 List.of(new CompatibilityRemoteAccountClient.RemoteTag(901091L, "(901091)近7天充值总金额100-499")),
                 Instant.parse("2026-08-31T00:00:00Z"), 2L);
     }

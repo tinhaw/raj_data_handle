@@ -72,6 +72,7 @@ public final class RedemptionDtos {
                                          @NotNull @Min(1) Long remoteMarketId,
                                          @Size(max = 100) String exportGroupKey,
                                          RedemptionCodeType redemptionType,
+                                         @Size(max = 50) List<@NotNull @Pattern(regexp = "ALL_USERS|LABEL_USERS") String> tierUserTypes,
                                          @NotEmpty List<List<@NotNull @Min(1) Long>> tierLabelIds,
                                          @NotNull @Valid RemoteCreationOptionsRequest remoteOptions) { }
     public record RemoteCreationOptionsRequest(
@@ -140,14 +141,15 @@ public final class RedemptionDtos {
                                            String lastError, Long rowVersion, Instant createdAt, Instant updatedAt) { }
     public record RemoteTagResponse(Long id, String name) { }
     public record RemoteTagSyncResponse(List<RemoteTagResponse> tags, boolean presetStale, Instant syncedAt) { }
-    public record RewardTierPresetTierRequest(@NotEmpty List<@NotNull @Min(1) Long> labelIds,
+    public record RewardTierPresetTierRequest(String userType,
+                                               @NotNull @Size(max = 100) List<@NotNull @Min(1) Long> labelIds,
                                                @NotBlank @Size(max = 200) String displayName,
                                                @NotNull @DecimalMin("0") BigDecimal minDepositAmount,
                                                @NotNull @DecimalMin("0") BigDecimal bonusAmount,
                                                @NotNull @DecimalMin("0") BigDecimal bonusMaxAmount) { }
     public record RewardTierPresetSaveRequest(@NotEmpty @Size(max = 50) List<@Valid RewardTierPresetTierRequest> tiers,
                                               @NotEmpty @Size(max = 500) List<@Valid RemoteTagResponse> tagSnapshot) { }
-    public record RewardTierPresetTierResponse(List<Long> labelIds, String displayName, BigDecimal minDepositAmount,
+    public record RewardTierPresetTierResponse(String userType, List<Long> labelIds, String displayName, BigDecimal minDepositAmount,
                                                 BigDecimal bonusAmount, BigDecimal bonusMaxAmount) { }
     public record RewardTierPresetResponse(boolean exists, boolean stale, List<RewardTierPresetTierResponse> tiers,
                                            List<RemoteTagResponse> tagSnapshot, Instant savedAt, Instant lastSyncedAt) { }

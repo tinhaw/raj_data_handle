@@ -233,11 +233,22 @@ class RemoteTagSnapshotResponse(ApiSchema):
 
 
 class RewardTierPresetTier(ApiSchema):
-    label_ids: list[int] = Field(min_length=1, max_length=100)
+    user_type: Literal["ALL_USERS", "LABEL_USERS"] = "LABEL_USERS"
+    label_ids: list[int] = Field(default_factory=list, max_length=100)
     display_name: str = Field(min_length=1, max_length=200)
     min_deposit_amount: Decimal = Field(ge=0, max_digits=24, decimal_places=8)
     bonus_amount: Decimal = Field(ge=0, max_digits=24, decimal_places=8)
     bonus_max_amount: Decimal = Field(ge=0, max_digits=24, decimal_places=8)
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_legacy_user_type(cls, value: object) -> object:
+        if isinstance(value, dict) and not value.get("user_type") and not value.get("userType"):
+            normalized = dict(value)
+            has_labels = normalized.get("label_ids") or normalized.get("labelIds")
+            normalized["user_type"] = "LABEL_USERS" if has_labels else "ALL_USERS"
+            return normalized
+        return value
 
     @field_validator("label_ids")
     @classmethod
@@ -245,6 +256,14 @@ class RewardTierPresetTier(ApiSchema):
         if len(set(value)) != len(value):
             raise ValueError("同一档位的标签 ID 不能重复。")
         return value
+
+    @model_validator(mode="after")
+    def validate_user_type(self) -> RewardTierPresetTier:
+        if self.user_type == "ALL_USERS" and self.label_ids:
+            raise ValueError("全部用户档位不能配置标签 ID。")
+        if self.user_type == "LABEL_USERS" and not self.label_ids:
+            raise ValueError("标签用户档位必须选择至少一个标签 ID。")
+        return self
 
 
 class RewardTierPresetWrite(ApiSchema):

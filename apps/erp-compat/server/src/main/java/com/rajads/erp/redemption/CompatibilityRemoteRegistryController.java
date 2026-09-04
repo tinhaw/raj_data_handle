@@ -87,6 +87,7 @@ public class CompatibilityRemoteRegistryController {
     private RedemptionDtos.RewardTierPresetResponse response(CompatibilityRemoteAccountClient.RewardTierPreset preset) {
         List<RedemptionDtos.RewardTierPresetTierResponse> tiers = preset.tiers() == null ? List.of() : preset.tiers().stream()
                 .map(tier -> new RedemptionDtos.RewardTierPresetTierResponse(
+                        tier.userType() == null ? (tier.labelIds() == null || tier.labelIds().isEmpty() ? "ALL_USERS" : "LABEL_USERS") : tier.userType(),
                         tier.labelIds(), tier.displayName(), tier.minDepositAmount(), tier.bonusAmount(), tier.bonusMaxAmount()))
                 .toList();
         List<RedemptionDtos.RemoteTagResponse> tagSnapshot = preset.tagSnapshot() == null ? List.of() : preset.tagSnapshot().stream()

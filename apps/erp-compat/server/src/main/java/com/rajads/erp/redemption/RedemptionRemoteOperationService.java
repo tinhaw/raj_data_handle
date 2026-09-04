@@ -229,8 +229,7 @@ public class RedemptionRemoteOperationService {
         }
         RedemptionRemoteDirectory.Account account = remoteDirectory.requireEnabled(batch.getRemoteConnectionId());
         List<Long> labels = labelIds(issue);
-        boolean allUsers = batch.getRedemptionType() == RedemptionCodeType.PREVIOUS_DAY_DEPOSIT && labels.isEmpty();
-        if (labels.isEmpty() && !allUsers) throw ApiException.badRequest("REMOTE_TIER_LABEL_REQUIRED", "该任务没有远端用户标签，请重新建立批次");
+        boolean allUsers = labels.isEmpty();
         issue.setWorkflowStatus("CREATING_REMOTE");
         issue.setState("PENDING");
         issue.setRemoteError(null);

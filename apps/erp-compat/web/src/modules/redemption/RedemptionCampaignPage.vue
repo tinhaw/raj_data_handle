@@ -31,12 +31,15 @@ interface SevenDayTierProfile extends TierProfile {
 }
 
 interface CodeGroupTierDraft {
+  userType: CodeGroupUserType
   displayName: string
   minDepositAmount: number
   bonusAmount: number
   bonusMaxAmount: number
   labelIds: Array<string | number>
 }
+
+type CodeGroupUserType = 'ALL_USERS' | 'LABEL_USERS'
 
 interface CodeGroupForm {
   dateRange: [string, string]
@@ -261,6 +264,7 @@ function draftTier(labelId?: string | number): CodeGroupTierDraft {
   const profile = tag ? sevenDayTierProfileForTag(tag) : sevenDayTierProfiles.find((item) => item.fallbackLabelId === Number(labelId))
   const fallback = profile || sevenDayTierProfiles[0]
   return {
+    userType: 'LABEL_USERS',
     displayName: tag?.name.replace(/^\(\d+\)/, '').trim() || fallback.name,
     minDepositAmount: profile?.minDepositAmount ?? minimumDepositFromTag(tag?.name) ?? fallback.minDepositAmount,
     bonusAmount: profile?.bonusAmount ?? fallback.bonusAmount,
@@ -271,6 +275,7 @@ function draftTier(labelId?: string | number): CodeGroupTierDraft {
 
 function previousDayTiers(profile: PreviousDayProfile): CodeGroupTierDraft[] {
   return previousDayProfiles[profile].map((tier) => ({
+    userType: tier.id === undefined ? 'ALL_USERS' : 'LABEL_USERS',
     displayName: tier.name,
     minDepositAmount: tier.minDepositAmount,
     bonusAmount: tier.bonusAmount,
@@ -280,7 +285,7 @@ function previousDayTiers(profile: PreviousDayProfile): CodeGroupTierDraft[] {
 }
 
 function isPreviousDayDeposit() { return form.value.redemptionType === 'PREVIOUS_DAY_DEPOSIT' }
-function isAllUsersTier(tier: CodeGroupTierDraft) { return isPreviousDayDeposit() && tier.labelIds.length === 0 }
+function isAllUsersTier(tier: CodeGroupTierDraft) { return tier.userType === 'ALL_USERS' }
 function redemptionTypeLabel(type: RedemptionCodeType) { return type === 'PREVIOUS_DAY_DEPOSIT' ? '日充值' : '近 7 天充值' }
 
 function newCodeGroupForm(): CodeGroupForm {
@@ -441,6 +446,7 @@ function groupStatus(row: CodeGroupRow) {
   if (isSuccess(row)) return { text: '生成成功', type: 'success' as const }
   if (hasScheduledPublishReached(row)) return { text: '待下载', type: 'info' as const }
   if (isScheduledPublish(row)) return { text: '定时发布中', type: 'warning' as const }
+  if (row.detail.batch.status === 'PUBLISHED') return { text: '已发布', type: 'primary' as const }
   if (row.detail.batch.status === 'READY_TO_PUBLISH') return { text: '待发布', type: 'info' as const }
   if (hasRemoteCreationInProgress(row)) return { text: '生成中', type: 'warning' as const }
   if (pendingRemoteCreationIssues(row).length) return { text: '生成中', type: 'warning' as const }
@@ -452,6 +458,7 @@ function groupProgress(row: CodeGroupRow) {
   if (batch.remotePublishError) return `远端发布失败：${batch.remotePublishError}`
   if (hasScheduledPublishReached(row)) return '定时发布已到时，可开始下载兑换码'
   if (isScheduledPublish(row)) return `定时发布：${formatIndiaDateTime(batch.remoteScheduledPublishAt)}`
+  if (batch.status === 'PUBLISHED') return `${batch.publishedCount} / ${batch.expectedCodeCount} 条远端配置已发布，待下载兑换码`
   if (failedIssues(row).length) return `${batch.createdCount} / ${batch.expectedCodeCount} 条远端配置已创建，${failedIssues(row).length} 个任务失败`
   if (batch.status === 'READY_TO_PUBLISH') return `${batch.createdCount} / ${batch.expectedCodeCount} 条远端配置已创建，待发布`
   const pending = pendingRemoteCreationIssues(row).length
@@ -495,6 +502,7 @@ function taskStatus(task: CodeGroupTask) {
   if (!isMultiMarketTask(task)) return groupStatus(taskPrimary(task))
   if (task.members.some(groupFailureMessage)) return { text: '部分生成失败', type: 'danger' as const }
   if (task.members.every(isSuccess)) return { text: '生成成功', type: 'success' as const }
+  if (task.members.every((member) => member.detail.batch.status === 'PUBLISHED')) return { text: '已发布', type: 'primary' as const }
   if (task.members.every((member) => member.detail.batch.status === 'READY_TO_PUBLISH')) return { text: '待发布', type: 'info' as const }
   if (task.members.some(isScheduledPublish)) return { text: '发布中', type: 'warning' as const }
   if (task.members.some(hasRemoteCreationInProgress)) return { text: '生成中', type: 'warning' as const }
@@ -507,6 +515,10 @@ function taskProgress(task: CodeGroupTask) {
   const created = task.members.reduce((total, member) => total + member.detail.batch.createdCount, 0)
   const imported = task.members.reduce((total, member) => total + member.detail.batch.importedCount, 0)
   if (task.members.every(isSuccess)) return `${imported} / ${expected} 个兑换码已入库`
+  if (task.members.every((member) => member.detail.batch.status === 'PUBLISHED')) {
+    const published = task.members.reduce((total, member) => total + member.detail.batch.publishedCount, 0)
+    return `${published} / ${expected} 条远端配置已发布，待下载兑换码`
+  }
   const failed = task.members.reduce((total, member) => total + failedIssues(member).length, 0)
   if (failed) return `${created} / ${expected} 条远端配置已创建，${failed} 个失败`
   const pending = task.members.reduce((total, member) => total + pendingRemoteCreationIssues(member).length, 0)
@@ -559,7 +571,7 @@ function publishTime(row: CodeGroupRow) {
 function labelsFor(row: CodeGroupRow) {
   const audiences = row.detail.issues.map((issue) => {
     const ids = issue.remoteLabelIds || []
-    if (!ids.length && row.detail.batch.redemptionType === 'PREVIOUS_DAY_DEPOSIT') return '所有用户'
+    if (!ids.length) return '全部用户'
     return ids.map((id) => tagOptions.value.find((tag) => String(tag.id) === String(id))?.name || `标签 ID ${id}`).join('、')
   }).filter(Boolean)
   return [...new Set(audiences)].join('、') || '—'
@@ -751,6 +763,7 @@ function sevenDayTierProfileForTag(tag?: RedemptionRemoteTag) {
 
 function tiersFromRewardPreset(preset: RedemptionRewardTierPreset) {
   return preset.tiers.map((tier) => ({
+    userType: tier.userType || (tier.labelIds.length ? 'LABEL_USERS' : 'ALL_USERS'),
     displayName: tier.displayName,
     minDepositAmount: Number(tier.minDepositAmount),
     bonusAmount: Number(tier.bonusAmount),
@@ -761,7 +774,7 @@ function tiersFromRewardPreset(preset: RedemptionRewardTierPreset) {
 
 function savedPresetMatchesCurrentMarket(preset: RedemptionRewardTierPreset) {
   const currentIds = new Set(tagOptions.value.map((tag) => String(tag.id)))
-  return preset.tiers.every((tier) => tier.labelIds.every((id) => currentIds.has(String(id))))
+  return preset.tiers.every((tier) => tier.userType === 'ALL_USERS' || tier.labelIds.every((id) => currentIds.has(String(id))))
 }
 
 function standardSevenDayTiers() {
@@ -811,6 +824,24 @@ function updateTierFromLabel(tier: CodeGroupTierDraft, selectedLabelId?: string 
 function updatePreviousDayTierLabel(tier: CodeGroupTierDraft, selectedLabelId?: string | number) {
   if (selectedLabelId === undefined) return
   tier.labelIds = [selectedLabelId]
+  const tag = previousDayTagOptions.value.find((item) => String(item.id) === String(selectedLabelId))
+  tier.displayName = tag?.name.replace(/^\(\d+\)/, '').trim() || `标签 ID ${selectedLabelId}`
+  tier.minDepositAmount = minimumDepositFromTag(tag?.name) ?? tier.minDepositAmount
+}
+
+function changeTierUserType(tier: CodeGroupTierDraft, userType: CodeGroupUserType) {
+  tier.userType = userType
+  if (userType === 'ALL_USERS') {
+    tier.labelIds = []
+    tier.displayName = tier.displayName.replace(/（所有用户）$/, '').trim() || '全部用户'
+    return
+  }
+  if (tier.labelIds.length) return
+  const options = isPreviousDayDeposit() ? previousDayTagOptions.value : tagOptions.value
+  const available = options.find((tag) => !isLabelUsedByOtherTier(tag.id, tier))
+  if (!available) return
+  if (isPreviousDayDeposit()) updatePreviousDayTierLabel(tier, available.id)
+  else updateTierFromLabel(tier, available.id)
 }
 
 function minimumDepositFromTag(name?: string) {
@@ -823,12 +854,25 @@ function minimumDepositFromTag(name?: string) {
 
 function addTier() {
   const usedLabelIds = new Set(form.value.tiers.flatMap((tier) => tier.labelIds.map(String)))
-  const availableTag = tagOptions.value.find((tag) => !usedLabelIds.has(String(tag.id)))
+  const options = isPreviousDayDeposit() ? previousDayTagOptions.value : tagOptions.value
+  const availableTag = options.find((tag) => !usedLabelIds.has(String(tag.id)))
   if (!availableTag) {
     ElMessage.warning('所有可用标签都已添加为奖励档位')
     return
   }
-  form.value.tiers.push(draftTier(Number(availableTag.id)))
+  if (isPreviousDayDeposit()) {
+    const tier: CodeGroupTierDraft = {
+      userType: 'LABEL_USERS',
+      displayName: availableTag.name.replace(/^\(\d+\)/, '').trim(),
+      minDepositAmount: minimumDepositFromTag(availableTag.name) ?? 0,
+      bonusAmount: 1,
+      bonusMaxAmount: 3,
+      labelIds: [availableTag.id],
+    }
+    form.value.tiers.push(tier)
+  } else {
+    form.value.tiers.push(draftTier(availableTag.id))
+  }
 }
 
 function isLabelUsedByOtherTier(labelId: string | number, currentTier: CodeGroupTierDraft) {
@@ -856,13 +900,14 @@ function applyRewardTierPreset() {
 async function saveRewardTierPreset() {
   const connection = selectedRemoteConnection.value
   if (!connection) { ElMessage.warning('请先选择盘口'); return }
-  if (form.value.tiers.some((tier) => !tier.labelIds.length)) { ElMessage.warning('每个奖励分档都必须选择标签 ID'); return }
+  if (form.value.tiers.some((tier) => tier.userType === 'LABEL_USERS' && !tier.labelIds.length)) { ElMessage.warning('标签用户档位必须选择标签 ID'); return }
   if (form.value.tiers.some((tier) => tier.bonusMaxAmount < tier.bonusAmount)) { ElMessage.warning('兑换金额上下限不正确'); return }
   rewardTierPresetSaving.value = true
   try {
     rewardTierPreset.value = await api.redemptionRemoteConnections.saveRewardTierPreset(connection.id!, {
       tiers: form.value.tiers.map((tier) => ({
-        labelIds: [...tier.labelIds],
+        userType: tier.userType,
+        labelIds: tier.userType === 'ALL_USERS' ? [] : [...tier.labelIds],
         displayName: tier.displayName,
         minDepositAmount: String(tier.minDepositAmount),
         bonusAmount: String(tier.bonusAmount),
@@ -906,7 +951,7 @@ function validateForm() {
     if (!remoteConnectionForMarket(marketId)) return `${label} 暂无可用远端账号，请前往“远端连接”完成账号配置`
     if (isPreviousDayDeposit() && !previousDayProfileForMarket(marketId)) return `日充值目前不支持 ${label}`
     if (!draft?.tiers.length) return `${label} 请先配置至少一个充值档位`
-    if (draft.tiers.some((tier) => !isAllUsersTier(tier) && !tier.labelIds.length)) return `${label} 的每个充值档位都必须选择至少一个标签 ID`
+    if (draft.tiers.some((tier) => tier.userType === 'LABEL_USERS' && !tier.labelIds.length)) return `${label} 的标签用户档位必须选择至少一个标签 ID`
     if (draft.tiers.some((tier) => tier.bonusAmount < 0 || tier.bonusMaxAmount < tier.bonusAmount)) return `${label} 的兑换金额上下限不正确`
   }
   return ''
@@ -952,7 +997,8 @@ async function createCodeGroup() {
         remoteMarketId: marketId,
         exportGroupKey,
         redemptionType: form.value.redemptionType,
-        tierLabelIds: draft.tiers.map((tier) => tier.labelIds),
+        tierUserTypes: draft.tiers.map((tier) => tier.userType),
+        tierLabelIds: draft.tiers.map((tier) => tier.userType === 'ALL_USERS' ? [] : tier.labelIds),
         remoteOptions: form.value.remoteOptions,
       }
       try {
@@ -1252,7 +1298,7 @@ onUnmounted(() => {
     <div class="page-title-row">
       <div>
         <h2>兑换码管理</h2>
-        <p class="page-subtitle">按日期、用户标签和兑换金额批量创建兑换码组；远端配置创建完成后可选择立即或定时发布。</p>
+        <p class="page-subtitle">按日期、用户类型和兑换金额批量创建兑换码组；远端配置创建完成后可选择立即或定时发布。</p>
       </div>
       <div class="page-actions">
         <el-button :icon="Refresh" :loading="loading" @click="loadCodeGroups">刷新</el-button>
@@ -1345,7 +1391,7 @@ onUnmounted(() => {
           </el-form-item>
           <el-form-item class="code-group-form__code-type" label="兑换码类型" required>
             <el-radio-group v-model="form.redemptionType" @change="changeRedemptionType">
-              <el-radio value="SEVEN_DAY_DEPOSIT">近 7 天充值（标签 ID 数组）</el-radio>
+              <el-radio value="SEVEN_DAY_DEPOSIT">近 7 天充值</el-radio>
               <el-radio value="PREVIOUS_DAY_DEPOSIT">日充值</el-radio>
             </el-radio-group>
             <p class="field-note">日充值类型只核验兑换日前一天的充值金额，兑换码在所选兑换日期当天有效。</p>
@@ -1368,13 +1414,17 @@ onUnmounted(() => {
         </el-tabs>
         <section class="tier-panel">
           <div class="tier-panel__heading">
-          <div><strong>{{ marketLabel(form.remoteMarketId) }} · {{ isPreviousDayDeposit() ? '用户类型 · 兑换金额上下限' : '标签 ID 数组 · 兑换金额上下限' }}</strong><p v-if="isPreviousDayDeposit()">按当前盘口的日充值标签建立固定五档：充值 0 档面向所有用户，其余档位使用对应标签 ID。切换顶部盘口标签页即可独立编辑各盘口的用户类型与金额；远端描述和备注会命名为“{{ 'NEW-818存款200' }}”格式。</p><template v-else><p>每个盘口分别加载自己的标签 ID 数组和预设。切换顶部盘口标签页即可独立编辑；未保存时按当前盘口标签加载标准五档。</p><p v-if="rewardTierPresetLoading" class="field-note">正在读取 {{ marketLabel(form.remoteMarketId) }} 的标签 ID 数组与奖励分档预设…</p><p v-else-if="rewardTierPreset?.exists" class="field-note"><el-tag size="small" :type="rewardTierPreset.stale ? 'warning' : 'success'">{{ rewardTierPreset.stale ? '预设待重新保存' : '已保存预设' }}</el-tag><span class="tier-panel__preset-copy">{{ rewardTierPreset.stale ? '标签已同步，请确认当前奖励分档后重新保存。' : `保存于 ${formatDateTime(rewardTierPreset.savedAt)}` }}</span></p><p v-else class="field-note">当前盘口尚未另存预设，已加载标准五档。</p></template></div>
-            <div class="tier-panel__actions"><el-button plain :icon="Refresh" :loading="remoteTagsLoading" @click="loadRemoteTags">同步当前盘口标签</el-button><template v-if="!isPreviousDayDeposit()"><el-button plain :disabled="!rewardTierPreset?.exists || rewardTierPreset.stale" @click="applyRewardTierPreset">重新应用预设</el-button><el-button plain type="primary" :loading="rewardTierPresetSaving" @click="saveRewardTierPreset">另存当前预设</el-button><el-button plain @click="restoreStandardTiers">恢复该盘口标准五档</el-button><el-button plain :icon="Plus" @click="addTier">添加档位</el-button></template></div>
+          <div><strong>{{ marketLabel(form.remoteMarketId) }} · 用户类型与兑换金额</strong><p>每个档位先选择用户类型。“标签用户”必须选择标签 ID；“全部用户”不会向远端发送标签数组。切换顶部盘口标签页可独立编辑各盘口。</p><p v-if="isPreviousDayDeposit()" class="field-note">日充值默认保留充值 0 档为全部用户，其余档位为标签用户；远端描述和备注会命名为“{{ 'NEW-818存款200' }}”格式。</p><template v-else><p v-if="rewardTierPresetLoading" class="field-note">正在读取 {{ marketLabel(form.remoteMarketId) }} 的用户类型、标签与奖励分档预设…</p><p v-else-if="rewardTierPreset?.exists" class="field-note"><el-tag size="small" :type="rewardTierPreset.stale ? 'warning' : 'success'">{{ rewardTierPreset.stale ? '预设待重新保存' : '已保存预设' }}</el-tag><span class="tier-panel__preset-copy">{{ rewardTierPreset.stale ? '标签已同步，请确认当前奖励分档后重新保存。' : `保存于 ${formatDateTime(rewardTierPreset.savedAt)}` }}</span></p><p v-else class="field-note">当前盘口尚未另存预设，已按现有标签加载标准五档。</p></template></div>
+            <div class="tier-panel__actions"><el-button plain :icon="Refresh" :loading="remoteTagsLoading" @click="loadRemoteTags">同步当前盘口标签</el-button><template v-if="!isPreviousDayDeposit()"><el-button plain :disabled="!rewardTierPreset?.exists || rewardTierPreset.stale" @click="applyRewardTierPreset">重新应用预设</el-button><el-button plain type="primary" :loading="rewardTierPresetSaving" @click="saveRewardTierPreset">另存当前预设</el-button><el-button plain @click="restoreStandardTiers">恢复该盘口标准五档</el-button></template><el-button plain :icon="Plus" @click="addTier">添加档位</el-button></div>
           </div>
           <div class="tier-editor">
-            <div class="tier-editor__header"><span>{{ isPreviousDayDeposit() ? '用户类型' : '标签 ID 数组' }}</span><span>兑换金额下限</span><span>兑换金额上限</span><span></span></div>
+            <div class="tier-editor__header"><span>用户类型</span><span>标签 ID 数组</span><span>兑换金额下限</span><span>兑换金额上限</span><span></span></div>
             <div v-for="(tier, index) in form.tiers" :key="index" class="tier-editor__row">
-              <span v-if="isAllUsersTier(tier)" class="tier-editor__audience">所有用户</span>
+              <el-select :model-value="tier.userType" :clearable="false" @update:model-value="(value) => changeTierUserType(tier, value as CodeGroupUserType)">
+                <el-option label="标签用户" value="LABEL_USERS" />
+                <el-option label="全部用户" value="ALL_USERS" />
+              </el-select>
+              <div v-if="isAllUsersTier(tier)" class="tier-editor__all-users"><strong>全部用户</strong><span>无需标签</span></div>
               <el-select v-else-if="isPreviousDayDeposit()" :model-value="tier.labelIds[0]" filterable :loading="remoteTagsLoading" placeholder="选择当前盘口标签 ID" @update:model-value="(labelId) => updatePreviousDayTierLabel(tier, labelId)">
                 <el-option v-for="tag in previousDayTagOptions" :key="tag.id" :label="tag.name" :value="tag.id" :disabled="isLabelUsedByOtherTier(tag.id, tier)" />
               </el-select>
@@ -1383,7 +1433,7 @@ onUnmounted(() => {
               </el-select>
               <el-input-number v-model="tier.bonusAmount" :min="0" :max="1000000" :precision="2" controls-position="right" />
               <el-input-number v-model="tier.bonusMaxAmount" :min="0" :max="1000000" :precision="2" controls-position="right" />
-              <el-button v-if="!isPreviousDayDeposit()" type="danger" link @click="removeTier(index)">删除</el-button>
+              <el-button type="danger" link @click="removeTier(index)">删除</el-button>
             </div>
           </div>
         </section>
@@ -1515,10 +1565,11 @@ onUnmounted(() => {
 .tier-panel__heading p { margin: 5px 0 0; color: #667085; font-size: 12px; }
 .tier-panel__preset-copy { margin-left: 7px; }
 .tier-editor { overflow: hidden; border: 1px solid #eaecf0; border-radius: 8px; background: #fff; }
-.tier-editor__header, .tier-editor__row { display: grid; grid-template-columns: minmax(360px, 2fr) minmax(150px, .9fr) minmax(150px, .9fr) 44px; align-items: center; gap: 10px; padding: 9px 11px; }
+.tier-editor__header, .tier-editor__row { display: grid; grid-template-columns: minmax(132px, .72fr) minmax(300px, 1.8fr) minmax(138px, .82fr) minmax(138px, .82fr) 44px; align-items: center; gap: 10px; padding: 9px 11px; }
 .tier-editor__header { color: #667085; font-size: 12px; font-weight: 600; background: #f2f4f7; }
 .tier-editor__row { border-top: 1px solid #f2f4f7; }
-.tier-editor__audience { min-height: 32px; display: flex; align-items: center; padding: 0 11px; color: #344054; border: 1px solid #d0d5dd; border-radius: 4px; background: #f9fafb; }
+.tier-editor__all-users { min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 11px; color: #344054; border: 1px solid #d0d5dd; border-radius: 4px; background: #f9fafb; }
+.tier-editor__all-users span { color: #98a2b3; font-size: 12px; white-space: nowrap; }
 .advanced-options { border-top: 1px solid #eaecf0; }
 .advanced-options :deep(.el-collapse-item__header) { gap: 8px; color: #344054; font-weight: 600; }
 .advanced-options__fixed { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 2px 0 14px; color: #667085; font-size: 12px; }

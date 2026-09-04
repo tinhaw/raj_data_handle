@@ -121,7 +121,7 @@ public class CompatibilityRemoteAccountClient {
     public record TagSnapshot(boolean exists, List<RemoteTag> tags, String source, boolean stale,
                               Instant syncedAt, Instant updatedAt, Long rowVersion) { }
 
-    public record RewardTierPresetTier(List<Long> labelIds, String displayName, BigDecimal minDepositAmount,
+    public record RewardTierPresetTier(String userType, List<Long> labelIds, String displayName, BigDecimal minDepositAmount,
                                        BigDecimal bonusAmount, BigDecimal bonusMaxAmount) { }
 
     public record RewardTierPreset(boolean exists, boolean stale, List<RewardTierPresetTier> tiers,

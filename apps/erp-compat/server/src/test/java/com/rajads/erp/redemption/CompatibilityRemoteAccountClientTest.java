@@ -64,7 +64,7 @@ class CompatibilityRemoteAccountClientTest {
                 "account-uuid", "raj_session", "test-session",
                 new RedemptionDtos.RewardTierPresetSaveRequest(
                         java.util.List.of(new RedemptionDtos.RewardTierPresetTierRequest(
-                                java.util.List.of(901091L), "近7天充值总金额100-499",
+                                "LABEL_USERS", java.util.List.of(901091L), "近7天充值总金额100-499",
                                 java.math.BigDecimal.valueOf(100), java.math.BigDecimal.ONE, java.math.BigDecimal.valueOf(3))),
                         java.util.List.of(new RedemptionDtos.RemoteTagResponse(901091L, "(901091)近7天充值总金额100-499"))));
         assertThat(saved.savedAt()).isNotNull();

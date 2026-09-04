@@ -87,11 +87,11 @@ class RedemptionCampaignHttpTest {
                 new RemoteGiftCodeBackendClient.RemoteTag(901091, "近7天充值100-499"),
                 new RemoteGiftCodeBackendClient.RemoteTag(901092, "近7天充值500-1999")));
 
-        mockMvc.perform(post("/api/v1/redemption-campaigns/groups").session(session)
+        MvcResult groupResult = mockMvc.perform(post("/api/v1/redemption-campaigns/groups").session(session)
                         .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON).content("""
                                 {"code":"group_create_aug","name":"八月兑换码组","claimDateFrom":"2026-08-20","claimDateTo":"2026-08-21","lookbackDays":7,
                                  "tiers":[{"displayName":"近7天充值100-499","minDepositAmount":100,"bonusAmount":1,"bonusMaxAmount":3,"sortOrder":1},{"displayName":"近7天充值500-1999","minDepositAmount":500,"bonusAmount":5,"bonusMaxAmount":7,"sortOrder":2}],
-                                 "remoteMarketId":%s,"redemptionType":"SEVEN_DAY_DEPOSIT","tierLabelIds":[[901091],[901092]],
+                                 "remoteMarketId":%s,"redemptionType":"SEVEN_DAY_DEPOSIT","tierUserTypes":["LABEL_USERS","ALL_USERS"],"tierLabelIds":[[901091],[]],
                                  "remoteOptions":{"publishEnvironment":"test","flowTimes":5,"creationIntervalSeconds":5,"activityRecharge":500,"activityRechargeCount":3,"activityId":456,"keyNumber":1,"singleUserLimit":1,"singleKeyLimit":2,"requireBindBankCard":false,"requireBindPhone":true,"checkUuid":true,"uuidRewardLimit":1,"checkLoginIp":true,"loginIpRewardLimit":1,"checkRegisterIp":true,"registerIpRewardLimit":1}}
                                 """.formatted(marketId)))
                 .andExpect(status().isOk())
@@ -104,7 +104,19 @@ class RedemptionCampaignHttpTest {
                 .andExpect(jsonPath("$.data.batch.remoteOptions.activityId").value(456))
                 .andExpect(jsonPath("$.data.batch.remoteOptions.creationIntervalSeconds").value(5))
                 .andExpect(jsonPath("$.data.issues[0].remoteLabelIds[0]").value(901091))
-                .andExpect(jsonPath("$.data.issues[1].remoteLabelIds[0]").value(901092));
+                .andExpect(jsonPath("$.data.issues[1].remoteLabelIds").isEmpty())
+                .andReturn();
+
+        long allUsersIssueId = data(groupResult).at("/issues/1/id").asLong();
+        when(remoteGiftCodeBackendClient.create(any(), any())).thenReturn(new RemoteGiftCodeBackendClient.CreatedConfiguration("all-users-seven-day", null));
+        when(remoteGiftCodeBackendClient.findGroupKey(any(), any(), any())).thenReturn("all-users-seven-day-group");
+        mockMvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + allUsersIssueId + "/remote-create").session(session)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf()))
+                .andExpect(status().isOk());
+        ArgumentCaptor<RemoteGiftCodeBackendClient.CreateConfigurationRequest> allUsersRequest = ArgumentCaptor.forClass(RemoteGiftCodeBackendClient.CreateConfigurationRequest.class);
+        verify(remoteGiftCodeBackendClient).create(any(), allUsersRequest.capture());
+        assertThat(allUsersRequest.getValue().allUsers()).isTrue();
+        assertThat(allUsersRequest.getValue().labelIds()).isEmpty();
 
         mockMvc.perform(get("/api/v1/redemption-campaigns").session(session))
                 .andExpect(status().isOk())
@@ -132,7 +144,7 @@ class RedemptionCampaignHttpTest {
                         .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON).content("""
                                 {"code":"previous_day_aug","name":"前一天充值兑换码组","claimDateFrom":"2026-08-18","claimDateTo":"2026-08-18","lookbackDays":7,
                                  "tiers":[{"displayName":"前一天充值 0（所有用户）","minDepositAmount":0,"bonusAmount":1,"bonusMaxAmount":3,"sortOrder":1},{"displayName":"前一天充值 200–999","minDepositAmount":200,"bonusAmount":7,"bonusMaxAmount":9,"sortOrder":2}],
-                                 "remoteMarketId":%s,"redemptionType":"PREVIOUS_DAY_DEPOSIT","tierLabelIds":[[],[901991]],
+                                 "remoteMarketId":%s,"redemptionType":"PREVIOUS_DAY_DEPOSIT","tierUserTypes":["ALL_USERS","LABEL_USERS"],"tierLabelIds":[[],[901991]],
                                  "remoteOptions":{"publishEnvironment":"test","flowTimes":5,"creationIntervalSeconds":5,"keyNumber":1,"singleUserLimit":1,"singleKeyLimit":3000,"requireBindBankCard":false,"requireBindPhone":true,"checkUuid":true,"uuidRewardLimit":1,"checkLoginIp":true,"loginIpRewardLimit":1,"checkRegisterIp":true,"registerIpRewardLimit":1}}
                                 """.formatted(marketId)))
                 .andExpect(status().isOk())

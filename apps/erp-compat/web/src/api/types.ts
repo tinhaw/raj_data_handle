@@ -371,6 +371,8 @@ export interface RedemptionCodeGroupInput {
   remoteMarketId: string | number
   exportGroupKey?: string
   redemptionType: RedemptionCodeType
+  /** Each entry declares whether the same-indexed tier targets all users or label users. */
+  tierUserTypes: Array<'ALL_USERS' | 'LABEL_USERS'>
   /** Each entry corresponds to the same-indexed recharge tier. */
   tierLabelIds: Array<Array<string | number>>
   remoteOptions: RedemptionRemoteCreationOptions
@@ -440,6 +442,7 @@ export interface RedemptionRemoteMarket {
 export interface RedemptionRemoteTag { id: string | number; name: string }
 
 export interface RedemptionRewardTierPresetTier {
+  userType?: 'ALL_USERS' | 'LABEL_USERS'
   labelIds: Array<string | number>
   displayName: string
   minDepositAmount: string

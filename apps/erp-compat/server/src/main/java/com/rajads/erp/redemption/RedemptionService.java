@@ -112,7 +112,8 @@ public class RedemptionService {
         RedemptionRemoteDirectory.Account selectedConnection = remoteDirectory.selectEnabledForMarket(request.remoteMarketId());
         RedemptionCodeType redemptionType = request.redemptionType() == null ? RedemptionCodeType.SEVEN_DAY_DEPOSIT : request.redemptionType();
         RedemptionCodeTask task = resolveTask(request.exportGroupKey());
-        remoteDirectory.requireCurrentTags(selectedConnection.id(), request.tierLabelIds().stream()
+        List<List<Long>> requestedTierLabelIds = normalizeTierLabelIds(request, redemptionType);
+        remoteDirectory.requireCurrentTags(selectedConnection.id(), requestedTierLabelIds.stream()
                 .filter(Objects::nonNull).flatMap(Collection::stream).filter(Objects::nonNull).toList());
         int lookbackDays = redemptionType == RedemptionCodeType.PREVIOUS_DAY_DEPOSIT ? 1 : request.lookbackDays();
         RedemptionDtos.CampaignResponse created = create(new RedemptionDtos.CampaignRequest(
@@ -123,9 +124,8 @@ public class RedemptionService {
         campaignRepository.save(campaign);
 
         List<RedemptionCampaignTier> createdTiers = tierRepository.findByCampaignIdOrderBySortOrderAscMinDepositAmountAsc(campaign.getId());
-        List<List<Long>> requestedTierLabelIds = request.tierLabelIds();
         if (requestedTierLabelIds.size() != createdTiers.size()) {
-            throw ApiException.badRequest("INVALID_TIER_LABEL_IDS", "每个充值档位都必须提供至少一个标签 ID");
+            throw ApiException.badRequest("INVALID_TIER_AUDIENCES", "每个充值档位都必须提供一个用户类型");
         }
         Map<Long, List<Long>> tierLabelIds = new LinkedHashMap<>();
         for (int index = 0; index < createdTiers.size(); index++) {
@@ -521,15 +521,44 @@ public class RedemptionService {
         return normalized;
     }
     private String trimToNull(String value) { return value == null || value.isBlank() ? null : value.trim(); }
-    private void validateLabelIds(RedemptionCodeType redemptionType, RedemptionCampaignTier tier, List<Long> labelIds) {
-        if (redemptionType == RedemptionCodeType.PREVIOUS_DAY_DEPOSIT && tier.getMinDepositAmount().signum() == 0) {
-            if (labelIds != null && !labelIds.isEmpty()) {
-                throw ApiException.badRequest("PREVIOUS_DAY_ZERO_TIER_ALL_USERS", "日充值 0 档位必须使用所有用户，不能配置标签 ID");
-            }
-            return;
+    private List<List<Long>> normalizeTierLabelIds(RedemptionDtos.CodeGroupCreateRequest request, RedemptionCodeType redemptionType) {
+        List<List<Long>> labels = request.tierLabelIds();
+        if (labels.size() != request.tiers().size()) {
+            throw ApiException.badRequest("INVALID_TIER_AUDIENCES", "每个充值档位都必须提供一个用户类型");
         }
-        if (labelIds == null || labelIds.isEmpty() || labelIds.stream().anyMatch(id -> id == null || id <= 0)) {
-            throw ApiException.badRequest("REMOTE_TIER_LABEL_REQUIRED", "请为每个充值档位选择远端用户标签" + (tier.getDisplayName() == null ? "" : "：" + tier.getDisplayName()));
+        List<String> userTypes = request.tierUserTypes();
+        boolean explicitUserTypes = userTypes != null && !userTypes.isEmpty();
+        if (explicitUserTypes && userTypes.size() != request.tiers().size()) {
+            throw ApiException.badRequest("INVALID_TIER_AUDIENCES", "每个充值档位都必须提供一个用户类型");
+        }
+        List<List<Long>> normalized = new ArrayList<>();
+        for (int index = 0; index < request.tiers().size(); index++) {
+            List<Long> tierLabels = labels.get(index) == null ? List.of() : labels.get(index);
+            String userType = explicitUserTypes ? userTypes.get(index) : legacyUserType(redemptionType, request.tiers().get(index), tierLabels);
+            if ("ALL_USERS".equals(userType)) {
+                if (!tierLabels.isEmpty()) {
+                    throw ApiException.badRequest("ALL_USERS_LABELS_NOT_ALLOWED", "全部用户档位不能同时配置标签 ID");
+                }
+                normalized.add(List.of());
+                continue;
+            }
+            if (!"LABEL_USERS".equals(userType) || tierLabels.isEmpty() || tierLabels.stream().anyMatch(id -> id == null || id <= 0)) {
+                throw ApiException.badRequest("REMOTE_TIER_LABEL_REQUIRED", "标签用户档位必须选择至少一个远端用户标签");
+            }
+            normalized.add(List.copyOf(tierLabels));
+        }
+        return normalized;
+    }
+
+    private String legacyUserType(RedemptionCodeType redemptionType, RedemptionDtos.TierRequest tier, List<Long> labels) {
+        if (redemptionType == RedemptionCodeType.PREVIOUS_DAY_DEPOSIT
+                && tier.minDepositAmount().signum() == 0 && labels.isEmpty()) return "ALL_USERS";
+        return "LABEL_USERS";
+    }
+
+    private void validateLabelIds(RedemptionCodeType redemptionType, RedemptionCampaignTier tier, List<Long> labelIds) {
+        if (labelIds != null && labelIds.stream().anyMatch(id -> id == null || id <= 0)) {
+            throw ApiException.badRequest("REMOTE_TIER_LABEL_INVALID", "远端用户标签 ID 必须为正整数" + (tier.getDisplayName() == null ? "" : "：" + tier.getDisplayName()));
         }
     }
     private String serializeLabelIds(List<Long> labelIds) {
