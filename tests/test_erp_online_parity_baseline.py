@@ -77,7 +77,7 @@ def test_online_erp_baseline_covers_every_sensitive_remote_operation() -> None:
     assert all(item["parity"] != "equivalent" for item in document["remote_operations"])
 
 
-def test_compatibility_identity_contract_is_internal_and_read_only() -> None:
+def test_compatibility_internal_contracts_expose_only_the_confirmed_create_bridge() -> None:
     internal_routes = {
         route.path: route
         for route in app.routes
@@ -85,13 +85,22 @@ def test_compatibility_identity_contract_is_internal_and_read_only() -> None:
         in {
             "/api/v1/erp/access/compatibility-session",
             "/api/v1/erp/remote-accounts/compatibility-registry",
+            "/api/v1/erp/remote-accounts/compatibility-redemption/create",
         }
     }
     assert set(internal_routes) == {
         "/api/v1/erp/access/compatibility-session",
         "/api/v1/erp/remote-accounts/compatibility-registry",
+        "/api/v1/erp/remote-accounts/compatibility-redemption/create",
     }
-    assert all(route.methods == {"GET"} for route in internal_routes.values())
+    assert internal_routes["/api/v1/erp/access/compatibility-session"].methods == {"GET"}
+    assert internal_routes["/api/v1/erp/remote-accounts/compatibility-registry"].methods == {"GET"}
+    assert (
+        internal_routes[
+            "/api/v1/erp/remote-accounts/compatibility-redemption/create"
+        ].methods
+        == {"POST"}
+    )
     assert all(route.include_in_schema is False for route in internal_routes.values())
 
 

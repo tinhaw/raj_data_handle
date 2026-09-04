@@ -87,8 +87,8 @@ services:
       ERP_COMPAT_DDL_AUTO: none
       ERP_COMPAT_IDENTITY_URL: http://api:8000/api/v1/erp/access/compatibility-session
       ERP_COMPAT_REMOTE_REGISTRY_URL: http://api:8000/api/v1/erp/remote-accounts/compatibility-registry
+      ERP_COMPAT_REMOTE_EXECUTOR_URL: http://api:8000/api/v1/erp/remote-accounts/compatibility-redemption
       ERP_COMPAT_SESSION_COOKIE_NAME: raj_session
-      ERP_COMPAT_REMOTE_OPERATIONS_ENABLED: "false"
       ERP_STORAGE_LOCAL_PATH: /app/runtime/erp-compat
     volumes:
       - file-storage:/app/runtime

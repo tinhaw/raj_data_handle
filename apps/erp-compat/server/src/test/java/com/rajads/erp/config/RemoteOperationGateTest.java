@@ -21,8 +21,8 @@ class RemoteOperationGateTest {
     }
 
     @Test
-    void compatibilityModeCannotEnableTheImportedCredentialClient() {
-        assertThatThrownBy(() -> new RemoteOperationGate(true, false).requireEnabled("remote_publish"))
+    void unifiedCompatibilityModeCannotUseTheImportedCredentialClient() {
+        assertThatThrownBy(() -> new RemoteOperationGate(false).requireEnabled("remote_publish"))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("remote_publish");
     }

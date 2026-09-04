@@ -6,11 +6,12 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
- * Global migration guard for every call that can reach a remote Raj backend.
+ * Legacy-client guard for the isolated standalone regression fixture.
  *
- * <p>This switch is intentionally independent from application startup and
- * method permissions. A migrated user grant is never sufficient on its own to
- * enable connection checks, tag reads/syncs or redemption execution.</p>
+ * <p>Production compatibility mode delegates confirmed redemption creation to
+ * the main application's unified account executor and must never instantiate
+ * the imported credential client.  This guard therefore only permits that
+ * legacy client when the explicitly standalone profile is active.</p>
  */
 @Component
 public class RemoteOperationGate {
@@ -18,16 +19,8 @@ public class RemoteOperationGate {
 
     @Autowired
     public RemoteOperationGate(
-            @Value("${erp.compatibility.remote-operations-enabled:false}") boolean enabled,
             @Value("${erp.compatibility.standalone-auth-enabled:false}") boolean standaloneAuthEnabled) {
-        // Compatibility mode delegates every authorised remote operation to
-        // the main application's unified-account runner. The imported Spring
-        // client must never read a second credential/session store.
-        this.enabled = enabled && standaloneAuthEnabled;
-    }
-
-    public RemoteOperationGate(boolean enabled) {
-        this.enabled = enabled;
+        this.enabled = standaloneAuthEnabled;
     }
 
     public void requireEnabled(String operation) {

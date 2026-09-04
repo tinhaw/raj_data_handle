@@ -8,9 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import require_erp_permission
 from packages.common.database import get_db_session
+from packages.common.settings import get_settings
 from packages.domain.models import RemoteAccountTagSnapshot, SourceConfig
 from packages.domain.schemas.remote_account import (
     ErpCompatibilityRemoteConnection,
+    ErpCompatibilityRemoteCreateRequest,
+    ErpCompatibilityRemoteCreateResponse,
     ErpCompatibilityRemoteMarket,
     ErpCompatibilityRemoteRegistry,
     RemoteAccountCapabilityUpdateRequest,
@@ -24,12 +27,17 @@ from packages.domain.schemas.remote_account import (
 )
 from packages.domain.services.auth_service import AuthContext
 from packages.domain.services.erp_access_service import (
+    ERP_PERMISSION_REDEMPTION_GENERATE,
     ERP_PERMISSION_REDEMPTION_VIEW,
     ERP_PERMISSION_REMOTE_ACCOUNT_MANAGE,
 )
 from packages.domain.services.erp_compatibility_id_service import (
     ErpCompatibilityIdError,
     get_erp_compatibility_ids,
+)
+from packages.domain.services.erp_compatibility_redemption_remote_service import (
+    ErpCompatibilityRemoteExecutionError,
+    execute_compatibility_remote_create,
 )
 from packages.domain.services.remote_account_service import (
     RemoteAccountError,
@@ -82,6 +90,38 @@ def _response(item: RemoteAccountView) -> RemoteAccountResponse:
         capabilities=item.capabilities,
         created_at=account.created_at,
         updated_at=account.updated_at,
+    )
+
+
+@router.post(
+    "/compatibility-redemption/create",
+    response_model=ErpCompatibilityRemoteCreateResponse,
+    include_in_schema=False,
+)
+async def post_compatibility_redemption_create(
+    payload: ErpCompatibilityRemoteCreateRequest,
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REDEMPTION_GENERATE)),
+    session: AsyncSession = Depends(get_db_session),
+) -> ErpCompatibilityRemoteCreateResponse:
+    """Execute one confirmed creation through the unified account executor.
+
+    This private facade accepts only the secret-free Java compatibility
+    projection and forwards no credentials back across the service boundary.
+    """
+
+    try:
+        result = await execute_compatibility_remote_create(
+            session,
+            payload=payload,
+            actor_user_id=auth.user.id,
+            settings=get_settings(),
+        )
+    except ErpCompatibilityRemoteExecutionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return ErpCompatibilityRemoteCreateResponse(
+        remote_configuration_id=result.remote_configuration_id,
+        remote_group_key=result.remote_group_key,
+        remote_request_id=result.remote_request_id,
     )
 
 

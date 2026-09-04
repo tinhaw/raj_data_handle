@@ -79,5 +79,5 @@ erp:
     identity-url: ${ERP_COMPAT_IDENTITY_URL:http://api:8000/api/v1/erp/access/compatibility-session}
     remote-registry-url: ${ERP_COMPAT_REMOTE_REGISTRY_URL:http://api:8000/api/v1/erp/remote-accounts/compatibility-registry}
     remote-accounts-url: ${ERP_COMPAT_REMOTE_ACCOUNTS_URL:http://api:8000/api/v1/erp/remote-accounts}
+    remote-executor-url: ${ERP_COMPAT_REMOTE_EXECUTOR_URL:http://api:8000/api/v1/erp/remote-accounts/compatibility-redemption}
     session-cookie-name: ${ERP_COMPAT_SESSION_COOKIE_NAME:raj_session}
-    remote-operations-enabled: ${ERP_COMPAT_REMOTE_OPERATIONS_ENABLED:false}

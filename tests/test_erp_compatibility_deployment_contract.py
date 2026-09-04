@@ -14,9 +14,9 @@ def test_production_compose_keeps_compatibility_runtime_on_shared_data_handle_bo
     assert 'ERP_COMPAT_STANDALONE_AUTH_ENABLED: "false"' in compose
     assert 'ERP_COMPAT_FLYWAY_ENABLED: "false"' in compose
     assert "ERP_COMPAT_DDL_AUTO: none" in compose
-    assert 'ERP_COMPAT_REMOTE_OPERATIONS_ENABLED: "false"' in compose
     assert "http://api:8000/api/v1/erp/access/compatibility-session" in compose
     assert "http://api:8000/api/v1/erp/remote-accounts/compatibility-registry" in compose
+    assert "http://api:8000/api/v1/erp/remote-accounts/compatibility-redemption" in compose
 
 
 def test_web_proxy_exposes_only_the_compatibility_api_mount() -> None:

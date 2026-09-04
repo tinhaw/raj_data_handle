@@ -29,4 +29,3 @@ erp:
   compatibility:
     enabled: true
     standalone-auth-enabled: true
-    remote-operations-enabled: true

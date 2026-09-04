@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -116,6 +116,67 @@ class ErpCompatibilityRemoteRegistry(ApiSchema):
 
     markets: list[ErpCompatibilityRemoteMarket]
     connections: list[ErpCompatibilityRemoteConnection]
+
+
+class ErpCompatibilityRemoteCreateOptions(ApiSchema):
+    """Non-secret configuration forwarded by the Java compatibility facade."""
+
+    publish_environment: Literal["test", "prod"] = "test"
+    flow_times: int = Field(ge=0, le=1000)
+    activity_recharge: Decimal | None = Field(default=None, ge=0, max_digits=24, decimal_places=8)
+    activity_recharge_count: int | None = Field(default=None, ge=0, le=100_000)
+    activity_id: int | None = Field(default=None, ge=1)
+    key_number: int = Field(ge=1, le=1)
+    single_user_limit: int = Field(ge=1, le=100)
+    single_key_limit: int = Field(ge=1, le=100_000)
+    require_bind_bank_card: bool
+    require_bind_phone: bool
+    check_uuid: bool
+    uuid_reward_limit: int = Field(ge=1, le=100)
+    check_login_ip: bool
+    login_ip_reward_limit: int = Field(ge=1, le=100)
+    check_register_ip: bool
+    register_ip_reward_limit: int = Field(ge=1, le=100)
+
+
+class ErpCompatibilityRemoteCreateRequest(ApiSchema):
+    """Explicit remote-create request from the preserved ERP UI.
+
+    The numeric account ID is a compatibility projection only.  The API
+    resolves the canonical account and decrypts credentials locally; this
+    request never carries a password, TOTP secret or remote access token.
+    """
+
+    account_id: int = Field(ge=1)
+    issue_id: int = Field(ge=1)
+    description: str = Field(min_length=1, max_length=500)
+    claim_date: date
+    label_ids: list[int] = Field(default_factory=list, max_length=100)
+    bonus_amount: Decimal = Field(ge=0, max_digits=24, decimal_places=8)
+    bonus_max_amount: Decimal = Field(ge=0, max_digits=24, decimal_places=8)
+    options: ErpCompatibilityRemoteCreateOptions
+    execution_confirmed: bool = False
+
+    @field_validator("label_ids")
+    @classmethod
+    def unique_positive_label_ids(cls, value: list[int]) -> list[int]:
+        if any(item < 1 for item in value):
+            raise ValueError("标签 ID 必须是正整数。")
+        return list(dict.fromkeys(value))
+
+    @model_validator(mode="after")
+    def validate_remote_confirmation(self) -> ErpCompatibilityRemoteCreateRequest:
+        if self.bonus_max_amount < self.bonus_amount:
+            raise ValueError("兑换金额上限不能小于下限。")
+        if not self.execution_confirmed:
+            raise ValueError("必须明确确认本次远端兑换码创建。")
+        return self
+
+
+class ErpCompatibilityRemoteCreateResponse(ApiSchema):
+    remote_configuration_id: str
+    remote_group_key: str | None = None
+    remote_request_id: str | None = None
 
 
 class RemoteTag(ApiSchema):

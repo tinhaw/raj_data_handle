@@ -149,3 +149,30 @@ async def get_erp_compatibility_ids(
             f"{normalized_type} 缺少 ERP 兼容 ID 映射：{', '.join(missing)}"
         )
     return result
+
+
+async def resolve_erp_compatibility_id(
+    session: AsyncSession,
+    *,
+    entity_type: str,
+    legacy_id: int,
+) -> str:
+    """Resolve a public numeric compatibility ID without exposing UUIDs to Java.
+
+    Compatibility clients only persist the numeric projection.  Sensitive
+    operations must resolve it server-side before looking up the unified
+    account and its credentials.
+    """
+
+    normalized_type = _validate_entity_type(entity_type)
+    if legacy_id < 1:
+        raise ErpCompatibilityIdError("ERP 兼容 ID 必须是正整数。")
+    mapping = await session.scalar(
+        select(ErpCompatibilityIdMap).where(
+            ErpCompatibilityIdMap.entity_type == normalized_type,
+            ErpCompatibilityIdMap.legacy_id == legacy_id,
+        )
+    )
+    if mapping is None:
+        raise ErpCompatibilityIdError("ERP 兼容 ID 不存在或尚未完成映射。")
+    return mapping.canonical_id

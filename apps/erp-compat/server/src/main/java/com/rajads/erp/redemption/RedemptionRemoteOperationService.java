@@ -8,6 +8,7 @@ import com.rajads.erp.config.RemoteOperationGate;
 import com.rajads.erp.identity.CurrentUser;
 import com.rajads.erp.shared.ApiException;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -36,7 +37,9 @@ public class RedemptionRemoteOperationService {
     private final RedemptionCodeIssueRepository issueRepository;
     private final RedemptionCodeBatchRepository batchRepository;
     private final RedemptionRemoteConnectionService remoteConnectionService;
+    private final RedemptionRemoteDirectory remoteDirectory;
     private final RemoteGiftCodeBackendClient remoteClient;
+    private final ObjectProvider<UnifiedRedemptionRemoteExecutorClient> unifiedRemoteExecutorClient;
     private final ObjectMapper objectMapper;
     private final CurrentUser currentUser;
     private final AuditService auditService;
@@ -44,6 +47,34 @@ public class RedemptionRemoteOperationService {
     private final RemoteOperationGate remoteOperationGate;
 
     public Long createConfiguration(Long issueId, boolean retryFailed) {
+        UnifiedRedemptionRemoteExecutorClient executor = unifiedRemoteExecutorClient.getIfAvailable();
+        if (executor != null) return createThroughUnifiedExecutor(issueId, retryFailed, executor);
+        return createThroughStandaloneClient(issueId, retryFailed);
+    }
+
+    /**
+     * Production compatibility mode never reaches {@link RemoteGiftCodeBackendClient}.
+     * The main API resolves the compatibility account projection and owns the
+     * credential decryption and remote HTTP call.
+     */
+    private Long createThroughUnifiedExecutor(Long issueId, boolean retryFailed, UnifiedRedemptionRemoteExecutorClient executor) {
+        RemoteTaskContext context = required(tx().execute(status -> reserveCreate(issueId, retryFailed)));
+        try {
+            UnifiedRedemptionRemoteExecutorClient.CreatedConfiguration created = executor.create(
+                    context.account().id(), issueId, context.description(), context.claimDate(), context.labelIds(),
+                    context.bonusMin(), context.bonusMax(), context.options());
+            return required(tx().execute(status -> completeCreate(
+                    issueId, created.configurationId(), created.groupKey(), null)));
+        } catch (RuntimeException exception) {
+            String error = limit(exception.getMessage());
+            tx().executeWithoutResult(status -> failCreate(issueId, error));
+            if (exception instanceof ApiException apiException) throw apiException;
+            throw ApiException.badRequest("REMOTE_CREATE_FAILED", error);
+        }
+    }
+
+    /** Retained solely for the isolated standalone regression fixture. */
+    private Long createThroughStandaloneClient(Long issueId, boolean retryFailed) {
         try {
             remoteOperationGate.requireEnabled("remote_create");
         } catch (ApiException exception) {
@@ -57,13 +88,13 @@ public class RedemptionRemoteOperationService {
         }
         RemoteTaskContext context = required(tx().execute(status -> reserveCreate(issueId, retryFailed)));
         try {
-            RemoteGiftCodeBackendClient.CreatedConfiguration created = remoteClient.create(context.connection(),
+            RemoteGiftCodeBackendClient.CreatedConfiguration created = remoteClient.create(requireEnabledConnection(requireBatch(context.batchId())),
                     new RemoteGiftCodeBackendClient.CreateConfigurationRequest(context.description(), context.labelIds(), context.allUsers(),
                             context.bonusMin(), context.bonusMax(), context.claimDate(), context.options()));
             String groupKey = null;
             String lookupError = null;
             try {
-                groupKey = remoteClient.findGroupKey(context.connection(), created.configurationId(), context.description());
+                groupKey = remoteClient.findGroupKey(requireEnabledConnection(requireBatch(context.batchId())), created.configurationId(), context.description());
                 if (groupKey == null) lookupError = "远端配置已创建，暂未读到兑换组 group_key；下载时会再次查询";
             } catch (RemoteGiftCodeBackendClient.RemoteGiftCodeException exception) {
                 lookupError = "远端配置已创建，但暂未查询到兑换组 group_key：" + limit(exception.getMessage());
@@ -157,7 +188,7 @@ public class RedemptionRemoteOperationService {
         if (!"PENDING_CREATION".equals(issue.getWorkflowStatus()) && !retryable) {
             throw ApiException.conflict("REMOTE_CREATE_NOT_ALLOWED", "该任务当前不能创建远端兑换码配置");
         }
-        RedemptionRemoteConnection connection = requireEnabledConnection(batch);
+        RedemptionRemoteDirectory.Account account = remoteDirectory.requireEnabled(batch.getRemoteConnectionId());
         List<Long> labels = labelIds(issue);
         boolean allUsers = batch.getRedemptionType() == RedemptionCodeType.PREVIOUS_DAY_DEPOSIT && labels.isEmpty();
         if (labels.isEmpty() && !allUsers) throw ApiException.badRequest("REMOTE_TIER_LABEL_REQUIRED", "该任务没有远端用户标签，请重新建立批次");
@@ -166,7 +197,7 @@ public class RedemptionRemoteOperationService {
         issue.setRemoteError(null);
         issue.setRemoteRequestId(UUID.randomUUID().toString());
         issueRepository.saveAndFlush(issue);
-        return new RemoteTaskContext(batch.getId(), connection, remoteDescription(batch, issue), labels, allUsers,
+        return new RemoteTaskContext(batch.getId(), account, remoteDescription(batch, issue), labels, allUsers,
                 issue.getBonusAmount(), issue.getBonusMaxAmount(), issue.getClaimDate(), options(batch));
     }
 
@@ -481,7 +512,7 @@ public class RedemptionRemoteOperationService {
     private TransactionTemplate tx() { return new TransactionTemplate(transactionManager); }
     private <T> T required(T value) { return Objects.requireNonNull(value); }
 
-    private record RemoteTaskContext(Long batchId, RedemptionRemoteConnection connection, String description, List<Long> labelIds, boolean allUsers,
+    private record RemoteTaskContext(Long batchId, RedemptionRemoteDirectory.Account account, String description, List<Long> labelIds, boolean allUsers,
                                      java.math.BigDecimal bonusMin, java.math.BigDecimal bonusMax, java.time.LocalDate claimDate,
                                      RemoteCreationOptions options) { }
     private record RemoteBatchContext(RedemptionRemoteConnection connection, RemoteCreationOptions options, boolean scheduled,

@@ -1,6 +1,6 @@
 # ERP 高保真兼容边界
 
-> 状态：P1–P5 与生产切换已完成；统一远端业务操作仍保持执行禁用
+> 状态：P1–P5 与生产切换已完成；兑换码创建经统一账号执行器按次确认
 >
 > 生产 schema、历史导入、应用发布和入口切换已在获批窗口执行；本文不授权任何远端业务操作。
 
@@ -76,9 +76,18 @@ GET 只读取预置映射，缺失时返回 503，不会在读取请求中隐式
 
 ## 4. 远端操作门
 
-兼容服务具有独立的全局迁移开关和远端操作开关，默认均为关闭。融合模式会进一步
-硬阻断导入的 Spring 凭据客户端；实际远端执行只能进入主应用统一账号 runner。即使用户拥有 ERP
-功能权限，以下操作仍必须再通过统一账号 capability 与当次执行授权：
+融合模式硬阻断导入的 Spring 凭据客户端。兑换码配置创建通过内部、无密钥的执行契约进入主应用：
+
+```text
+POST /api/v1/erp/remote-accounts/compatibility-redemption/create
+Cookie: raj_session=<existing HttpOnly session>
+```
+
+兼容服务只传 numeric account projection 和任务参数；主应用反查 `RemoteAccount`、校验当前账号和
+盘口启用状态、`ERP_REDEMPTION_CREATE` capability 及该次 `execution_confirmed`，才在主应用进程内
+解密凭据并请求远端。响应不含凭据、TOTP、令牌或会话资料。
+
+即使用户拥有 ERP 功能权限，以下操作仍必须再通过统一账号 capability 与当次执行授权：
 
 - 连接检测；
 - 标签读取与同步；
@@ -86,7 +95,9 @@ GET 只读取预置映射，缺失时返回 503，不会在读取请求中隐式
 - 立即/定时发布与取消；
 - 兑换码下载。
 
-当前生产运行时的远端操作总开关为关闭；本次迁移和切换没有对任何线上盘口发出这些请求。
+旧的 `ERP_COMPAT_REMOTE_OPERATIONS_ENABLED` 已删除，不能再把已授权创建永久锁死。保留的
+`ERP_COMPAT_STANDALONE_AUTH_ENABLED` 只选择旧 Spring 身份回归夹具或统一会话适配器，并不是远端
+操作开关。本次迁移和切换没有对任何线上盘口发出这些请求。
 
 ## 5. 生产激活结果
 

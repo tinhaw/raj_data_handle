@@ -184,8 +184,8 @@ schema 后和历史导入后的精确行数基线，`alembic-check.final.txt` �
   `RemoteAccount` 主数据中的独立占位记录，均停用、无凭据、无 capability；
 - 12 张业务表共导入 3,950 行：2,513 条审计、1,187 条兑换码、27 个批次、27 个活动、
   19 个任务等数量与最终快照一致；硬关联孤儿为 0，12 个 sequence 已同步；
-- API、ERP 兼容服务、Web、Redis 和 worker 已发布并通过健康检查；生产运行时继续设置
-  `ERP_COMPAT_REMOTE_OPERATIONS_ENABLED=false`；
+- API、ERP 兼容服务、Web、Redis 和 worker 已发布并通过健康检查；当时的旧兼容远端总开关
+  已在后续统一账号执行器改造中移除，历史导入本身未触发任何远端请求；
 - `erp.aiggtj.com` 的 GET/HEAD 入口通过独立 Nginx 302 到合并系统，非读取请求返回 405。
   Chrome 验收确认 19 个任务组、450/450 导入记录、审计页和统一远端账号页均正常。
 
