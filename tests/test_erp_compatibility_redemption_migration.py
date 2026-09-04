@@ -186,6 +186,14 @@ def test_0037_projects_redemption_state_and_unified_remote_account(
         assert issue[7:] == ("compat:issue-uuid", 6)
         assert default_and_capabilities == (1, 8, 8)
         with sqlite3.connect(database_path) as connection:
+            # PostgreSQL unique constraints create schema-wide index names;
+            # SQLite alone would otherwise miss a collision with the legacy table.
+            new_table_sql = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = ?",
+                ("erp_compat_redemption_issue_codes",),
+            ).fetchone()[0]
+            assert "uq_erp_compat_redemption_issue_codes_code" in new_table_sql
+            assert "uq_erp_compat_redemption_issue_code UNIQUE" not in new_table_sql
             assert connection.execute(
                 "SELECT issue_id, code_index, code FROM erp_compat_redemption_issue_codes"
             ).fetchall() == [(issue[0], 0, "LEGACY-ONE")]

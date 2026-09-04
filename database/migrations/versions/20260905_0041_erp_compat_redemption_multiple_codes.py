@@ -25,7 +25,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ["issue_id"], ["erp_compat_redemption_code_issues.id"], ondelete="CASCADE"
         ),
-        sa.UniqueConstraint("code", name="uq_erp_compat_redemption_issue_code"),
+        sa.UniqueConstraint("code", name="uq_erp_compat_redemption_issue_codes_code"),
     )
     op.execute(
         sa.text(
