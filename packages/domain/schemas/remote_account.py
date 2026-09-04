@@ -224,7 +224,7 @@ class RemoteTag(ApiSchema):
 
 class RemoteTagSnapshotWrite(ApiSchema):
     tags: list[RemoteTag] = Field(max_length=2_000)
-    source: Literal["MANUAL", "MIGRATED"] = "MANUAL"
+    source: Literal["MANUAL", "MIGRATED", "REMOTE"] = "MANUAL"
 
     @field_validator("tags")
     @classmethod
@@ -232,6 +232,12 @@ class RemoteTagSnapshotWrite(ApiSchema):
         if len({tag.id for tag in value}) != len(value):
             raise ValueError("标签 ID 不能重复。")
         return value
+
+
+class RemoteTagSyncRequest(ApiSchema):
+    """Explicit operator confirmation for a live remote tag refresh."""
+
+    execution_confirmed: bool = False
 
 
 class RemoteTagSnapshotResponse(ApiSchema):

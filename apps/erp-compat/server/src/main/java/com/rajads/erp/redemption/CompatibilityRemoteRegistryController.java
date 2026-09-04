@@ -9,6 +9,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -60,6 +61,21 @@ public class CompatibilityRemoteRegistryController {
         return (tags == null ? List.<CompatibilityRemoteAccountClient.RemoteTag>of() : tags).stream()
                 .map(tag -> new RedemptionDtos.RemoteTagResponse(tag.id(), tag.name()))
                 .toList();
+    }
+
+    /** Explicitly refresh through the unified account; never use the legacy credential client. */
+    @PostMapping("/redemption-remote-connections/{id}/tags/sync")
+    @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionDtos.RemoteTagSyncResponse syncTags(@PathVariable Long id, HttpServletRequest request) {
+        CompatibilityRemoteRegistry.Connection connection = connection(id, request);
+        CompatibilityRemoteAccountClient.TagSnapshot snapshot = remoteAccountClient
+                .syncTags(connection.canonicalId(), sessionCookieName, session(request));
+        List<RedemptionDtos.RemoteTagResponse> tags = (snapshot.tags() == null
+                ? List.<CompatibilityRemoteAccountClient.RemoteTag>of()
+                : snapshot.tags()).stream()
+                .map(tag -> new RedemptionDtos.RemoteTagResponse(tag.id(), tag.name()))
+                .toList();
+        return new RedemptionDtos.RemoteTagSyncResponse(tags, snapshot.stale(), snapshot.syncedAt());
     }
 
     @GetMapping("/redemption-remote-connections/{id}/reward-tier-preset")

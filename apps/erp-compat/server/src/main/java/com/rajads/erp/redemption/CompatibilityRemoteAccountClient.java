@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Read/write bridge for the secret-free, local remote-account metadata owned
@@ -42,6 +43,11 @@ public class CompatibilityRemoteAccountClient {
 
     public TagSnapshot tags(String accountId, String cookieName, String cookieValue) {
         return request(accountId, cookieName, cookieValue, "GET", null, TagSnapshot.class, "/tags");
+    }
+
+    public TagSnapshot syncTags(String accountId, String cookieName, String cookieValue) {
+        return request(accountId, cookieName, cookieValue, "POST",
+                Map.of("execution_confirmed", true), TagSnapshot.class, "/tags/sync");
     }
 
     public RewardTierPreset rewardTierPreset(String accountId, String cookieName, String cookieValue) {

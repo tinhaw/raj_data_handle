@@ -26,3 +26,11 @@ def test_code_group_request_omits_labels_for_all_users_tiers() -> None:
         "tier.userType === 'ALL_USERS' ? [] : tier.labelIds)"
     ) in source
     assert "标签用户档位必须选择至少一个标签 ID" in source
+
+
+def test_previous_day_defaults_include_the_100_to_199_tier() -> None:
+    source = PAGE.read_text(encoding="utf-8")
+
+    assert "{ id: 901990, name: '日充值 100–199'" in source
+    assert "{ id: 901990, name: '(901990)日充值100-199' }" in source
+    assert "older local snapshot" in source

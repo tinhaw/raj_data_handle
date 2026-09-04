@@ -23,8 +23,13 @@ class CompatibilityRemoteAccountClientTest {
     void readsAndSavesOnlyTheUnifiedAccountMetadata() throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/accounts/account-uuid/tags", exchange -> {
-            assertThat(exchange.getRequestMethod()).isEqualTo("GET");
             assertThat(exchange.getRequestHeaders().getFirst("Cookie")).isEqualTo("raj_session=test-session");
+            if ("POST".equals(exchange.getRequestMethod())) {
+                String requestBody = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                assertThat(requestBody).contains("execution_confirmed", "true");
+            } else {
+                assertThat(exchange.getRequestMethod()).isEqualTo("GET");
+            }
             respond(exchange, """
                     {"exists":true,"tags":[{"id":901091,"name":"(901091)近7天充值总金额100-499"}],
                     "source":"MIGRATED","stale":false,"syncedAt":"2026-08-31T00:00:00Z",
@@ -55,6 +60,10 @@ class CompatibilityRemoteAccountClientTest {
             assertThat(tag.id()).isEqualTo(901091L);
             assertThat(tag.name()).contains("100-499");
         });
+        CompatibilityRemoteAccountClient.TagSnapshot synced = client.syncTags(
+                "account-uuid", "raj_session", "test-session");
+        assertThat(synced.tags()).extracting(CompatibilityRemoteAccountClient.RemoteTag::id)
+                .containsExactly(901091L);
 
         CompatibilityRemoteAccountClient.RewardTierPreset preset = client.rewardTierPreset(
                 "account-uuid", "raj_session", "test-session");

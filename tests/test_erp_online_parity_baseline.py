@@ -126,3 +126,16 @@ def test_compatibility_identity_contract_never_contains_secrets() -> None:
         "effective_permissions",
     }
     assert not fields & {"password", "token", "cookie", "totp_secret", "credentials"}
+
+
+def test_unified_account_exposes_explicit_live_tag_sync() -> None:
+    routes = {
+        route.path: route
+        for route in app.routes
+        if getattr(route, "path", None)
+        == "/api/v1/erp/remote-accounts/{account_id}/tags/sync"
+    }
+    assert set(routes) == {"/api/v1/erp/remote-accounts/{account_id}/tags/sync"}
+    assert routes["/api/v1/erp/remote-accounts/{account_id}/tags/sync"].methods == {
+        "POST"
+    }

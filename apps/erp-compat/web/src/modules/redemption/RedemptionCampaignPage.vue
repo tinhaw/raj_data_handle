@@ -125,6 +125,7 @@ const fallbackTags: RedemptionRemoteTag[] = [
 ]
 
 const previousDayFallbackTags: RedemptionRemoteTag[] = [
+  { id: 901990, name: '(901990)日充值100-199' },
   { id: 901991, name: '(901991)日充值200-999' },
   { id: 901993, name: '(901993)日充值1000-2999' },
   { id: 901996, name: '(901996)日充值3000-9999' },
@@ -144,6 +145,7 @@ const sevenDayTierProfiles: SevenDayTierProfile[] = [
 const previousDayProfiles: Record<PreviousDayProfile, Array<Omit<TierProfile, 'id'> & { id?: number }>> = {
   WIN: [
     { id: undefined, name: '日充值 0（所有用户）', minDepositAmount: 0, bonusAmount: 1, bonusMaxAmount: 3 },
+    { id: 901990, name: '日充值 100–199', minDepositAmount: 100, bonusAmount: 3, bonusMaxAmount: 5 },
     { id: 901991, name: '日充值 200–999', minDepositAmount: 200, bonusAmount: 7, bonusMaxAmount: 9 },
     { id: 901993, name: '日充值 1,000–2,999', minDepositAmount: 1000, bonusAmount: 13, bonusMaxAmount: 17 },
     { id: 901996, name: '日充值 3,000–9,999', minDepositAmount: 3000, bonusAmount: 27, bonusMaxAmount: 37 },
@@ -151,6 +153,7 @@ const previousDayProfiles: Record<PreviousDayProfile, Array<Omit<TierProfile, 'i
   ],
   LUCK_SPIN: [
     { id: undefined, name: '日充值 0（所有用户）', minDepositAmount: 0, bonusAmount: 1, bonusMaxAmount: 3 },
+    { id: 901990, name: '日充值 100–199', minDepositAmount: 100, bonusAmount: 3, bonusMaxAmount: 5 },
     { id: 901991, name: '日充值 200–999', minDepositAmount: 200, bonusAmount: 7, bonusMaxAmount: 9 },
     { id: 901993, name: '日充值 1,000–2,999', minDepositAmount: 1000, bonusAmount: 13, bonusMaxAmount: 17 },
     { id: 901994, name: '日充值 3,000–9,999', minDepositAmount: 3000, bonusAmount: 27, bonusMaxAmount: 37 },
@@ -212,7 +215,18 @@ const tagOptions = computed(() => {
   for (const tag of source) tags.set(String(tag.id), tag)
   return [...tags.values()]
 })
-const previousDayTagOptions = computed(() => remoteTagsLoaded.value ? remoteTags.value : previousDayFallbackTags)
+const previousDayTagOptions = computed(() => {
+  const tags = new Map<string, RedemptionRemoteTag>()
+  const source = remoteTagsLoaded.value ? remoteTags.value : previousDayFallbackTags
+  for (const tag of source) tags.set(String(tag.id), tag)
+  // Keep each configured default visible even when an older local snapshot
+  // predates that tag. A deliberate sync will then replace the snapshot.
+  for (const tier of form.value.tiers) for (const labelId of tier.labelIds) {
+    const fallback = previousDayFallbackTags.find((tag) => String(tag.id) === String(labelId))
+    if (fallback && !tags.has(String(fallback.id))) tags.set(String(fallback.id), fallback)
+  }
+  return [...tags.values()]
+})
 const availableRemoteMarkets = computed(() => {
   const markets = new Map<string, { id: string | number; code?: string; name?: string }>()
   for (const connection of remoteConnections.value) {

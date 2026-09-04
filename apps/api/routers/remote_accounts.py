@@ -24,6 +24,7 @@ from packages.domain.schemas.remote_account import (
     RemoteAccountResponse,
     RemoteTagSnapshotResponse,
     RemoteTagSnapshotWrite,
+    RemoteTagSyncRequest,
     RewardTierPresetResponse,
     RewardTierPresetWrite,
 )
@@ -41,6 +42,10 @@ from packages.domain.services.erp_compatibility_redemption_remote_service import
     ErpCompatibilityRemoteExecutionError,
     execute_compatibility_remote_create,
     execute_compatibility_remote_publish,
+)
+from packages.domain.services.erp_remote_account_tag_service import (
+    RemoteAccountTagSyncError,
+    sync_remote_account_tags,
 )
 from packages.domain.services.remote_account_service import (
     RemoteAccountError,
@@ -365,6 +370,25 @@ async def get_account_tags(
         return await get_remote_tag_snapshot(session, account_id=account_id)
     except RemoteAccountNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.post("/{account_id}/tags/sync", response_model=RemoteTagSnapshotResponse)
+async def post_account_tag_sync(
+    account_id: str,
+    payload: RemoteTagSyncRequest,
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REDEMPTION_GENERATE)),
+    session: AsyncSession = Depends(get_db_session),
+) -> RemoteTagSnapshotResponse:
+    try:
+        return await sync_remote_account_tags(
+            session,
+            account_id=account_id,
+            actor_user_id=auth.user.id,
+            execution_authorized=payload.execution_confirmed,
+            settings=get_settings(),
+        )
+    except RemoteAccountTagSyncError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.put("/{account_id}/tags/snapshot", response_model=RemoteTagSnapshotResponse)

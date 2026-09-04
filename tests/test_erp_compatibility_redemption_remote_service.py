@@ -24,6 +24,9 @@ from packages.domain.services.erp_compatibility_redemption_remote_service import
     execute_compatibility_remote_create,
     execute_compatibility_remote_publish,
 )
+from packages.domain.services.erp_remote_account_tag_service import (
+    sync_remote_account_tags,
+)
 from packages.domain.services.remote_account_service import create_remote_account
 from packages.domain.services.source_service import create_source, upsert_source
 
@@ -265,4 +268,80 @@ async def test_compatibility_publish_uses_mapped_unified_account_and_publish_cap
         "cfg_type": 19,
         "scheduled_time": "2026-09-05 18:30:00",
     }
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_tag_sync_uses_unified_account_and_replaces_the_local_snapshot() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings = _settings()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/system/login":
+            return httpx.Response(200, json={"success": True, "data": {"token": "test-jwt"}})
+        if request.url.path == "/api/common/profileTag/remote":
+            body = json.loads(request.content)
+            assert body["remoteOption"]["select"] == ["tag_id", "name"]
+            return httpx.Response(
+                200,
+                headers={"x-request-id": "tags-1"},
+                json={
+                    "success": True,
+                    "data": [
+                        {"tag_id": 901990, "name": "(901990)日充值100-199 "},
+                        {"tag_id": 901991, "name": "(901991)日充值200-999 "},
+                    ],
+                },
+            )
+        raise AssertionError(request.url)
+
+    async with factory() as session:
+        await create_source(
+            session,
+            request=SourceCreateRequest(
+                source_id="rajwin",
+                display_name="RajWin",
+                base_url="https://remote.example",
+                enabled=False,
+            ),
+            actor_user_id=1,
+            settings=settings,
+        )
+        account = await create_remote_account(
+            session,
+            request=RemoteAccountCreateRequest(
+                source_id="rajwin",
+                login_username="current-enabled-account",
+                display_name="当前启用账号",
+                credentials=RemoteAccountCredentialsWrite(
+                    password="test-password",
+                    totp_secret="JBSWY3DPEHPK3PXP",
+                ),
+            ),
+            actor_user_id=1,
+            settings=settings,
+        )
+        await upsert_source(
+            session,
+            source_id="rajwin",
+            request=SourcePatchRequest(enabled=True),
+            actor_user_id=1,
+            settings=settings,
+        )
+
+        result = await sync_remote_account_tags(
+            session,
+            account_id=account.account.id,
+            actor_user_id=1,
+            execution_authorized=True,
+            settings=settings,
+            transport=httpx.MockTransport(handler),
+        )
+
+    assert result.exists is True
+    assert result.source == "REMOTE"
+    assert [tag.id for tag in result.tags] == [901990, 901991]
     await engine.dispose()
