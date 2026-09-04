@@ -102,6 +102,7 @@ class ErpCompatibilityRemoteConnection(ApiSchema):
     session_expires_at: datetime | None = None
     last_logged_in_at: datetime | None = None
     enabled: bool
+    is_default: bool
     last_checked_at: datetime | None
     last_error: str | None
     row_version: int

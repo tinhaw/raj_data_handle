@@ -67,14 +67,21 @@ class CompatibilityRedemptionRemoteDirectoryTest {
                                 22L, "account-disabled", "disabled", 17L, "rajluck",
                                 "RAJLUCK", "RajLuck", true,
                                 "https://remote.example.test", true, true,
-                                false, null, null, true, null, null, 1L, now, now,
+                                false, null, null, true, false, null, null, 1L, now, now,
                                 Map.of("ERP_REDEMPTION_CREATE", false), List.of(901L)
+                        ),
+                        new CompatibilityRemoteRegistry.Connection(
+                                24L, "account-legacy", null, 17L, "rajluck",
+                                "RAJLUCK", "RajLuck", true,
+                                "https://remote.example.test", true, true,
+                                false, null, null, true, false, null, null, 1L, now, now,
+                                Map.of("ERP_REDEMPTION_CREATE", true), List.of(901L, 902L)
                         ),
                         new CompatibilityRemoteRegistry.Connection(
                                 23L, "account-enabled", "sfhk1", 17L, "rajluck",
                                 "RAJLUCK", "RajLuck", true,
                                 "https://remote.example.test", true, true,
-                                false, null, null, true, null, null, 2L, now, now,
+                                false, null, null, true, true, null, null, 2L, now, now,
                                 Map.of("ERP_REDEMPTION_CREATE", true), List.of(901L, 902L)
                         )
                 )

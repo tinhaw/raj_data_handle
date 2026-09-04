@@ -26,7 +26,10 @@ public class CompatibilityIdentityClient {
             @Value("${erp.compatibility.identity-url}") URI identityUri) {
         this.objectMapper = objectMapper;
         this.identityUri = identityUri;
-        this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
+        this.httpClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(3))
+                .build();
     }
 
     public Optional<CompatibilityIdentity> resolve(String cookieName, String cookieValue) {

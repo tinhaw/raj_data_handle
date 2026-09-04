@@ -25,6 +25,7 @@ class CompatibilityIdentityClientTest {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/identity", exchange -> {
             assertThat(exchange.getRequestHeaders().getFirst("Cookie")).isEqualTo("raj_session=test-session");
+            assertThat(exchange.getRequestHeaders().getFirst("Upgrade")).isNull();
             byte[] body = ("{\"userId\":7,\"username\":\"admin\",\"displayName\":\"Administrator\","
                     + "\"globalRole\":\"admin\",\"expiresAt\":\"2026-08-28T00:00:00Z\","
                     + "\"roleGrants\":[\"ERP_SYSTEM_ADMIN\"],\"allOperators\":false,\"operatorIds\":[17],"

@@ -58,7 +58,9 @@ public class CompatibilityRedemptionRemoteDirectory implements RedemptionRemoteD
                 .filter(item -> item.marketId().equals(marketId))
                 .filter(CompatibilityRemoteRegistry.Connection::enabled)
                 .filter(item -> capability(item, "ERP_REDEMPTION_CREATE"))
-                .sorted(Comparator.comparing(item -> Optional.ofNullable(item.username()).orElse("")))
+                .sorted(Comparator.comparing(CompatibilityRemoteRegistry.Connection::defaultAccount)
+                        .reversed()
+                        .thenComparing(item -> Optional.ofNullable(item.username()).orElse("")))
                 .findFirst()
                 .map(this::account)
                 .orElseThrow(() -> ApiException.conflict(

@@ -40,6 +40,7 @@ public record CompatibilityRemoteRegistry(
             Instant sessionExpiresAt,
             Instant lastLoggedInAt,
             boolean enabled,
+            @JsonProperty("isDefault") boolean defaultAccount,
             Instant lastCheckedAt,
             String lastError,
             Long rowVersion,

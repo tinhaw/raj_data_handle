@@ -25,7 +25,10 @@ public class CompatibilityRemoteRegistryClient {
             @Value("${erp.compatibility.remote-registry-url}") URI registryUri) {
         this.objectMapper = objectMapper;
         this.registryUri = registryUri;
-        this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
+        this.httpClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(3))
+                .build();
     }
 
     public CompatibilityRemoteRegistry get(String cookieName, String cookieValue) {

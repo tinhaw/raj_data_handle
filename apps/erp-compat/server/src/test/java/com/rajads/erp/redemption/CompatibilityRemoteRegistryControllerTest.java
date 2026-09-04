@@ -52,7 +52,7 @@ class CompatibilityRemoteRegistryControllerTest {
                 List.of(),
                 List.of(new CompatibilityRemoteRegistry.Connection(
                         23L, "account-uuid", "sfhk1", 17L, "rajwin", "RAJWIN", "RajWin", true,
-                        "https://remote.example.test", true, true, false, null, null, true, null, null,
+                        "https://remote.example.test", true, true, false, null, null, true, true, null, null,
                         1L, now, now, Map.of("ERP_REDEMPTION_CREATE", true), List.of(901091L))));
     }
 }

@@ -25,6 +25,7 @@ def test_compatibility_registry_preserves_ids_without_exposing_credentials() -> 
         login_username="sfhk1",
         display_name="sfhk1",
         enabled=True,
+        is_default=True,
         credential_mode="MANAGED",
         encrypted_credentials="v1:must-never-leave-the-main-api",
         credential_version=4,
@@ -63,6 +64,7 @@ def test_compatibility_registry_preserves_ids_without_exposing_credentials() -> 
     assert payload["connections"][0]["marketId"] == 17
     assert payload["connections"][0]["canonicalMarketId"] == source.source_id
     assert payload["connections"][0]["hasPassword"] is True
+    assert payload["connections"][0]["isDefault"] is True
     assert "must-never-leave" not in str(payload)
     assert not set(payload["connections"][0]) & {
         "password",

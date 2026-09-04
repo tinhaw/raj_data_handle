@@ -24,6 +24,7 @@ class CompatibilityRemoteRegistryClientTest {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/registry", exchange -> {
             assertThat(exchange.getRequestHeaders().getFirst("Cookie")).isEqualTo("raj_session=test-session");
+            assertThat(exchange.getRequestHeaders().getFirst("Upgrade")).isNull();
             byte[] body = ("{\"markets\":[{\"id\":17,\"canonicalId\":\"rajluck\",\"code\":\"RAJLUCK\",\"name\":\"RajLuck\","
                     + "\"baseUrl\":\"https://remote.example.test\",\"enabled\":true,\"rowVersion\":3,"
                     + "\"createdAt\":\"2026-08-27T00:00:00Z\",\"updatedAt\":\"2026-08-27T00:00:00Z\"}],"
@@ -31,7 +32,7 @@ class CompatibilityRemoteRegistryClientTest {
                     + "\"marketId\":17,\"canonicalMarketId\":\"rajluck\",\"marketCode\":\"RAJLUCK\",\"marketName\":\"RajLuck\","
                     + "\"marketEnabled\":true,\"baseUrl\":\"https://remote.example.test\",\"hasPassword\":true,"
                     + "\"hasTotpSecret\":true,\"hasActiveSession\":false,\"sessionExpiresAt\":null,\"lastLoggedInAt\":null,"
-                    + "\"enabled\":true,\"lastCheckedAt\":null,\"lastError\":null,\"rowVersion\":4,"
+                    + "\"enabled\":true,\"isDefault\":true,\"lastCheckedAt\":null,\"lastError\":null,\"rowVersion\":4,"
                     + "\"createdAt\":\"2026-08-27T00:00:00Z\",\"updatedAt\":\"2026-08-27T00:00:00Z\","
                     + "\"capabilities\":{\"ERP_REMOTE_CHECK\":true}}]}")
                     .getBytes(StandardCharsets.UTF_8);
@@ -52,6 +53,7 @@ class CompatibilityRemoteRegistryClientTest {
         assertThat(registry.connections()).singleElement().satisfies(connection -> {
             assertThat(connection.id()).isEqualTo(23L);
             assertThat(connection.canonicalId()).isEqualTo("account-uuid");
+            assertThat(connection.defaultAccount()).isTrue();
             assertThat(connection.capabilities()).containsEntry("ERP_REMOTE_CHECK", true);
         });
         String publicConnection = objectMapper.writeValueAsString(registry.connections().getFirst());

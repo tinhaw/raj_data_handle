@@ -49,7 +49,10 @@ public class UnifiedRedemptionRemoteExecutorClient {
         this.objectMapper = objectMapper;
         this.executorUri = executorUri;
         this.sessionCookieName = sessionCookieName;
-        this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
+        this.httpClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(3))
+                .build();
     }
 
     public CreatedConfiguration create(

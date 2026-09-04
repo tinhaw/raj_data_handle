@@ -164,6 +164,7 @@ def _compatibility_registry(
                 has_password=_credential_configured(item),
                 has_totp_secret=_credential_configured(item),
                 enabled=item.account.enabled,
+                is_default=item.account.is_default,
                 last_checked_at=item.account.last_tested_at,
                 last_error=(
                     None
