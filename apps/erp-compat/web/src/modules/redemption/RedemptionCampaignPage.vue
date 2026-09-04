@@ -443,7 +443,7 @@ function groupStatus(row: CodeGroupRow) {
   if (isScheduledPublish(row)) return { text: '定时发布中', type: 'warning' as const }
   if (row.detail.batch.status === 'READY_TO_PUBLISH') return { text: '待发布', type: 'info' as const }
   if (hasRemoteCreationInProgress(row)) return { text: '生成中', type: 'warning' as const }
-  if (pendingRemoteCreationIssues(row).length) return { text: '待创建', type: 'info' as const }
+  if (pendingRemoteCreationIssues(row).length) return { text: '生成中', type: 'warning' as const }
   return { text: '生成中', type: 'warning' as const }
 }
 function groupProgress(row: CodeGroupRow) {
@@ -498,7 +498,7 @@ function taskStatus(task: CodeGroupTask) {
   if (task.members.every((member) => member.detail.batch.status === 'READY_TO_PUBLISH')) return { text: '待发布', type: 'info' as const }
   if (task.members.some(isScheduledPublish)) return { text: '发布中', type: 'warning' as const }
   if (task.members.some(hasRemoteCreationInProgress)) return { text: '生成中', type: 'warning' as const }
-  if (task.members.some((member) => pendingRemoteCreationIssues(member).length > 0)) return { text: '待创建', type: 'info' as const }
+  if (task.members.some((member) => pendingRemoteCreationIssues(member).length > 0)) return { text: '生成中', type: 'warning' as const }
   return { text: '生成中', type: 'warning' as const }
 }
 function taskProgress(task: CodeGroupTask) {
