@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,6 +45,7 @@ from packages.domain.services.remote_account_service import (
     RemoteAccountView,
     capability_definitions,
     create_remote_account,
+    delete_legacy_remote_account,
     get_remote_tag_snapshot,
     get_reward_tier_preset,
     list_remote_accounts,
@@ -277,6 +278,25 @@ async def patch_remote_account(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except RemoteAccountError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.delete("/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_remote_account(
+    account_id: str,
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REMOTE_ACCOUNT_MANAGE)),
+    session: AsyncSession = Depends(get_db_session),
+) -> Response:
+    try:
+        await delete_legacy_remote_account(
+            session,
+            account_id=account_id,
+            actor_user_id=auth.user.id,
+        )
+    except RemoteAccountNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except RemoteAccountError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.put(

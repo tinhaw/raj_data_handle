@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from packages.common.security import SecurityValidationError, decrypt_credentials
 from packages.common.settings import Settings
-from packages.domain.models import Base, RemoteAccount, SourceConfig
+from packages.domain.models import (
+    Base,
+    RemoteAccount,
+    RemoteAccountRewardTierPreset,
+    RemoteAccountTagSnapshot,
+    SourceConfig,
+)
 from packages.domain.schemas.remote_account import (
     RemoteAccountCapabilityUpdateRequest,
     RemoteAccountCreateRequest,
@@ -26,6 +33,7 @@ from packages.domain.services.remote_account_service import (
     LEGACY_SOURCE_CREDENTIAL_MODE,
     RemoteAccountValidationError,
     create_remote_account,
+    delete_legacy_remote_account,
     get_reward_tier_preset,
     remote_account_has_capability,
     save_remote_tag_snapshot,
@@ -115,6 +123,85 @@ async def test_managed_remote_account_has_own_scope_full_capabilities_and_defaul
             account_id=account.account.id,
             capability="ERP_REDEMPTION_PUBLISH",
         )
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_deleting_legacy_account_migrates_local_configuration_to_managed_default() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings = development_settings()
+
+    async with factory() as session:
+        await create_source(
+            session,
+            request=SourceCreateRequest(source_id="rajwin", display_name="RajWin"),
+            actor_user_id=1,
+            settings=settings,
+        )
+        managed = await create_remote_account(
+            session,
+            request=RemoteAccountCreateRequest(
+                source_id="rajwin",
+                login_username="current-account",
+                display_name="Current account",
+                credentials=RemoteAccountCredentialsWrite(
+                    password="test-password",
+                    totp_secret="JBSWY3DPEHPK3PXP",
+                ),
+            ),
+            actor_user_id=1,
+            settings=settings,
+        )
+        legacy = RemoteAccount(
+            source_id="rajwin",
+            display_name="Legacy analysis account",
+            enabled=True,
+            is_default=False,
+            credential_mode=LEGACY_SOURCE_CREDENTIAL_MODE,
+        )
+        session.add(legacy)
+        await session.commit()
+
+        tags = [RemoteTag(id=901091, name="Seven-day deposit 100-499")]
+        await save_remote_tag_snapshot(
+            session,
+            account_id=legacy.id,
+            request=RemoteTagSnapshotWrite(tags=tags, source="MIGRATED"),
+            actor_user_id=1,
+        )
+        await save_reward_tier_preset(
+            session,
+            account_id=legacy.id,
+            request=RewardTierPresetWrite(
+                tiers=[
+                    RewardTierPresetTier(
+                        label_ids=[901091],
+                        display_name="100-499",
+                        min_deposit_amount="100",
+                        bonus_amount="3",
+                        bonus_max_amount="5",
+                    )
+                ],
+                tag_snapshot=tags,
+            ),
+            actor_user_id=1,
+        )
+
+        await delete_legacy_remote_account(
+            session,
+            account_id=legacy.id,
+            actor_user_id=1,
+        )
+
+        assert await session.get(RemoteAccount, legacy.id) is None
+        assert await session.get(RemoteAccountTagSnapshot, managed.account.id) is not None
+        assert await session.get(RemoteAccountRewardTierPreset, managed.account.id) is not None
+        remaining = list(await session.scalars(select(RemoteAccount)))
+        assert [account.id for account in remaining] == [managed.account.id]
 
     await engine.dispose()
 

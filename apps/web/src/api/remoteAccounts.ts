@@ -40,6 +40,10 @@ export async function updateRemoteAccount(
   return (await api.patch<RemoteAccount>(`/erp/remote-accounts/${accountId}`, payload)).data
 }
 
+export async function deleteLegacyRemoteAccount(accountId: string): Promise<void> {
+  await api.delete(`/erp/remote-accounts/${accountId}`)
+}
+
 export async function updateRemoteAccountCapabilities(
   accountId: string,
   capabilities: Record<string, boolean>,

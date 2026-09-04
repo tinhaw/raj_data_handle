@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { Edit, Plus, Refresh } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { Delete, Edit, Plus, Refresh } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import {
   createRemoteAccount,
+  deleteLegacyRemoteAccount,
   fetchRemoteTagSnapshot,
   fetchRewardTierPreset,
   fetchRemoteAccounts,
@@ -187,6 +188,32 @@ async function saveAccount(): Promise<void> {
   }
 }
 
+async function removeLegacyAccount(account: RemoteAccount): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除 ${account.sourceDisplayName} 的“${account.displayName}”吗？系统会先校验当前默认账号、全部功能及标签/档位配置。`,
+      '删除历史账号',
+      {
+        type: 'warning',
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+      },
+    )
+  } catch {
+    return
+  }
+  saving.value = true
+  try {
+    await deleteLegacyRemoteAccount(account.id)
+    ElMessage.success('历史账号已删除，当前默认账号继续承担分析与 ERP 功能。')
+    await load()
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '历史账号删除失败。'))
+  } finally {
+    saving.value = false
+  }
+}
+
 async function openPreset(account: RemoteAccount): Promise<void> {
   saving.value = true
   try {
@@ -314,13 +341,23 @@ onMounted(async () => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column v-if="hasErpPermission('ERP_REMOTE_ACCOUNT_MANAGE')" label="操作" width="230" fixed="right">
+        <el-table-column v-if="hasErpPermission('ERP_REMOTE_ACCOUNT_MANAGE')" label="操作" width="350" fixed="right">
           <template #default="{ row }">
             <div class="account-actions">
               <el-button text type="primary" :icon="Edit" @click="openEditAccount(row)">
                 配置账号
               </el-button>
               <el-button text type="primary" @click="openPreset(row)">标签/档位</el-button>
+              <el-button
+                v-if="row.credentialMode === 'LEGACY_SOURCE'"
+                text
+                type="danger"
+                :icon="Delete"
+                :loading="saving"
+                @click="removeLegacyAccount(row)"
+              >
+                删除历史账号
+              </el-button>
             </div>
           </template>
         </el-table-column>

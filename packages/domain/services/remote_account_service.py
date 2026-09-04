@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +22,8 @@ from packages.common.security import (
 )
 from packages.common.settings import Settings
 from packages.domain.models import (
+    ErpRedemptionCodeBatch,
+    ErpRedemptionRemotePlan,
     RemoteAccount,
     RemoteAccountCapability,
     RemoteAccountRewardTierPreset,
@@ -510,6 +512,144 @@ async def update_remote_account_capabilities(
         )
         await session.commit()
     return await get_remote_account(session, account_id=account.id)
+
+
+async def delete_legacy_remote_account(
+    session: AsyncSession,
+    *,
+    account_id: str,
+    actor_user_id: int,
+) -> None:
+    """Retire a migrated legacy placeholder after a managed default is ready.
+
+    Existing local tag and reward-tier data must already match the managed
+    replacement, or it is copied when the replacement has no data yet. Main
+    application task references block deletion so historical work is never
+    detached silently.
+    """
+
+    account = await _get_account(session, account_id)
+    if account.credential_mode != LEGACY_SOURCE_CREDENTIAL_MODE:
+        raise RemoteAccountValidationError("这里只能删除待重新配置的历史账号。")
+    if account.is_default:
+        raise RemoteAccountValidationError("历史账号仍是默认账号，请先将当前账号设为默认。")
+
+    replacement = await _default_account(session, source_id=account.source_id)
+    if (
+        replacement is None
+        or replacement.id == account.id
+        or replacement.credential_mode != MANAGED_CREDENTIAL_MODE
+        or not replacement.enabled
+        or not replacement.login_username
+        or not replacement.encrypted_credentials
+    ):
+        raise RemoteAccountValidationError("请先配置并启用该盘口的当前默认账号。")
+
+    capability_rows = list(
+        await session.scalars(
+            select(RemoteAccountCapability).where(
+                RemoteAccountCapability.account_id == replacement.id
+            )
+        )
+    )
+    if not all(_capability_map(capability_rows).values()):
+        raise RemoteAccountValidationError("当前默认账号尚未获得全部功能，不能删除历史账号。")
+
+    batch_references = int(
+        await session.scalar(
+            select(func.count(ErpRedemptionCodeBatch.id)).where(
+                ErpRedemptionCodeBatch.remote_account_id == account.id
+            )
+        )
+        or 0
+    )
+    plan_references = int(
+        await session.scalar(
+            select(func.count(ErpRedemptionRemotePlan.id)).where(
+                ErpRedemptionRemotePlan.remote_account_id == account.id
+            )
+        )
+        or 0
+    )
+    if batch_references or plan_references:
+        raise RemoteAccountConflictError("历史账号仍被兑换码任务引用，暂不能删除。")
+
+    legacy_snapshot = await session.get(RemoteAccountTagSnapshot, account.id)
+    replacement_snapshot = await session.get(RemoteAccountTagSnapshot, replacement.id)
+    migrated_snapshot = False
+    if legacy_snapshot is not None:
+        if replacement_snapshot is None:
+            session.add(
+                RemoteAccountTagSnapshot(
+                    account_id=replacement.id,
+                    tags_json=list(legacy_snapshot.tags_json),
+                    source="MIGRATED",
+                    stale=legacy_snapshot.stale,
+                    synced_at=legacy_snapshot.synced_at,
+                    updated_by=actor_user_id,
+                    row_version=legacy_snapshot.row_version,
+                )
+            )
+            migrated_snapshot = True
+        elif replacement_snapshot.tags_json != legacy_snapshot.tags_json:
+            raise RemoteAccountConflictError(
+                "当前账号与历史账号的标签快照不一致，请先核对并迁移。"
+            )
+
+    legacy_preset = await session.get(RemoteAccountRewardTierPreset, account.id)
+    replacement_preset = await session.get(RemoteAccountRewardTierPreset, replacement.id)
+    migrated_preset = False
+    if legacy_preset is not None:
+        if replacement_preset is None:
+            session.add(
+                RemoteAccountRewardTierPreset(
+                    account_id=replacement.id,
+                    tiers_json=list(legacy_preset.tiers_json),
+                    tag_snapshot_json=list(legacy_preset.tag_snapshot_json),
+                    saved_by=actor_user_id,
+                    saved_at=legacy_preset.saved_at,
+                    row_version=legacy_preset.row_version,
+                )
+            )
+            migrated_preset = True
+        elif (
+            replacement_preset.tiers_json != legacy_preset.tiers_json
+            or replacement_preset.tag_snapshot_json != legacy_preset.tag_snapshot_json
+        ):
+            raise RemoteAccountConflictError(
+                "当前账号与历史账号的兑换档位预设不一致，请先核对并迁移。"
+            )
+
+    await write_audit(
+        session,
+        action="remote_account.legacy_delete",
+        actor_user_id=actor_user_id,
+        target_type="remote_account",
+        target_id=account.id,
+        metadata={
+            "source_id": account.source_id,
+            "replacement_account_id": replacement.id,
+            "migrated_tag_snapshot": migrated_snapshot,
+            "migrated_reward_tier_preset": migrated_preset,
+        },
+    )
+    await session.execute(
+        delete(RemoteAccountCapability).where(RemoteAccountCapability.account_id == account.id)
+    )
+    await session.execute(
+        delete(RemoteAccountTagSnapshot).where(RemoteAccountTagSnapshot.account_id == account.id)
+    )
+    await session.execute(
+        delete(RemoteAccountRewardTierPreset).where(
+            RemoteAccountRewardTierPreset.account_id == account.id
+        )
+    )
+    await session.delete(account)
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise RemoteAccountConflictError("历史账号仍被业务数据引用，暂不能删除。") from exc
 
 
 async def get_remote_tag_snapshot(
