@@ -180,6 +180,31 @@ class ErpCompatibilityRemoteCreateResponse(ApiSchema):
     remote_request_id: str | None = None
 
 
+class ErpCompatibilityRemotePublishRequest(ApiSchema):
+    """Confirmed publish request from the preserved ERP workflow."""
+
+    account_id: int = Field(ge=1)
+    batch_id: int = Field(ge=1)
+    publish_environment: Literal["test", "prod"] = "test"
+    mode: Literal["IMMEDIATE", "SCHEDULED"]
+    scheduled_time: datetime | None = None
+    fallback_to_scheduled: bool = True
+    execution_confirmed: bool = False
+
+    @model_validator(mode="after")
+    def validate_remote_confirmation(self) -> ErpCompatibilityRemotePublishRequest:
+        if self.mode == "SCHEDULED" and self.scheduled_time is None:
+            raise ValueError("定时发布必须提供发布时间。")
+        if not self.execution_confirmed:
+            raise ValueError("必须明确确认本次远端兑换码发布。")
+        return self
+
+
+class ErpCompatibilityRemotePublishResponse(ApiSchema):
+    remote_publish_task_id: str
+    remote_request_id: str | None = None
+
+
 class RemoteTag(ApiSchema):
     id: int = Field(ge=1)
     name: str = Field(min_length=1, max_length=200)

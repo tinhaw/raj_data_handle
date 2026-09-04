@@ -10,12 +10,16 @@ No legacy Java credential record is read here.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.common.settings import Settings
 from packages.domain.models import RemoteAccount, SourceConfig
-from packages.domain.schemas.remote_account import ErpCompatibilityRemoteCreateRequest
+from packages.domain.schemas.remote_account import (
+    ErpCompatibilityRemoteCreateRequest,
+    ErpCompatibilityRemotePublishRequest,
+)
 from packages.domain.services.auth_service import write_audit
 from packages.domain.services.erp_compatibility_id_service import (
     ErpCompatibilityIdError,
@@ -25,6 +29,8 @@ from packages.domain.services.erp_redemption_remote_adapter import (
     RemoteCreateCommand,
     RemoteCreateResult,
     RemoteCreationOptions,
+    RemotePublishCommand,
+    RemotePublishResult,
 )
 from packages.domain.services.erp_redemption_remote_gate import (
     ErpRemoteExecutionGateError,
@@ -49,6 +55,12 @@ class ErpCompatibilityRemoteExecutionError(ValueError):
 class CompatibilityRemoteCreateResult:
     remote_configuration_id: str
     remote_group_key: str | None
+    remote_request_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CompatibilityRemotePublishResult:
+    remote_publish_task_id: str
     remote_request_id: str | None
 
 
@@ -168,5 +180,104 @@ async def execute_compatibility_remote_create(
     return CompatibilityRemoteCreateResult(
         remote_configuration_id=result.remote_configuration_id,
         remote_group_key=result.remote_group_key,
+        remote_request_id=result.remote_request_id,
+    )
+
+
+async def execute_compatibility_remote_publish(
+    session: AsyncSession,
+    *,
+    payload: ErpCompatibilityRemotePublishRequest,
+    actor_user_id: int,
+    settings: Settings,
+    transport=None,
+) -> CompatibilityRemotePublishResult:
+    """Publish using the unified account selected by the Java batch."""
+
+    try:
+        account_id = await resolve_erp_compatibility_id(
+            session, entity_type="remote_account", legacy_id=payload.account_id
+        )
+        grant = await authorize_erp_redemption_remote_execution(
+            session,
+            account_id=account_id,
+            operation="PUBLISH",
+            execution_authorized=payload.execution_confirmed,
+        )
+        account = await session.get(RemoteAccount, account_id)
+        source = await session.get(SourceConfig, grant.source_id)
+        if account is None or source is None or not source.base_url:
+            raise ErpCompatibilityRemoteExecutionError("统一远端账号或盘口配置不可用。")
+        envelope = credential_envelope_for_account(account=account, source=source)
+        if envelope is None:
+            raise ErpCompatibilityRemoteExecutionError("统一远端账号凭据配置不完整。")
+        credentials = decrypt_remote_account_credentials(envelope, settings=settings)
+        scheduled_time = payload.scheduled_time
+        if scheduled_time is not None:
+            business_timezone = ZoneInfo(settings.default_business_timezone)
+            scheduled_time = (
+                scheduled_time.replace(tzinfo=business_timezone)
+                if scheduled_time.tzinfo is None
+                else scheduled_time.astimezone(business_timezone)
+            )
+        async with RajAdminGiftCodeAdapter(
+            account_id=account.id,
+            source_id=source.source_id,
+            base_url=source.base_url,
+            username=credentials["username"],
+            password=credentials["password"],
+            totp_secret=credentials["totp_secret"],
+            business_timezone=settings.default_business_timezone,
+            transport=transport,
+        ) as adapter:
+            result: RemotePublishResult = await adapter.publish(
+                grant=grant,
+                command=RemotePublishCommand(
+                    publish_environment=payload.publish_environment,
+                    mode=payload.mode,
+                    scheduled_publish_at=scheduled_time,
+                    fallback_to_scheduled=payload.fallback_to_scheduled,
+                ),
+            )
+    except (
+        ErpCompatibilityRemoteExecutionError,
+        ErpCompatibilityIdError,
+        ErpRemoteExecutionGateError,
+        RemoteAccountCredentialsError,
+        ErpRedemptionRemoteHttpError,
+    ) as exc:
+        await write_audit(
+            session,
+            action="erp_compatibility_redemption.remote_publish",
+            actor_user_id=actor_user_id,
+            target_type="erp_compatibility_remote_account",
+            target_id=str(payload.account_id),
+            result="failure",
+            metadata={
+                "batch_id": payload.batch_id,
+                "operation": "PUBLISH",
+                "mode": payload.mode,
+            },
+        )
+        await session.commit()
+        raise ErpCompatibilityRemoteExecutionError(str(exc)) from exc
+
+    await write_audit(
+        session,
+        action="erp_compatibility_redemption.remote_publish",
+        actor_user_id=actor_user_id,
+        target_type="remote_account",
+        target_id=account.id,
+        metadata={
+            "compatibility_account_id": payload.account_id,
+            "batch_id": payload.batch_id,
+            "operation": "PUBLISH",
+            "mode": payload.mode,
+            "remote_publish_task_recorded": True,
+        },
+    )
+    await session.commit()
+    return CompatibilityRemotePublishResult(
+        remote_publish_task_id=result.remote_publish_task_id,
         remote_request_id=result.remote_request_id,
     )

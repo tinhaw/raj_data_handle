@@ -15,6 +15,8 @@ from packages.domain.schemas.remote_account import (
     ErpCompatibilityRemoteCreateRequest,
     ErpCompatibilityRemoteCreateResponse,
     ErpCompatibilityRemoteMarket,
+    ErpCompatibilityRemotePublishRequest,
+    ErpCompatibilityRemotePublishResponse,
     ErpCompatibilityRemoteRegistry,
     RemoteAccountCapabilityUpdateRequest,
     RemoteAccountCreateRequest,
@@ -38,6 +40,7 @@ from packages.domain.services.erp_compatibility_id_service import (
 from packages.domain.services.erp_compatibility_redemption_remote_service import (
     ErpCompatibilityRemoteExecutionError,
     execute_compatibility_remote_create,
+    execute_compatibility_remote_publish,
 )
 from packages.domain.services.remote_account_service import (
     RemoteAccountError,
@@ -122,6 +125,33 @@ async def post_compatibility_redemption_create(
     return ErpCompatibilityRemoteCreateResponse(
         remote_configuration_id=result.remote_configuration_id,
         remote_group_key=result.remote_group_key,
+        remote_request_id=result.remote_request_id,
+    )
+
+
+@router.post(
+    "/compatibility-redemption/publish",
+    response_model=ErpCompatibilityRemotePublishResponse,
+    include_in_schema=False,
+)
+async def post_compatibility_redemption_publish(
+    payload: ErpCompatibilityRemotePublishRequest,
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REDEMPTION_GENERATE)),
+    session: AsyncSession = Depends(get_db_session),
+) -> ErpCompatibilityRemotePublishResponse:
+    """Publish through the same unified account boundary used by creation."""
+
+    try:
+        result = await execute_compatibility_remote_publish(
+            session,
+            payload=payload,
+            actor_user_id=auth.user.id,
+            settings=get_settings(),
+        )
+    except ErpCompatibilityRemoteExecutionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return ErpCompatibilityRemotePublishResponse(
+        remote_publish_task_id=result.remote_publish_task_id,
         remote_request_id=result.remote_request_id,
     )
 

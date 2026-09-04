@@ -15,6 +15,7 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -78,5 +79,54 @@ class UnifiedRedemptionRemoteExecutorClientTest {
         assertThat(created.configurationId()).isEqualTo("remote-123");
         assertThat(created.groupKey()).isEqualTo("group-123");
         assertThat(created.requestId()).isEqualTo("request-123");
+    }
+
+    @Test
+    void postsConfirmedRemotePublishThroughUnifiedExecutor() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/compatibility-redemption/publish", exchange -> {
+            assertThat(exchange.getRequestMethod()).isEqualTo("POST");
+            assertThat(exchange.getRequestHeaders().getFirst("Cookie"))
+                    .isEqualTo("raj_session=test-session");
+            assertThat(exchange.getRequestHeaders().getFirst("Upgrade")).isNull();
+            JsonNode request = objectMapper.readTree(exchange.getRequestBody());
+            assertThat(request.path("account_id").asLong()).isEqualTo(23L);
+            assertThat(request.path("batch_id").asLong()).isEqualTo(24L);
+            assertThat(request.path("publish_environment").asText()).isEqualTo("prod");
+            assertThat(request.path("mode").asText()).isEqualTo("SCHEDULED");
+            assertThat(request.path("scheduled_time").asText()).isEqualTo("2026-09-05T18:30");
+            assertThat(request.path("fallback_to_scheduled").asBoolean()).isFalse();
+            assertThat(request.path("execution_confirmed").asBoolean()).isTrue();
+
+            byte[] body = ("{\"remotePublishTaskId\":\"publish-123\","
+                    + "\"remoteRequestId\":\"request-456\"}")
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setCookies(new Cookie("raj_session", "test-session"));
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+
+        URI uri = URI.create("http://127.0.0.1:" + server.getAddress().getPort()
+                + "/compatibility-redemption");
+        UnifiedRedemptionRemoteExecutorClient.PublishedBatch published =
+                new UnifiedRedemptionRemoteExecutorClient(objectMapper, uri, "raj_session")
+                        .publish(
+                                23L,
+                                24L,
+                                "prod",
+                                true,
+                                LocalDateTime.of(2026, 9, 5, 18, 30),
+                                false
+                        );
+
+        assertThat(published.taskId()).isEqualTo("publish-123");
+        assertThat(published.requestId()).isEqualTo("request-456");
     }
 }
