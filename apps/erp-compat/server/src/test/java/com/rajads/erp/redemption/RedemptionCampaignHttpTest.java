@@ -2,6 +2,8 @@ package com.rajads.erp.redemption;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.rajads.erp.config.RemoteOperationGate;
+import com.rajads.erp.shared.ApiException;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,7 +32,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @SpringBootTest
@@ -39,6 +43,7 @@ class RedemptionCampaignHttpTest {
     @Autowired private MockMvc mockMvc;
     @Autowired private ObjectMapper objectMapper;
     @MockBean private RemoteGiftCodeBackendClient remoteGiftCodeBackendClient;
+    @MockBean private RemoteOperationGate remoteOperationGate;
 
     @Test
     void adminCanCreateTieredCampaign() throws Exception {
@@ -370,6 +375,54 @@ class RedemptionCampaignHttpTest {
                         .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"rowVersion\":" + data(connectionResult).path("rowVersion").asLong() + "}"))
                 .andExpect(status().isConflict());
+    }
+
+    @Test
+    void blockedRemoteCreateIsRecordedAsFailedWithoutCallingTheRemoteBackend() throws Exception {
+        MockHttpSession session = login();
+        long marketId = data(mockMvc.perform(post("/api/v1/redemption-remote-markets").session(session)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON).content("""
+                                {"code":"GATE_BLOCKED_MARKET","name":"Gate Blocked Market","baseUrl":"https://gate-blocked.example.com","enabled":true}
+                                """))
+                .andExpect(status().isOk()).andReturn()).path("id").asLong();
+        long connectionId = data(mockMvc.perform(post("/api/v1/redemption-remote-connections").session(session)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON).content("""
+                                {"username":"gate-blocked-admin","marketId":%s,"password":"test-password","totpSecret":"JBSWY3DPEHPK3PXP","enabled":true}
+                                """.formatted(marketId)))
+                .andExpect(status().isOk()).andReturn()).path("id").asLong();
+
+        JsonNode campaign = data(mockMvc.perform(post("/api/v1/redemption-campaigns").session(session)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON).content("""
+                                {"code":"gate_blocked_create","name":"远端开关拦截","lookbackDays":7,
+                                 "tiers":[{"displayName":"充值100","minDepositAmount":100,"bonusAmount":5,"bonusMaxAmount":17,"sortOrder":1}]}
+                                """))
+                .andExpect(status().isOk()).andReturn());
+        long campaignId = campaign.path("id").asLong();
+        mockMvc.perform(patch("/api/v1/redemption-campaigns/" + campaignId).session(session)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"ACTIVE\",\"rowVersion\":" + campaign.path("rowVersion").asLong() + "}"))
+                .andExpect(status().isOk());
+
+        long tierId = campaign.at("/tiers/0/id").asLong();
+        JsonNode detail = data(mockMvc.perform(post("/api/v1/redemption-campaigns/batches").session(session)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"campaignId\":" + campaignId + ",\"claimDateFrom\":\"2026-09-05\",\"claimDateTo\":\"2026-09-05\",\"remoteConnectionId\":" + connectionId + ",\"tierLabelIds\":{\"" + tierId + "\":[901026]},\"remoteOptions\":{\"publishEnvironment\":\"test\",\"flowTimes\":5,\"creationIntervalSeconds\":5,\"keyNumber\":1,\"singleUserLimit\":1,\"singleKeyLimit\":2000,\"requireBindBankCard\":false,\"requireBindPhone\":true,\"checkUuid\":true,\"uuidRewardLimit\":1,\"checkLoginIp\":true,\"loginIpRewardLimit\":1,\"checkRegisterIp\":true,\"registerIpRewardLimit\":1}}"))
+                .andExpect(status().isOk()).andReturn());
+        long batchId = detail.at("/batch/id").asLong();
+        long issueId = detail.at("/issues/0/id").asLong();
+
+        doThrow(ApiException.forbidden("ERP 兼容模块的远端操作尚未启用：remote_create"))
+                .when(remoteOperationGate).requireEnabled("remote_create");
+        mockMvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + issueId + "/remote-create").session(session)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf()))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/v1/redemption-campaigns/batches/" + batchId).session(session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.issues[0].workflowStatus").value("FAILED"))
+                .andExpect(jsonPath("$.data.issues[0].state").value("FAILED"))
+                .andExpect(jsonPath("$.data.issues[0].remoteError").value(org.hamcrest.Matchers.containsString("remote_create")));
+        verifyNoInteractions(remoteGiftCodeBackendClient);
     }
 
     @Test

@@ -44,7 +44,17 @@ public class RedemptionRemoteOperationService {
     private final RemoteOperationGate remoteOperationGate;
 
     public Long createConfiguration(Long issueId, boolean retryFailed) {
-        remoteOperationGate.requireEnabled("remote_create");
+        try {
+            remoteOperationGate.requireEnabled("remote_create");
+        } catch (ApiException exception) {
+            // The remote gate runs before a request can be reserved.  Without
+            // persisting that rejection, the issue would remain
+            // PENDING_CREATION and the operator-facing task would falsely look
+            // as if it were still generating forever.
+            String error = limit(exception.getMessage());
+            tx().executeWithoutResult(status -> failBlockedCreate(issueId, error));
+            throw exception;
+        }
         RemoteTaskContext context = required(tx().execute(status -> reserveCreate(issueId, retryFailed)));
         try {
             RemoteGiftCodeBackendClient.CreatedConfiguration created = remoteClient.create(context.connection(),
@@ -188,6 +198,24 @@ public class RedemptionRemoteOperationService {
         }
         refreshBatchAfterCreation(batch);
         auditService.record("REDEMPTION_REMOTE_CONFIGURATION_FAILED", "REDEMPTION_CODE_ISSUE", issueId.toString(), null, null,
+                Map.of("batchId", batch.getId(), "message", error));
+    }
+
+    /**
+     * Records a local preflight rejection only.  The remote client has not
+     * been called at this point, so retrying later cannot duplicate a remote
+     * configuration solely because this state was recorded.
+     */
+    private void failBlockedCreate(Long issueId, String error) {
+        RedemptionCodeIssue issue = requireIssue(issueId);
+        RedemptionCodeBatch batch = requireRemoteBatch(issue);
+        if (!"PENDING_CREATION".equals(issue.getWorkflowStatus())) return;
+        issue.setWorkflowStatus("FAILED");
+        issue.setState("FAILED");
+        issue.setRemoteError(error);
+        issueRepository.save(issue);
+        refreshBatchAfterCreation(batch);
+        auditService.record("REDEMPTION_REMOTE_CONFIGURATION_BLOCKED", "REDEMPTION_CODE_ISSUE", issueId.toString(), null, null,
                 Map.of("batchId", batch.getId(), "message", error));
     }
 

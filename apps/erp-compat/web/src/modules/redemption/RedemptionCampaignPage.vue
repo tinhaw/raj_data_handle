@@ -400,6 +400,12 @@ function expectedTaskCount() {
 }
 function isProcessing(row: CodeGroupRow) { return processingGroupIds.value.has(groupKey(row.detail.batch.id)) }
 function isSuccess(row: CodeGroupRow) { return row.detail.batch.status === 'COMPLETED' }
+function pendingRemoteCreationIssues(row: CodeGroupRow) {
+  return row.detail.issues.filter((issue) => issue.workflowStatus === 'PENDING_CREATION')
+}
+function hasRemoteCreationInProgress(row: CodeGroupRow) {
+  return row.detail.issues.some((issue) => issue.workflowStatus === 'CREATING_REMOTE')
+}
 function failedIssues(row: CodeGroupRow) {
   return row.detail.issues.filter((issue) => issue.workflowStatus === 'FAILED' || (issue.workflowStatus === 'PUBLISHED' && Boolean(issue.remoteError)))
 }
@@ -436,6 +442,8 @@ function groupStatus(row: CodeGroupRow) {
   if (hasScheduledPublishReached(row)) return { text: '待下载', type: 'info' as const }
   if (isScheduledPublish(row)) return { text: '定时发布中', type: 'warning' as const }
   if (row.detail.batch.status === 'READY_TO_PUBLISH') return { text: '待发布', type: 'info' as const }
+  if (hasRemoteCreationInProgress(row)) return { text: '生成中', type: 'warning' as const }
+  if (pendingRemoteCreationIssues(row).length) return { text: '待创建', type: 'info' as const }
   return { text: '生成中', type: 'warning' as const }
 }
 function groupProgress(row: CodeGroupRow) {
@@ -446,6 +454,8 @@ function groupProgress(row: CodeGroupRow) {
   if (isScheduledPublish(row)) return `定时发布：${formatIndiaDateTime(batch.remoteScheduledPublishAt)}`
   if (failedIssues(row).length) return `${batch.createdCount} / ${batch.expectedCodeCount} 条远端配置已创建，${failedIssues(row).length} 个任务失败`
   if (batch.status === 'READY_TO_PUBLISH') return `${batch.createdCount} / ${batch.expectedCodeCount} 条远端配置已创建，待发布`
+  const pending = pendingRemoteCreationIssues(row).length
+  if (pending) return `${batch.createdCount} / ${batch.expectedCodeCount} 条远端配置已创建，${pending} 条待创建（尚未向远端发起）`
   return `${batch.createdCount} / ${batch.expectedCodeCount} 条远端配置已创建`
 }
 
@@ -487,6 +497,8 @@ function taskStatus(task: CodeGroupTask) {
   if (task.members.every(isSuccess)) return { text: '生成成功', type: 'success' as const }
   if (task.members.every((member) => member.detail.batch.status === 'READY_TO_PUBLISH')) return { text: '待发布', type: 'info' as const }
   if (task.members.some(isScheduledPublish)) return { text: '发布中', type: 'warning' as const }
+  if (task.members.some(hasRemoteCreationInProgress)) return { text: '生成中', type: 'warning' as const }
+  if (task.members.some((member) => pendingRemoteCreationIssues(member).length > 0)) return { text: '待创建', type: 'info' as const }
   return { text: '生成中', type: 'warning' as const }
 }
 function taskProgress(task: CodeGroupTask) {
@@ -497,6 +509,8 @@ function taskProgress(task: CodeGroupTask) {
   if (task.members.every(isSuccess)) return `${imported} / ${expected} 个兑换码已入库`
   const failed = task.members.reduce((total, member) => total + failedIssues(member).length, 0)
   if (failed) return `${created} / ${expected} 条远端配置已创建，${failed} 个失败`
+  const pending = task.members.reduce((total, member) => total + pendingRemoteCreationIssues(member).length, 0)
+  if (pending) return `${created} / ${expected} 条远端配置已创建，${pending} 条待创建（尚未向远端发起）`
   return `${created} / ${expected} 条远端配置已创建（按盘口串行执行）`
 }
 function taskPublishTime(task: CodeGroupTask) {
@@ -559,6 +573,7 @@ function issueStatus(issue: RedemptionCodeIssue) {
   if (issue.workflowStatus === 'PUBLISHED' && issue.remoteError) return { text: '下载失败', type: 'danger' as const }
   if (issue.workflowStatus === 'PUBLISHED') return { text: '已发布', type: 'primary' as const }
   if (issue.workflowStatus === 'CREATED') return { text: '待发布', type: 'warning' as const }
+  if (issue.workflowStatus === 'PENDING_CREATION') return { text: '待创建', type: 'info' as const }
   return { text: '生成中', type: 'info' as const }
 }
 
