@@ -89,7 +89,7 @@ class RedemptionCampaignHttpTest {
 
         MvcResult groupResult = mockMvc.perform(post("/api/v1/redemption-campaigns/groups").session(session)
                         .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON).content("""
-                                {"code":"group_create_aug","name":"八月兑换码组","claimDateFrom":"2026-08-20","claimDateTo":"2026-08-21","lookbackDays":7,
+                                {"code":"group_create_aug","name":"八月兑换码组","claimDateFrom":"2026-08-20","claimDateTo":"2026-08-21","validFromDayOffset":1,"validToDayOffset":2,"lookbackDays":7,
                                  "tiers":[{"displayName":"近7天充值100-499","minDepositAmount":100,"bonusAmount":1,"bonusMaxAmount":3,"sortOrder":1},{"displayName":"近7天充值500-1999","minDepositAmount":500,"bonusAmount":5,"bonusMaxAmount":7,"sortOrder":2}],
                                  "remoteMarketId":%s,"redemptionType":"SEVEN_DAY_DEPOSIT","tierUserTypes":["LABEL_USERS","ALL_USERS"],"tierLabelIds":[[901091],[]],
                                  "remoteOptions":{"publishEnvironment":"test","flowTimes":5,"creationIntervalSeconds":5,"activityRecharge":500,"activityRechargeCount":3,"activityId":456,"keyNumber":1,"singleUserLimit":1,"singleKeyLimit":2,"requireBindBankCard":false,"requireBindPhone":true,"checkUuid":true,"uuidRewardLimit":1,"checkLoginIp":true,"loginIpRewardLimit":1,"checkRegisterIp":true,"registerIpRewardLimit":1}}
@@ -98,6 +98,8 @@ class RedemptionCampaignHttpTest {
                 .andExpect(jsonPath("$.data.batch.status").value("CREATING"))
                 .andExpect(jsonPath("$.data.batch.taskId").isNumber())
                 .andExpect(jsonPath("$.data.batch.expectedCodeCount").value(4))
+                .andExpect(jsonPath("$.data.batch.validFromDayOffset").value(1))
+                .andExpect(jsonPath("$.data.batch.validToDayOffset").value(2))
                 .andExpect(jsonPath("$.data.batch.remoteConnectionId").value(connectionId))
                 .andExpect(jsonPath("$.data.batch.remoteOptions.activityRecharge").value(500))
                 .andExpect(jsonPath("$.data.batch.remoteOptions.activityRechargeCount").value(3))
@@ -117,6 +119,8 @@ class RedemptionCampaignHttpTest {
         verify(remoteGiftCodeBackendClient).create(any(), allUsersRequest.capture());
         assertThat(allUsersRequest.getValue().allUsers()).isTrue();
         assertThat(allUsersRequest.getValue().labelIds()).isEmpty();
+        assertThat(allUsersRequest.getValue().validFrom()).isEqualTo(java.time.LocalDate.of(2026, 8, 21));
+        assertThat(allUsersRequest.getValue().validTo()).isEqualTo(java.time.LocalDate.of(2026, 8, 22));
 
         mockMvc.perform(get("/api/v1/redemption-campaigns").session(session))
                 .andExpect(status().isOk())

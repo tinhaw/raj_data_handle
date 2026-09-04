@@ -329,6 +329,9 @@ export interface RedemptionCodeBatch {
   campaignId: string | number
   claimDateFrom: string
   claimDateTo: string
+  /** Day offsets from each generated claim date used for remote valid_time. */
+  validFromDayOffset: number
+  validToDayOffset: number
   lookbackDays: number
   redemptionType: RedemptionCodeType
   expectedCodeCount: number
@@ -365,6 +368,9 @@ export interface RedemptionCodeGroupInput {
   name: string
   claimDateFrom: string
   claimDateTo: string
+  /** Defaults to 0/0: each configuration is valid on its claim date only. */
+  validFromDayOffset: number
+  validToDayOffset: number
   lookbackDays: number
   description?: string
   tiers: RedemptionCampaignTier[]

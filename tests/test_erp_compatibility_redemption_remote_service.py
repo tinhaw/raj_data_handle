@@ -42,6 +42,8 @@ def _payload(account_id: int) -> ErpCompatibilityRemoteCreateRequest:
         issue_id=42,
         description="NEW-901到907存款100",
         claim_date=date(2026, 9, 8),
+        valid_from=date(2026, 9, 9),
+        valid_to=date(2026, 9, 10),
         label_ids=[901091],
         bonus_amount=Decimal("1"),
         bonus_max_amount=Decimal("3"),
@@ -142,7 +144,11 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
             transport=httpx.MockTransport(handler),
         )
 
-    assert result.remote_configuration_id == "cfg-1"
+        assert result.remote_configuration_id == "cfg-1"
+        assert captured["valid_time"] == [
+            "2026-09-09 00:00:00",
+            "2026-09-10 23:59:59",
+        ]
     assert result.remote_group_key == "group-1"
     assert result.remote_request_id == "create-1"
     assert captured["label_array"] == [901091]

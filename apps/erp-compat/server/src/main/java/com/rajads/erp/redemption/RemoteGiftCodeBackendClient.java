@@ -83,7 +83,7 @@ public class RemoteGiftCodeBackendClient {
         payload.put("uuid_reward_limit", options.uuidRewardLimit());
         payload.put("login_ip_reward_limit", options.loginIpRewardLimit());
         payload.put("register_ip_reward_limit", options.registerIpRewardLimit());
-        payload.put("valid_time", List.of(remoteDayStart(input.claimDate()), remoteDayEnd(input.claimDate())));
+        payload.put("valid_time", List.of(remoteDayStart(input.validFrom()), remoteDayEnd(input.validTo())));
         JsonNode response = postJson(connection, "/api/common/giftCodeConfig/save", payload);
         String configurationId = firstText(response, "data.id", "id");
         if (configurationId == null) throw new RemoteGiftCodeException("远端创建接口未返回兑换码配置 ID");
@@ -401,7 +401,7 @@ public class RemoteGiftCodeBackendClient {
     private record AuthenticatedResponse<T>(RedemptionRemoteConnection connection, HttpResponse<T> response) { }
     public record RemoteTag(long id, String name) { }
     public record CreateConfigurationRequest(String description, List<Long> labelIds, boolean allUsers, BigDecimal bonusMin, BigDecimal bonusMax,
-                                             LocalDate claimDate, RemoteCreationOptions options) { }
+                                             LocalDate claimDate, LocalDate validFrom, LocalDate validTo, RemoteCreationOptions options) { }
     public record CreatedConfiguration(String configurationId, String groupKey) { }
     public static final class RemoteGiftCodeException extends RuntimeException { public RemoteGiftCodeException(String message) { super(message); } }
 }

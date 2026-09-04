@@ -61,6 +61,8 @@ public class UnifiedRedemptionRemoteExecutorClient {
             Long issueId,
             String description,
             LocalDate claimDate,
+            LocalDate validFrom,
+            LocalDate validTo,
             List<Long> labelIds,
             BigDecimal bonusAmount,
             BigDecimal bonusMaxAmount,
@@ -73,6 +75,8 @@ public class UnifiedRedemptionRemoteExecutorClient {
         payload.put("issue_id", issueId);
         payload.put("description", description);
         payload.put("claim_date", claimDate.toString());
+        payload.put("valid_from", validFrom.toString());
+        payload.put("valid_to", validTo.toString());
         payload.put("label_ids", labelIds);
         payload.put("bonus_amount", bonusAmount);
         payload.put("bonus_max_amount", bonusMaxAmount);

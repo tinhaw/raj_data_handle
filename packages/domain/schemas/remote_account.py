@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Literal
 
@@ -152,6 +152,8 @@ class ErpCompatibilityRemoteCreateRequest(ApiSchema):
     issue_id: int = Field(ge=1)
     description: str = Field(min_length=1, max_length=500)
     claim_date: date
+    valid_from: date | None = None
+    valid_to: date | None = None
     label_ids: list[int] = Field(default_factory=list, max_length=100)
     bonus_amount: Decimal = Field(ge=0, max_digits=24, decimal_places=8)
     bonus_max_amount: Decimal = Field(ge=0, max_digits=24, decimal_places=8)
@@ -169,6 +171,16 @@ class ErpCompatibilityRemoteCreateRequest(ApiSchema):
     def validate_remote_confirmation(self) -> ErpCompatibilityRemoteCreateRequest:
         if self.bonus_max_amount < self.bonus_amount:
             raise ValueError("兑换金额上限不能小于下限。")
+        valid_from = self.valid_from or self.claim_date
+        valid_to = self.valid_to or self.claim_date
+        if (
+            valid_from < self.claim_date
+            or valid_to < valid_from
+            or valid_to > self.claim_date + timedelta(days=365)
+        ):
+            raise ValueError(
+                "兑换码生效日期不能早于开始兑换日，结束日不能早于开始日，且最多延后 365 天。"
+            )
         if not self.execution_confirmed:
             raise ValueError("必须明确确认本次远端兑换码创建。")
         return self

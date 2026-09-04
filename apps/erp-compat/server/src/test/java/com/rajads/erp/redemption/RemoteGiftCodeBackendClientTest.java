@@ -96,7 +96,8 @@ class RemoteGiftCodeBackendClientTest {
         assertThat(client.tags(connection)).containsExactly(new RemoteGiftCodeBackendClient.RemoteTag(901026, "充值100+"));
         RemoteGiftCodeBackendClient.CreatedConfiguration created = client.create(connection,
                 new RemoteGiftCodeBackendClient.CreateConfigurationRequest("815到821存款100", List.of(901026L),
-                        false, new BigDecimal("5"), new BigDecimal("17"), LocalDate.of(2026, 8, 16), options()));
+                        false, new BigDecimal("5"), new BigDecimal("17"), LocalDate.of(2026, 8, 16),
+                        LocalDate.of(2026, 8, 17), LocalDate.of(2026, 8, 18), options()));
 
         assertThat(created.configurationId()).isEqualTo("1563");
         assertThat(authorization.get()).isEqualTo("Bearer test-token");
@@ -125,7 +126,8 @@ class RemoteGiftCodeBackendClientTest {
         assertThat(createPayload.get().path("login_ip_reward_limit").asInt()).isEqualTo(1);
         assertThat(createPayload.get().path("is_need_check_register_ip").asText()).isEqualTo("1");
         assertThat(createPayload.get().path("register_ip_reward_limit").asInt()).isEqualTo(1);
-        assertThat(createPayload.get().path("valid_time").get(0).asText()).isEqualTo("2026-08-16 00:00:00");
+        assertThat(createPayload.get().path("valid_time").get(0).asText()).isEqualTo("2026-08-17 00:00:00");
+        assertThat(createPayload.get().path("valid_time").get(1).asText()).isEqualTo("2026-08-18 23:59:59");
         assertThat(client.findGroupKey(connection, created.configurationId(), "815到821存款100")).isEqualTo("group-1563");
         assertThat(client.publishAll(connection, "test", false, null)).isEqualTo("17687");
         assertThat(publishPayload.get().path("env").asText()).isEqualTo("test");
@@ -144,6 +146,7 @@ class RemoteGiftCodeBackendClientTest {
     void sendsOptionalActivityConditionsOnlyWhenConfigured() {
         client.create(connection, new RemoteGiftCodeBackendClient.CreateConfigurationRequest("活动条件兑换码", List.of(901092L),
                 false, new BigDecimal("3"), new BigDecimal("7"), LocalDate.of(2026, 8, 16),
+                LocalDate.of(2026, 8, 16), LocalDate.of(2026, 8, 16),
                 new RemoteCreationOptions("test", 5, 5, new BigDecimal("500"), 3, 456L, 1, 1, 3000, false, true, true, 1, true, 1, true, 1)));
 
         assertThat(createPayload.get().path("activity_recharge").decimalValue()).isEqualByComparingTo("500");
@@ -154,7 +157,8 @@ class RemoteGiftCodeBackendClientTest {
     @Test
     void createsPreviousDayZeroTierForAllUsersWithoutALabelArray() {
         client.create(connection, new RemoteGiftCodeBackendClient.CreateConfigurationRequest("NEW-818存款0", List.of(),
-                true, new BigDecimal("1"), new BigDecimal("3"), LocalDate.of(2026, 8, 18), options()));
+                true, new BigDecimal("1"), new BigDecimal("3"), LocalDate.of(2026, 8, 18),
+                LocalDate.of(2026, 8, 18), LocalDate.of(2026, 8, 18), options()));
 
         assertThat(createPayload.get().path("user_type").asText()).isEqualTo("0");
         assertThat(createPayload.get().has("label_array")).isFalse();
@@ -190,7 +194,8 @@ class RemoteGiftCodeBackendClientTest {
 
         RemoteGiftCodeBackendClient.CreatedConfiguration created = client.create(connection,
                 new RemoteGiftCodeBackendClient.CreateConfigurationRequest("815到821存款100", List.of(901026L),
-                        false, new BigDecimal("5"), new BigDecimal("17"), LocalDate.of(2026, 8, 16), options()));
+                        false, new BigDecimal("5"), new BigDecimal("17"), LocalDate.of(2026, 8, 16),
+                        LocalDate.of(2026, 8, 16), LocalDate.of(2026, 8, 16), options()));
 
         assertThat(created.configurationId()).isEqualTo("1563");
         assertThat(createRequestCount.get()).isEqualTo(2);

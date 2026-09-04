@@ -133,7 +133,8 @@ public class RedemptionService {
             tierLabelIds.put(tier.getId(), requestedTierLabelIds.get(index));
         }
         RedemptionDtos.BatchDetailResponse detail = createManualBatch(new RedemptionDtos.ManualBatchCreateRequest(
-                campaign.getId(), request.claimDateFrom(), request.claimDateTo(), selectedConnection.id(),
+                campaign.getId(), request.claimDateFrom(), request.claimDateTo(),
+                request.validFromDayOffset(), request.validToDayOffset(), selectedConnection.id(),
                 tierLabelIds, request.remoteOptions(), redemptionType), task.getId());
         if (request.exportGroupKey() != null && !request.exportGroupKey().isBlank()) {
             RedemptionCodeBatch batch = requireBatch(detail.batch().id());
@@ -161,6 +162,9 @@ public class RedemptionService {
 
     private RedemptionDtos.BatchDetailResponse createManualBatch(RedemptionDtos.ManualBatchCreateRequest request, Long taskId) {
         requireRange(request.claimDateFrom(), request.claimDateTo(), 366, "创建批次");
+        int validFromDayOffset = request.validFromDayOffset() == null ? 0 : request.validFromDayOffset();
+        int validToDayOffset = request.validToDayOffset() == null ? 0 : request.validToDayOffset();
+        requireValidityOffsets(validFromDayOffset, validToDayOffset);
         RedemptionCampaign campaign = requireCampaign(request.campaignId());
         RedemptionCodeType redemptionType = request.redemptionType() == null ? RedemptionCodeType.SEVEN_DAY_DEPOSIT : request.redemptionType();
         if (!"ACTIVE".equals(campaign.getStatus())) {
@@ -182,6 +186,8 @@ public class RedemptionService {
         batch.setCampaignId(campaign.getId());
         batch.setClaimDateFrom(request.claimDateFrom());
         batch.setClaimDateTo(request.claimDateTo());
+        batch.setValidFromDayOffset(validFromDayOffset);
+        batch.setValidToDayOffset(validToDayOffset);
         batch.setLookbackDays(campaign.getLookbackDays());
         batch.setRedemptionType(redemptionType);
         batch.setExpectedCodeCount(Math.multiplyExact(dates, tiers.size()));
@@ -425,6 +431,7 @@ public class RedemptionService {
         String marketCode = connection == null ? null : connection.marketCode();
         String marketName = connection == null ? null : connection.marketName();
         return new RedemptionDtos.BatchResponse(batch.getId(), batch.getCampaignId(), batch.getClaimDateFrom(), batch.getClaimDateTo(),
+                batch.getValidFromDayOffset(), batch.getValidToDayOffset(),
                 batch.getLookbackDays(), batch.getRedemptionType(), batch.getExpectedCodeCount(), batch.getStatus(),
                 Math.toIntExact(issueRepository.countByBatchIdAndWorkflowStatus(batch.getId(), "PENDING_CREATION")),
                 Math.toIntExact(issueRepository.countByBatchIdAndWorkflowStatus(batch.getId(), "CREATED")),
@@ -489,6 +496,12 @@ public class RedemptionService {
         if (from == null || to == null || to.isBefore(from)) throw ApiException.badRequest("INVALID_CLAIM_DATE_RANGE", "请选择有效的领取日期范围");
         if (ChronoUnit.DAYS.between(from, to) + 1 > maximumDays) {
             throw ApiException.badRequest("CLAIM_DATE_RANGE_TOO_LARGE", action + "兑换码时最多选择 " + maximumDays + " 天");
+        }
+    }
+
+    private void requireValidityOffsets(int fromOffset, int toOffset) {
+        if (fromOffset < 0 || toOffset < fromOffset || toOffset > 365) {
+            throw ApiException.badRequest("INVALID_VALID_TIME_RULE", "兑换码生效结束日不能早于生效开始日，且最多可延后 365 天");
         }
     }
 

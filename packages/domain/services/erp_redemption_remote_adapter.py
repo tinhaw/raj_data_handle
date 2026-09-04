@@ -46,6 +46,8 @@ class RemoteCreateCommand:
     bonus_amount: Decimal
     bonus_max_amount: Decimal
     options: RemoteCreationOptions
+    valid_from: date | None = None
+    valid_to: date | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -61,7 +61,7 @@ public class RedemptionRemoteOperationService {
         RemoteTaskContext context = required(tx().execute(status -> reserveCreate(issueId, retryFailed)));
         try {
             UnifiedRedemptionRemoteExecutorClient.CreatedConfiguration created = executor.create(
-                    context.account().id(), issueId, context.description(), context.claimDate(), context.labelIds(),
+                    context.account().id(), issueId, context.description(), context.claimDate(), context.validFrom(), context.validTo(), context.labelIds(),
                     context.bonusMin(), context.bonusMax(), context.options());
             return required(tx().execute(status -> completeCreate(
                     issueId, created.configurationId(), created.groupKey(), null)));
@@ -90,7 +90,7 @@ public class RedemptionRemoteOperationService {
         try {
             RemoteGiftCodeBackendClient.CreatedConfiguration created = remoteClient.create(requireEnabledConnection(requireBatch(context.batchId())),
                     new RemoteGiftCodeBackendClient.CreateConfigurationRequest(context.description(), context.labelIds(), context.allUsers(),
-                            context.bonusMin(), context.bonusMax(), context.claimDate(), context.options()));
+                            context.bonusMin(), context.bonusMax(), context.claimDate(), context.validFrom(), context.validTo(), context.options()));
             String groupKey = null;
             String lookupError = null;
             try {
@@ -235,8 +235,10 @@ public class RedemptionRemoteOperationService {
         issue.setRemoteError(null);
         issue.setRemoteRequestId(UUID.randomUUID().toString());
         issueRepository.saveAndFlush(issue);
+        LocalDate validFrom = issue.getClaimDate().plusDays(batch.getValidFromDayOffset() == null ? 0 : batch.getValidFromDayOffset());
+        LocalDate validTo = issue.getClaimDate().plusDays(batch.getValidToDayOffset() == null ? 0 : batch.getValidToDayOffset());
         return new RemoteTaskContext(batch.getId(), account, remoteDescription(batch, issue), labels, allUsers,
-                issue.getBonusAmount(), issue.getBonusMaxAmount(), issue.getClaimDate(), options(batch));
+                issue.getBonusAmount(), issue.getBonusMaxAmount(), issue.getClaimDate(), validFrom, validTo, options(batch));
     }
 
     private Long completeCreate(Long issueId, String configurationId, String groupKey, String warning) {
@@ -596,6 +598,7 @@ public class RedemptionRemoteOperationService {
 
     private record RemoteTaskContext(Long batchId, RedemptionRemoteDirectory.Account account, String description, List<Long> labelIds, boolean allUsers,
                                      java.math.BigDecimal bonusMin, java.math.BigDecimal bonusMax, java.time.LocalDate claimDate,
+                                     java.time.LocalDate validFrom, java.time.LocalDate validTo,
                                      RemoteCreationOptions options) { }
     private record RemoteBatchContext(Long accountId, RedemptionRemoteConnection connection, RemoteCreationOptions options, boolean scheduled,
                                       LocalDateTime scheduledTime, String note, String publishTaskId,

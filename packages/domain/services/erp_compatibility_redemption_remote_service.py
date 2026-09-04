@@ -142,6 +142,8 @@ async def execute_compatibility_remote_create(
                     bonus_amount=payload.bonus_amount,
                     bonus_max_amount=payload.bonus_max_amount,
                     options=_options(payload),
+                    valid_from=payload.valid_from or payload.claim_date,
+                    valid_to=payload.valid_to or payload.claim_date,
                 ),
             )
     except (

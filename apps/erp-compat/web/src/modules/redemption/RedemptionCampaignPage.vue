@@ -40,9 +40,13 @@ interface CodeGroupTierDraft {
 }
 
 type CodeGroupUserType = 'ALL_USERS' | 'LABEL_USERS'
+type ValidityMode = 'CLAIM_DAY' | 'CUSTOM_OFFSETS'
 
 interface CodeGroupForm {
   dateRange: [string, string]
+  validityMode: ValidityMode
+  validFromDayOffset: number
+  validToDayOffset: number
   remoteMarketIds: Array<string | number>
   /** The selected market currently being configured in the editor. */
   remoteMarketId?: string | number
@@ -155,6 +159,26 @@ const previousDayProfiles: Record<PreviousDayProfile, Array<Omit<TierProfile, 'i
 }
 
 const form = ref<CodeGroupForm>(newCodeGroupForm())
+const validityOffsets = computed<[number, number]>(() => form.value.validityMode === 'CLAIM_DAY'
+  ? [0, 0]
+  : [form.value.validFromDayOffset, form.value.validToDayOffset])
+const validityRuleSummary = computed(() => {
+  const [fromOffset, toOffset] = validityOffsets.value
+  if (fromOffset === 0 && toOffset === 0) return '跟随开始兑换日，当天有效'
+  const offsetLabel = (value: number) => value === 0 ? '当天' : `第 ${value + 1} 天（+${value} 天）`
+  return `相对开始兑换日：${offsetLabel(fromOffset)}至${offsetLabel(toOffset)}`
+})
+const validityPreview = computed(() => {
+  const [claimFrom, claimTo] = form.value.dateRange || []
+  if (!claimFrom || !claimTo) return []
+  const [fromOffset, toOffset] = validityOffsets.value
+  const preview = (claimDate: string) => ({
+    claimDate,
+    validFrom: shiftDate(claimDate, fromOffset),
+    validTo: shiftDate(claimDate, toOffset),
+  })
+  return claimFrom === claimTo ? [preview(claimFrom)] : [preview(claimFrom), preview(claimTo)]
+})
 const canGenerate = computed(() => hasPermission('REDEMPTION_MANAGE') && hasPermission('REDEMPTION_GENERATE'))
 const canExport = computed(() => hasPermission('REDEMPTION_EXPORT'))
 const codeGroupTasks = computed<CodeGroupTask[]>(() => {
@@ -292,6 +316,9 @@ function newCodeGroupForm(): CodeGroupForm {
   const range = futureRange(7)
   return {
     dateRange: range,
+    validityMode: 'CLAIM_DAY',
+    validFromDayOffset: 0,
+    validToDayOffset: 0,
     remoteMarketIds: [],
     redemptionType: 'SEVEN_DAY_DEPOSIT',
     // The selected market supplies its own standard five tiers after the dialog opens.
@@ -371,6 +398,31 @@ function generatedGroupName(dateRange: [string, string], marketId?: string | num
 
 function generatedGroupDescription(claimDateFrom: string, claimDateTo: string) {
   return `批量生成兑换码组（领取日期：${claimDateFrom} 至 ${claimDateTo}）`
+}
+
+function changeValidityMode(mode: ValidityMode) {
+  if (mode !== 'CLAIM_DAY') return
+  form.value.validFromDayOffset = 0
+  form.value.validToDayOffset = 0
+}
+
+function keepValidityOffsetsOrdered() {
+  if (form.value.validToDayOffset < form.value.validFromDayOffset) {
+    form.value.validToDayOffset = form.value.validFromDayOffset
+  }
+}
+
+function batchValidityRuleLabel(batch: RedemptionBatchDetail['batch']) {
+  const fromOffset = batch.validFromDayOffset ?? 0
+  const toOffset = batch.validToDayOffset ?? 0
+  if (fromOffset === 0 && toOffset === 0) return '跟随开始兑换日（当天）'
+  return `开始兑换日 +${fromOffset} 天 至 +${toOffset} 天`
+}
+
+function issueValidityLabel(batch: RedemptionBatchDetail['batch'], claimDate: string) {
+  const from = shiftDate(claimDate, batch.validFromDayOffset ?? 0)
+  const to = shiftDate(claimDate, batch.validToDayOffset ?? 0)
+  return `${formatDate(from)} 00:00:00 至 ${formatDate(to)} 23:59:59`
 }
 
 function formatDate(value?: string) { return value ? value.replaceAll('-', '/') : '—' }
@@ -944,6 +996,11 @@ function wait(milliseconds: number) {
 function validateForm() {
   const [from, to] = form.value.dateRange || []
   if (!from || !to || to < from) return '请选择有效的兑换日期范围'
+  const [validFromDayOffset, validToDayOffset] = validityOffsets.value
+  if (!Number.isInteger(validFromDayOffset) || !Number.isInteger(validToDayOffset)
+    || validFromDayOffset < 0 || validToDayOffset < validFromDayOffset || validToDayOffset > 365) {
+    return '请设置有效的远端生效日期：结束日不得早于开始日，且最多延后 365 天'
+  }
   if (!form.value.remoteMarketIds.length) return '请至少选择一个盘口；如未配置，请先前往“远端连接”完成账号配置'
   for (const marketId of form.value.remoteMarketIds) {
     const label = marketLabel(marketId)
@@ -963,7 +1020,7 @@ async function createCodeGroup() {
   if (message) { ElMessage.warning(message); return }
   try {
     await ElMessageBox.confirm(
-      `系统会将 ${form.value.remoteMarketIds.length} 个盘口汇总为一条任务，并按盘口顺序串行创建远端配置。后续发布仍按盘口分别执行全量发布，并可能发布该盘口所有待发布的兑换码配置，请确认各远端后台不存在不应发布的内容。`,
+      `系统会将 ${form.value.remoteMarketIds.length} 个盘口汇总为一条任务，并按盘口顺序串行创建远端配置；兑换码生效规则为“${validityRuleSummary.value}”。后续发布仍按盘口分别执行全量发布，并可能发布该盘口所有待发布的兑换码配置，请确认各远端后台不存在不应发布的内容。`,
       '确认批量生成兑换码组',
       { type: 'warning', confirmButtonText: '确认并开始生成', cancelButtonText: '取消' },
     )
@@ -971,6 +1028,7 @@ async function createCodeGroup() {
     return
   }
   const [claimDateFrom, claimDateTo] = form.value.dateRange
+  const [validFromDayOffset, validToDayOffset] = validityOffsets.value
   const exportGroupKey = form.value.remoteMarketIds.length > 1 ? makeExportGroupKey() : undefined
   working.value = true
   try {
@@ -984,6 +1042,8 @@ async function createCodeGroup() {
         name: generatedGroupName(form.value.dateRange, marketId),
         claimDateFrom,
         claimDateTo,
+        validFromDayOffset,
+        validToDayOffset,
         lookbackDays: isPreviousDayDeposit() ? 1 : 7,
         // Remote group_desc and remark are generated per task on the server.
         description: generatedGroupDescription(claimDateFrom, claimDateTo),
@@ -1298,7 +1358,7 @@ onUnmounted(() => {
     <div class="page-title-row">
       <div>
         <h2>兑换码管理</h2>
-        <p class="page-subtitle">按日期、用户类型和兑换金额批量创建兑换码组；远端配置创建完成后可选择立即或定时发布。</p>
+        <p class="page-subtitle">按开始兑换日、用户类型和兑换金额批量创建兑换码组；远端生效时间可跟随开始兑换日或单独设置。</p>
       </div>
       <div class="page-actions">
         <el-button :icon="Refresh" :loading="loading" @click="loadCodeGroups">刷新</el-button>
@@ -1308,7 +1368,7 @@ onUnmounted(() => {
 
     <el-alert class="redemption-alert" type="info" :closable="false" show-icon>
       <template #title>批量生成流程</template>
-      系统将为每个兑换日期 × 充值档位创建远端配置，并为每条兑换码自动写入独立的描述和备注。配置全部创建后，请在任务行点击“选择发布方式”，可选立即发布或定时发布；立即发布失败时可选择是否自动回退到定时发布。失败原因会保留在备注中。
+      系统将为每个开始兑换日 × 用户类型/标签档位创建远端配置，并为每条兑换码自动写入独立的描述和备注。远端生效时间默认是开始兑换日当天，也可在生成时设置相对有效期。配置全部创建后，请在任务行选择发布方式。
     </el-alert>
 
     <article class="panel code-group-list">
@@ -1332,7 +1392,7 @@ onUnmounted(() => {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="兑换日期" min-width="175">
+        <el-table-column label="开始兑换日期" min-width="175">
           <template #default="{ row }">{{ formatDate(taskPrimary(row).detail.batch.claimDateFrom) }} 至 {{ formatDate(taskPrimary(row).detail.batch.claimDateTo) }}</template>
         </el-table-column>
         <el-table-column label="远端账号" min-width="135" show-overflow-tooltip>
@@ -1384,17 +1444,37 @@ onUnmounted(() => {
     <el-dialog v-model="codeGroupDialogVisible" title="批量生成兑换码组" width="1040px" destroy-on-close>
       <el-form label-position="top" class="code-group-form">
         <div class="code-group-form__grid">
-          <el-form-item class="code-group-form__date-range" label="兑换日期范围" required>
+          <el-form-item class="code-group-form__date-range" label="开始兑换日期范围（表格列）" required>
             <el-date-picker v-model="form.dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" :disabled-date="(date: Date) => date < new Date(`${todayIso()}T00:00:00`)" style="width: 100%" />
             <div class="date-presets"><span>快捷选择</span><el-button size="small" @click="applyFutureRange(7)">未来 7 天</el-button><el-button size="small" @click="applyFutureRange(30)">未来 30 天</el-button></div>
-            <p class="field-note">每个“兑换日期 × 充值档位”都会自动生成独立的兑换码描述和备注，例如 <strong>{{ isPreviousDayDeposit() ? 'NEW-818存款200' : 'NEW-808到814存款100' }}</strong>。</p>
+            <p class="field-note">范围内每一天对应表格中的一列；系统按照“开始兑换日 × 用户类型/标签档位”生成独立兑换码组，例如 <strong>{{ isPreviousDayDeposit() ? 'NEW-818存款200' : 'NEW-808到814存款100' }}</strong>。</p>
+          </el-form-item>
+          <el-form-item class="code-group-form__validity" label="兑换码生效时间（远端 valid_time）" required>
+            <div class="validity-editor">
+              <el-radio-group v-model="form.validityMode" @change="(value) => changeValidityMode(value as ValidityMode)">
+                <el-radio value="CLAIM_DAY">跟随开始兑换日（默认）</el-radio>
+                <el-radio value="CUSTOM_OFFSETS">自定义相对日期</el-radio>
+              </el-radio-group>
+              <div v-if="form.validityMode === 'CUSTOM_OFFSETS'" class="validity-editor__offsets">
+                <label><span>生效开始</span><span class="validity-editor__formula">开始兑换日 +</span><el-input-number v-model="form.validFromDayOffset" :min="0" :max="365" :precision="0" controls-position="right" @change="keepValidityOffsetsOrdered" /><span>天</span></label>
+                <label><span>生效结束</span><span class="validity-editor__formula">开始兑换日 +</span><el-input-number v-model="form.validToDayOffset" :min="0" :max="365" :precision="0" controls-position="right" @change="keepValidityOffsetsOrdered" /><span>天</span></label>
+              </div>
+              <div class="validity-preview">
+                <div class="validity-preview__heading"><strong>{{ validityRuleSummary }}</strong><span>按每一列表格日期分别计算</span></div>
+                <div v-for="(item, index) in validityPreview" :key="item.claimDate" class="validity-preview__row">
+                  <span>{{ validityPreview.length === 1 ? '当前列' : index === 0 ? '首列' : '末列' }} {{ formatDate(item.claimDate) }}</span>
+                  <code>{{ item.validFrom }} 00:00:00</code><span>至</span><code>{{ item.validTo }} 23:59:59</code>
+                </div>
+              </div>
+              <p class="field-note">只改变远端兑换码的实际生效区间；表格列、任务分组和充值统计窗口仍以开始兑换日为准。</p>
+            </div>
           </el-form-item>
           <el-form-item class="code-group-form__code-type" label="兑换码类型" required>
             <el-radio-group v-model="form.redemptionType" @change="changeRedemptionType">
               <el-radio value="SEVEN_DAY_DEPOSIT">近 7 天充值</el-radio>
               <el-radio value="PREVIOUS_DAY_DEPOSIT">日充值</el-radio>
             </el-radio-group>
-            <p class="field-note">日充值类型只核验兑换日前一天的充值金额，兑换码在所选兑换日期当天有效。</p>
+            <p class="field-note">日充值类型只核验开始兑换日前一天的充值金额；兑换码实际有效期以上方生效时间规则为准。</p>
           </el-form-item>
           <el-form-item v-if="isPreviousDayDeposit() && form.remoteMarketId" class="code-group-form__code-type" label="当前编辑盘口的日充值标签方案">
             <el-tag type="info">{{ previousDayProfileLabel }}</el-tag>
@@ -1456,7 +1536,7 @@ onUnmounted(() => {
               <el-form-item label="单用户领取次数"><el-input-number v-model="form.remoteOptions.singleUserLimit" :min="1" :max="100" controls-position="right" /></el-form-item>
               <el-form-item label="单兑换码领取次数"><el-input-number v-model="form.remoteOptions.singleKeyLimit" :min="1" :max="100000" controls-position="right" /></el-form-item>
             </div>
-            <div class="advanced-options__fixed"><span>配置状态：待发布</span><span>用户类型：{{ isPreviousDayDeposit() ? '日充值标签（含所有用户）' : '标签用户' }}</span><span>有效时间：按兑换日期自动生成</span></div>
+            <div class="advanced-options__fixed"><span>配置状态：待发布</span><span>用户类型：按各档位设置</span><span>有效时间：{{ validityRuleSummary }}</span></div>
             <div class="advanced-options__toggle-grid">
               <el-form-item label="是否绑定银行卡"><el-radio-group v-model="form.remoteOptions.requireBindBankCard"><el-radio :value="false">关闭</el-radio><el-radio :value="true">开启</el-radio></el-radio-group></el-form-item>
               <el-form-item label="是否绑定手机号"><el-radio-group v-model="form.remoteOptions.requireBindPhone"><el-radio :value="false">关闭</el-radio><el-radio :value="true">开启</el-radio></el-radio-group></el-form-item>
@@ -1470,7 +1550,7 @@ onUnmounted(() => {
             <p class="field-note">最低累计充值金额、最低充值次数和关联活动 ID 默认不限制；留空时创建请求会省略对应字段。</p>
           </el-collapse-item>
         </el-collapse>
-        <p v-if="form.remoteMarketIds.length" class="submit-hint">已选择 {{ form.remoteMarketIds.length }} 个盘口；每个盘口会自动选择自己的远端账号并使用其独立标签配置，共创建 {{ expectedTaskCount() }} 条远端兑换码任务。全部创建完成后，可在任务列表按盘口分别选择发布方式。</p>
+        <p v-if="form.remoteMarketIds.length" class="submit-hint">已选择 {{ form.remoteMarketIds.length }} 个盘口；每个盘口会自动选择自己的远端账号并使用其独立标签配置，共创建 {{ expectedTaskCount() }} 条远端兑换码任务。远端生效时间：{{ validityRuleSummary }}。全部创建完成后，可在任务列表按盘口分别选择发布方式。</p>
       </el-form>
       <template #footer><el-button @click="codeGroupDialogVisible = false">取消</el-button><el-button type="primary" :loading="working" @click="createCodeGroup">开始生成</el-button></template>
     </el-dialog>
@@ -1500,12 +1580,13 @@ onUnmounted(() => {
         <el-descriptions :column="2" border class="group-detail-summary">
           <el-descriptions-item label="任务编号">#{{ selectedGroup.detail.batch.taskId || selectedGroup.detail.batch.id }}</el-descriptions-item>
           <el-descriptions-item label="执行批次">#{{ selectedGroup.detail.batch.id }}</el-descriptions-item>
-          <el-descriptions-item label="兑换日期">{{ formatDate(selectedGroup.detail.batch.claimDateFrom) }} 至 {{ formatDate(selectedGroup.detail.batch.claimDateTo) }}</el-descriptions-item>
+          <el-descriptions-item label="开始兑换日期">{{ formatDate(selectedGroup.detail.batch.claimDateFrom) }} 至 {{ formatDate(selectedGroup.detail.batch.claimDateTo) }}</el-descriptions-item>
           <el-descriptions-item label="任务状态"><el-tag :type="groupStatus(selectedGroup).type">{{ groupStatus(selectedGroup).text }}</el-tag></el-descriptions-item>
           <el-descriptions-item label="远端账号">{{ selectedGroup.detail.batch.remoteConnectionName || '—' }}</el-descriptions-item>
           <el-descriptions-item label="盘口">{{ remoteMarketLabel(selectedGroup) }}</el-descriptions-item>
           <el-descriptions-item label="兑换码类型">{{ redemptionTypeLabel(selectedGroup.detail.batch.redemptionType) }}</el-descriptions-item>
           <el-descriptions-item label="用户类型 / 标签 ID">{{ labelsFor(selectedGroup) }}</el-descriptions-item>
+          <el-descriptions-item label="远端生效规则" :span="2">{{ batchValidityRuleLabel(selectedGroup.detail.batch) }}</el-descriptions-item>
           <el-descriptions-item label="发布时间" :span="2">{{ publishTime(selectedGroup) }}</el-descriptions-item>
           <el-descriptions-item v-if="groupRemark(selectedGroup) !== '—'" label="备注" :span="2">{{ groupRemark(selectedGroup) }}</el-descriptions-item>
         </el-descriptions>
@@ -1516,7 +1597,8 @@ onUnmounted(() => {
         </div>
         <el-table ref="failedIssueTable" :data="selectedGroup.detail.issues" row-key="id" class="group-detail-table" @selection-change="updateSelectedFailedIssues">
           <el-table-column type="selection" width="48" :selectable="isFailedRemoteCreation" />
-          <el-table-column label="兑换日期" width="118"><template #default="{ row }">{{ formatDate(row.claimDate) }}</template></el-table-column>
+          <el-table-column label="开始兑换日" width="118"><template #default="{ row }">{{ formatDate(row.claimDate) }}</template></el-table-column>
+          <el-table-column label="远端生效日期" min-width="220"><template #default="{ row }">{{ issueValidityLabel(selectedGroup.detail.batch, row.claimDate) }}</template></el-table-column>
           <el-table-column label="充值档位" min-width="150"><template #default="{ row }">{{ row.tierName || `充值 ≥ ${formatAmount(row.minDepositAmount)}` }}</template></el-table-column>
           <el-table-column label="兑换金额" width="128"><template #default="{ row }">{{ formatAmount(row.bonusAmount) }}–{{ formatAmount(row.bonusMaxAmount || row.bonusAmount) }}</template></el-table-column>
           <el-table-column label="状态" width="116"><template #default="{ row }"><el-tag :type="issueStatus(row).type" size="small">{{ issueStatus(row).text }}</el-tag></template></el-table-column>
@@ -1550,10 +1632,21 @@ onUnmounted(() => {
 .code-group-form__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
 .code-group-form__grid--options { grid-template-columns: 1.15fr 1fr 1fr; }
 .code-group-form__date-range { grid-column: 1 / -1; }
+.code-group-form__validity { grid-column: 1 / -1; }
 .code-group-form__code-type { grid-column: 1 / -1; }
 .code-group-form__market { grid-column: 1 / -1; }
 .date-presets { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .date-presets span { color: #667085; font-size: 12px; }
+.validity-editor { width: 100%; padding: 13px 14px; border: 1px solid #d0d5dd; border-radius: 9px; background: #fff; }
+.validity-editor__offsets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.validity-editor__offsets label { display: grid; grid-template-columns: auto auto minmax(110px, 1fr) auto; align-items: center; gap: 8px; color: #475467; font-size: 13px; }
+.validity-editor__formula { color: #667085; white-space: nowrap; }
+.validity-preview { display: grid; gap: 7px; margin-top: 12px; padding: 10px 12px; border-radius: 7px; background: #f5f8ff; color: #344054; font-size: 12px; }
+.validity-preview__heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.validity-preview__heading strong { color: #175cd3; font-size: 13px; }
+.validity-preview__heading span { color: #667085; }
+.validity-preview__row { display: grid; grid-template-columns: 90px minmax(150px, 1fr) auto minmax(150px, 1fr); align-items: center; gap: 8px; }
+.validity-preview__row code { padding: 3px 6px; border: 1px solid #d1e0ff; border-radius: 4px; background: #fff; color: #1849a9; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; }
 .field-note { margin: 6px 0 0; color: #667085; font-size: 12px; line-height: 1.5; }
 .field-note strong { color: #344054; font-weight: 600; }
 .field-note--danger { color: #b42318; }

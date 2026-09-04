@@ -53,7 +53,10 @@ public final class RedemptionDtos {
 
     /** Creates a local task sheet; the actual code configuration stays manual in the remote management backend. */
     public record ManualBatchCreateRequest(@NotNull Long campaignId, @NotNull LocalDate claimDateFrom,
-                                           @NotNull LocalDate claimDateTo, Long remoteConnectionId,
+                                           @NotNull LocalDate claimDateTo,
+                                           @Min(0) @Max(365) Integer validFromDayOffset,
+                                           @Min(0) @Max(365) Integer validToDayOffset,
+                                           Long remoteConnectionId,
                                            Map<Long, List<Long>> tierLabelIds,
                                            @Valid RemoteCreationOptionsRequest remoteOptions,
                                            RedemptionCodeType redemptionType) { }
@@ -66,6 +69,8 @@ public final class RedemptionDtos {
                                          @NotBlank @Size(max = 200) String name,
                                          @NotNull LocalDate claimDateFrom,
                                          @NotNull LocalDate claimDateTo,
+                                         @Min(0) @Max(365) Integer validFromDayOffset,
+                                         @Min(0) @Max(365) Integer validToDayOffset,
                                          @Min(1) @Max(60) Integer lookbackDays,
                                          @Size(max = 10000) String description,
                                          @NotEmpty List<@Valid TierRequest> tiers,
@@ -104,6 +109,7 @@ public final class RedemptionDtos {
                                 @NotBlank @Size(max = 255) String redemptionCode) { }
     public record CodeImportRequest(@NotEmpty List<@Valid CodeImportRow> rows) { }
     public record BatchResponse(Long id, Long campaignId, LocalDate claimDateFrom, LocalDate claimDateTo,
+                                Integer validFromDayOffset, Integer validToDayOffset,
                                 Integer lookbackDays, RedemptionCodeType redemptionType, Integer expectedCodeCount, String status, int pendingCreationCount,
                                 int createdCount, int publishedCount, int importedCount, Instant publishedAt,
                                 Long rowVersion, Instant createdAt, Long remoteConnectionId, String remoteConnectionName,

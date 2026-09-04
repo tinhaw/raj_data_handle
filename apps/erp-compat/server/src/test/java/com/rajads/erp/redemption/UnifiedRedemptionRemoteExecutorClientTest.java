@@ -40,6 +40,8 @@ class UnifiedRedemptionRemoteExecutorClientTest {
             assertThat(exchange.getRequestHeaders().getFirst("Upgrade")).isNull();
             JsonNode request = objectMapper.readTree(exchange.getRequestBody());
             assertThat(request.path("options").path("single_key_limit").asInt()).isEqualTo(3);
+            assertThat(request.path("valid_from").asText()).isEqualTo("2026-09-06");
+            assertThat(request.path("valid_to").asText()).isEqualTo("2026-09-07");
             assertThat(request.path("execution_confirmed").asBoolean()).isTrue();
 
             byte[] body = ("{\"remoteConfigurationId\":\"remote-123\","
@@ -66,6 +68,8 @@ class UnifiedRedemptionRemoteExecutorClientTest {
                                 31L,
                                 "test-create",
                                 LocalDate.of(2026, 9, 5),
+                                LocalDate.of(2026, 9, 6),
+                                LocalDate.of(2026, 9, 7),
                                 List.of(901091L),
                                 BigDecimal.valueOf(3),
                                 BigDecimal.valueOf(5),

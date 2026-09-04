@@ -559,6 +559,8 @@ function normalizeRedemptionBatch(raw: unknown): RedemptionCodeBatch {
     campaignId: value.campaignId as string | number,
     claimDateFrom: String(value.claimDateFrom || ''),
     claimDateTo: String(value.claimDateTo || ''),
+    validFromDayOffset: Number(value.validFromDayOffset ?? 0),
+    validToDayOffset: Number(value.validToDayOffset ?? 0),
     lookbackDays: Number(value.lookbackDays ?? 7),
     redemptionType: String(value.redemptionType || 'SEVEN_DAY_DEPOSIT') as RedemptionCodeBatch['redemptionType'],
     expectedCodeCount: Number(value.expectedCodeCount ?? 0),

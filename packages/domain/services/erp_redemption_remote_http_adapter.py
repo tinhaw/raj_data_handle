@@ -348,6 +348,8 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
         self._assert_grant(grant, "CREATE")
         options = command.options
         all_users = not command.label_ids
+        valid_from = command.valid_from or command.claim_date
+        valid_to = command.valid_to or command.claim_date
         payload: dict[str, Any] = {
             "flow_times": options.flow_times,
             "status": "2",
@@ -368,8 +370,8 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
             "login_ip_reward_limit": options.login_ip_reward_limit,
             "register_ip_reward_limit": options.register_ip_reward_limit,
             "valid_time": [
-                f"{command.claim_date:%Y-%m-%d} 00:00:00",
-                f"{command.claim_date:%Y-%m-%d} 23:59:59",
+                f"{valid_from:%Y-%m-%d} 00:00:00",
+                f"{valid_to:%Y-%m-%d} 23:59:59",
             ],
         }
         if not all_users:

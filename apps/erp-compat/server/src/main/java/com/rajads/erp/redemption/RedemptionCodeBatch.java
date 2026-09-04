@@ -18,6 +18,8 @@ public class RedemptionCodeBatch {
     @Column(name = "campaign_id", nullable = false) private Long campaignId;
     @Column(name = "claim_date_from", nullable = false) private LocalDate claimDateFrom;
     @Column(name = "claim_date_to", nullable = false) private LocalDate claimDateTo;
+    @Column(name = "valid_from_day_offset", nullable = false) private Integer validFromDayOffset = 0;
+    @Column(name = "valid_to_day_offset", nullable = false) private Integer validToDayOffset = 0;
     @Column(name = "lookback_days", nullable = false) private Integer lookbackDays;
     @Enumerated(EnumType.STRING)
     @Column(name = "redemption_type", nullable = false, length = 30)
