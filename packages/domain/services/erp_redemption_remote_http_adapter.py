@@ -109,7 +109,7 @@ def _success_payload(response: httpx.Response) -> object:
     return payload
 
 
-def _extract_single_code(content: bytes) -> str:
+def _extract_code_text(content: bytes, expected_count: int = 1) -> str:
     if not content.startswith(b"PK") or len(content) > MAX_EXPORT_BYTES:
         raise ErpRedemptionRemoteHttpError("远端兑换码文件为空、格式无效或超过限制。")
     try:
@@ -123,9 +123,9 @@ def _extract_single_code(content: bytes) -> str:
         if "兑换码号码" not in headers:
             raise ErpRedemptionRemoteHttpError("远端兑换码文件缺少兑换码号码列。")
         index = headers.index("兑换码号码")
-        codes = {
+        codes = [
             code for row in rows if index < len(row) and (code := _clean(row[index])) is not None
-        }
+        ]
     except ErpRedemptionRemoteHttpError:
         raise
     except Exception as exc:
@@ -133,9 +133,15 @@ def _extract_single_code(content: bytes) -> str:
     finally:
         if "workbook" in locals():
             workbook.close()
-    if len(codes) != 1:
-        raise ErpRedemptionRemoteHttpError("远端兑换码文件必须恰好包含一个兑换码。")
-    return next(iter(codes))
+    if len(codes) != expected_count:
+        raise ErpRedemptionRemoteHttpError(
+            f"远端兑换码文件应包含 {expected_count} 个兑换码，实际 {len(codes)} 个。"
+        )
+    if len(set(codes)) != len(codes) or any(
+        len(code) > 255 or "\n" in code or "\r" in code for code in codes
+    ):
+        raise ErpRedemptionRemoteHttpError("远端兑换码文件包含重复或无效号码。")
+    return "\n".join(codes)
 
 
 class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
@@ -188,9 +194,7 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
     def _assert_read_grant(
         self, grant: ErpRemoteAccountReadGrant, operation: Literal["CHECK", "TAGS"]
     ) -> None:
-        capability_valid = (
-            operation == "CHECK" and grant.capability == "ERP_REMOTE_CHECK"
-        ) or (
+        capability_valid = (operation == "CHECK" and grant.capability == "ERP_REMOTE_CHECK") or (
             operation == "TAGS" and grant.capability in {"ERP_TAG_READ", "ERP_TAG_SYNC"}
         )
         if (
@@ -292,9 +296,7 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
                 return _first_text(item, "group_key", "groupKey")
         return None
 
-    async def check_connection(
-        self, *, grant: ErpRemoteAccountReadGrant
-    ) -> tuple[str, str | None]:
+    async def check_connection(self, *, grant: ErpRemoteAccountReadGrant) -> tuple[str, str | None]:
         self._assert_read_grant(grant, "CHECK")
         _, request_id = await self._request(
             "GET",
@@ -433,7 +435,7 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
         if not isinstance(content, bytes):
             raise ErpRedemptionRemoteHttpError("远端兑换码下载响应无效。")
         return RemoteDownloadResult(
-            redemption_code=_extract_single_code(content),
+            redemption_code=_extract_code_text(content, command.key_number),
             remote_group_key=group_key,
             remote_request_id=request_id,
         )

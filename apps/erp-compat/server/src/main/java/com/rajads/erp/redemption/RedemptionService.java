@@ -30,6 +30,7 @@ public class RedemptionService {
     private final ObjectMapper objectMapper;
     private final CurrentUser currentUser;
     private final AuditService auditService;
+    private final RedemptionCodeStorage codeStorage;
 
     @Transactional(readOnly = true)
     public List<RedemptionDtos.CampaignResponse> campaigns() {
@@ -266,14 +267,15 @@ public class RedemptionService {
         if (!Set.of("PUBLISHED", "COMPLETED").contains(batch.getStatus())) {
             throw ApiException.conflict("BATCH_NOT_PUBLISHED", "请先在远端发布全部兑换码，再下载并导入兑换码");
         }
-        Set<String> configurationIds = new LinkedHashSet<>();
+        Map<String, List<String>> groupedCodes = new LinkedHashMap<>();
         Set<String> codes = new LinkedHashSet<>();
         for (RedemptionDtos.CodeImportRow row : request.rows()) {
             String configId = requiredText(row.remoteConfigurationId(), "远端兑换码配置 ID");
             String code = requiredText(row.redemptionCode(), "兑换码");
-            if (!configurationIds.add(configId)) throw ApiException.badRequest("DUPLICATE_REMOTE_CONFIGURATION_ID", "导入内容包含重复的远端配置 ID");
+            groupedCodes.computeIfAbsent(configId, ignored -> new ArrayList<>()).add(code);
             if (!codes.add(code)) throw ApiException.badRequest("DUPLICATE_REDEMPTION_CODE", "导入内容包含重复的兑换码");
         }
+        Set<String> configurationIds = groupedCodes.keySet();
         List<RedemptionCodeIssue> issues = issueRepository.findByBatchIdAndRemoteConfigurationIdIn(batchId, configurationIds);
         if (issues.size() != configurationIds.size()) {
             throw ApiException.badRequest("UNKNOWN_REMOTE_CONFIGURATION_ID", "导入内容中存在不属于该批次或尚未登记的远端配置 ID");
@@ -281,20 +283,12 @@ public class RedemptionService {
         Map<String, RedemptionCodeIssue> byConfig = new HashMap<>();
         issues.forEach(issue -> byConfig.put(issue.getRemoteConfigurationId(), issue));
         int imported = 0;
-        for (RedemptionDtos.CodeImportRow row : request.rows()) {
-            RedemptionCodeIssue issue = byConfig.get(row.remoteConfigurationId().trim());
+        for (Map.Entry<String, List<String>> entry : groupedCodes.entrySet()) {
+            RedemptionCodeIssue issue = byConfig.get(entry.getKey());
             if (!Set.of("PUBLISHED", "CODE_IMPORTED").contains(issue.getWorkflowStatus())) {
                 throw ApiException.conflict("CODE_TASK_NOT_PUBLISHED", "存在尚未发布的兑换码任务，不能导入");
             }
-            String code = row.redemptionCode().trim();
-            issueRepository.findByRedemptionCode(code).ifPresent(other -> {
-                if (!Objects.equals(other.getId(), issue.getId())) throw ApiException.conflict("REDEMPTION_CODE_EXISTS", "兑换码已保存到其他任务");
-            });
-            if ("CODE_IMPORTED".equals(issue.getWorkflowStatus()) && !code.equals(issue.getRedemptionCode())) {
-                throw ApiException.conflict("REDEMPTION_CODE_LOCKED", "该远端配置 ID 已导入其他兑换码，不能覆盖");
-            }
-            if (!"CODE_IMPORTED".equals(issue.getWorkflowStatus())) imported++;
-            issue.setRedemptionCode(code);
+            imported += codeStorage.store(issue, batch, entry.getValue());
             issue.setWorkflowStatus("CODE_IMPORTED");
             issue.setState("GENERATED");
             issue.setGeneratedAt(Instant.now());
@@ -358,7 +352,7 @@ public class RedemptionService {
                 .stream().map(this::tierResponse).toList();
         return new RedemptionDtos.CampaignResponse(campaign.getId(), campaign.getCode(), campaign.getName(), campaign.getStatus(),
                 campaign.getLookbackDays(), campaign.getDescription(), tiers,
-                issueRepository.countByCampaignIdAndState(campaign.getId(), "GENERATED"),
+                issueRepository.countImportedCodesByCampaignId(campaign.getId()),
                 issueRepository.countByCampaignIdAndState(campaign.getId(), "FAILED"), campaign.getRowVersion(),
                 campaign.getCreatedAt(), campaign.getUpdatedAt());
     }
@@ -371,7 +365,7 @@ public class RedemptionService {
     private RedemptionDtos.CodeIssueResponse issueResponse(RedemptionCodeIssue issue) {
         return new RedemptionDtos.CodeIssueResponse(issue.getId(), issue.getCampaignId(), issue.getCampaignTierId(), issue.getTierName(),
                 issue.getMinDepositAmount(), issue.getBonusAmount(), issue.getClaimDate(), issue.getDepositWindowStart(),
-                issue.getDepositWindowEnd(), issue.getRedemptionCode(), issue.getState(), issue.getRemoteReferenceId(),
+                issue.getDepositWindowEnd(), issue.getCodes().isEmpty() ? null : String.join("\n", issue.getCodes()), issue.getState(), issue.getRemoteReferenceId(),
                 issue.getRemoteError(), issue.getGeneratedAt(), issue.getRowVersion(), issue.getBonusMaxAmount(), issue.getBatchId(),
                 issue.getWorkflowStatus(), issue.getRemoteConfigurationId(), issue.getRemoteGroupKey(), parseLabelIds(issue.getRemoteLabelIdsJson()));
     }
@@ -483,7 +477,7 @@ public class RedemptionService {
     }
 
     private RedemptionDtos.RemoteCreationOptionsResponse remoteOptionsResponse(RedemptionCodeBatch batch) {
-        if (batch.getRemoteConnectionId() == null) return null;
+        if (batch.getRemoteConnectionId() == null && batch.getRemoteKeyNumber() == null) return null;
         return new RedemptionDtos.RemoteCreationOptionsResponse(batch.getRemotePublishEnvironment(), batch.getRemoteFlowTimes(), batch.getRemoteCreationIntervalSeconds(),
                 batch.getRemoteActivityRecharge(), batch.getRemoteActivityRechargeCount(), batch.getRemoteActivityId(),
                 batch.getRemoteKeyNumber(), batch.getRemoteSingleUserLimit(), batch.getRemoteSingleKeyLimit(),

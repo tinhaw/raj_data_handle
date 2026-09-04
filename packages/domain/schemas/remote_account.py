@@ -127,7 +127,7 @@ class ErpCompatibilityRemoteCreateOptions(ApiSchema):
     activity_recharge: Decimal | None = Field(default=None, ge=0, max_digits=24, decimal_places=8)
     activity_recharge_count: int | None = Field(default=None, ge=0, le=100_000)
     activity_id: int | None = Field(default=None, ge=1)
-    key_number: int = Field(ge=1, le=1)
+    key_number: int = Field(default=1, ge=1, le=1000)
     single_user_limit: int = Field(ge=1, le=100)
     single_key_limit: int = Field(ge=1, le=100_000)
     require_bind_bank_card: bool
@@ -190,6 +190,20 @@ class ErpCompatibilityRemoteCreateResponse(ApiSchema):
     remote_configuration_id: str
     remote_group_key: str | None = None
     remote_request_id: str | None = None
+
+
+class ErpCompatibilityRemoteDownloadRequest(ApiSchema):
+    account_id: int = Field(ge=1)
+    issue_id: int = Field(ge=1)
+    remote_configuration_id: str = Field(min_length=1, max_length=255)
+    remote_group_key: str | None = Field(default=None, max_length=255)
+    key_number: int = Field(default=1, ge=1, le=1000)
+    execution_confirmed: bool = False
+
+
+class ErpCompatibilityRemoteDownloadResponse(ApiSchema):
+    redemption_codes: list[str]
+    remote_group_key: str | None = None
 
 
 class ErpCompatibilityRemotePublishRequest(ApiSchema):

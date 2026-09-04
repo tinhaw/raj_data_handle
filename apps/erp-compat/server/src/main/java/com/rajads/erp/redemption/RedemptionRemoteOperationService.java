@@ -45,6 +45,7 @@ public class RedemptionRemoteOperationService {
     private final AuditService auditService;
     private final PlatformTransactionManager transactionManager;
     private final RemoteOperationGate remoteOperationGate;
+    private final RedemptionCodeStorage codeStorage;
 
     public Long createConfiguration(Long issueId, boolean retryFailed) {
         UnifiedRedemptionRemoteExecutorClient executor = unifiedRemoteExecutorClient.getIfAvailable();
@@ -200,6 +201,17 @@ public class RedemptionRemoteOperationService {
     }
 
     public Long downloadCode(Long issueId) {
+        UnifiedRedemptionRemoteExecutorClient executor = unifiedRemoteExecutorClient.getIfAvailable();
+        if (executor != null) {
+            DownloadContext context = required(tx().execute(status -> prepareDownload(issueId)));
+            try {
+                var result = executor.download(context.accountId(), issueId, context.configurationId(), context.groupKey(), context.keyNumber());
+                return required(tx().execute(status -> completeDownload(issueId, result.groupKey(), String.join("\n", result.codes()))));
+            } catch (RuntimeException exception) {
+                tx().executeWithoutResult(status -> failDownload(issueId, limit(exception.getMessage())));
+                throw exception;
+            }
+        }
         remoteOperationGate.requireEnabled("remote_download");
         DownloadContext context = required(tx().execute(status -> prepareDownload(issueId)));
         try {
@@ -211,9 +223,10 @@ public class RedemptionRemoteOperationService {
             String code = remoteClient.downloadCode(context.connection(), groupKey);
             final String finalGroupKey = groupKey;
             return required(tx().execute(status -> completeDownload(issueId, finalGroupKey, code)));
-        } catch (RemoteGiftCodeBackendClient.RemoteGiftCodeException exception) {
+        } catch (RuntimeException exception) {
             String error = limit(exception.getMessage());
             tx().executeWithoutResult(status -> failDownload(issueId, error));
+            if (exception instanceof ApiException apiException) throw apiException;
             throw ApiException.badRequest("REMOTE_CODE_DOWNLOAD_FAILED", error);
         }
     }
@@ -477,7 +490,10 @@ public class RedemptionRemoteOperationService {
             throw ApiException.conflict("REMOTE_DOWNLOAD_NOT_ALLOWED", "请先发布该远端兑换码配置");
         }
         if (issue.getRemoteConfigurationId() == null) throw ApiException.conflict("REMOTE_CONFIGURATION_ID_REQUIRED", "该任务没有远端配置 ID");
-        return new DownloadContext(batch.getId(), requireEnabledConnection(batch), issue.getRemoteConfigurationId(), issue.getRemoteGroupKey(), remoteDescription(batch, issue));
+        remoteDirectory.requireEnabled(batch.getRemoteConnectionId());
+        return new DownloadContext(batch.getId(), unifiedRemoteExecutorClient.getIfAvailable() == null ? requireEnabledConnection(batch) : null,
+                issue.getRemoteConfigurationId(), issue.getRemoteGroupKey(), remoteDescription(batch, issue),
+                batch.getRemoteConnectionId(), batch.getRemoteKeyNumber() == null ? 1 : batch.getRemoteKeyNumber());
     }
 
     /**
@@ -502,11 +518,8 @@ public class RedemptionRemoteOperationService {
     private Long completeDownload(Long issueId, String groupKey, String code) {
         RedemptionCodeIssue issue = requireIssue(issueId);
         RedemptionCodeBatch batch = requireRemoteBatch(issue);
-        issueRepository.findByRedemptionCode(code).ifPresent(other -> {
-            if (!Objects.equals(other.getId(), issue.getId())) throw ApiException.conflict("REDEMPTION_CODE_EXISTS", "远端下载的兑换码已保存到其他任务");
-        });
+        codeStorage.store(issue, batch, code == null ? List.of() : code.lines().toList());
         issue.setRemoteGroupKey(groupKey);
-        issue.setRedemptionCode(code);
         issue.setWorkflowStatus("CODE_IMPORTED");
         issue.setState("GENERATED");
         issue.setRemoteError(null);
@@ -603,5 +616,6 @@ public class RedemptionRemoteOperationService {
     private record RemoteBatchContext(Long accountId, RedemptionRemoteConnection connection, RemoteCreationOptions options, boolean scheduled,
                                       LocalDateTime scheduledTime, String note, String publishTaskId,
                                       boolean fallbackToScheduled) { }
-    private record DownloadContext(Long batchId, RedemptionRemoteConnection connection, String configurationId, String groupKey, String description) { }
+    private record DownloadContext(Long batchId, RedemptionRemoteConnection connection, String configurationId, String groupKey,
+                                   String description, Long accountId, int keyNumber) { }
 }

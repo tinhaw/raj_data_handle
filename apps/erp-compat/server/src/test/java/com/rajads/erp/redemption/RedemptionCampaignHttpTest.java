@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rajads.erp.config.RemoteOperationGate;
 import com.rajads.erp.shared.ApiException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -286,15 +288,16 @@ class RedemptionCampaignHttpTest {
                 .andExpect(result -> assertThat(result.getResponse().getContentAsByteArray()).isNotEmpty());
     }
 
-    @Test
-    void adminCanRunTheConfiguredRemoteCreatePublishAndDownloadSequence() throws Exception {
+    @ParameterizedTest
+    @ValueSource(ints = {1, 5})
+    void adminCanRunTheConfiguredRemoteCreatePublishAndDownloadSequence(int keyNumber) throws Exception {
         MockHttpSession session = login();
         MvcResult marketResult = mockMvc.perform(post("/api/v1/redemption-remote-markets").session(session)
                         .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON).content("""
-                                {"code":"REMOTE_TEST_MARKET","name":"Remote Test Market","baseUrl":"https://remote.example.com","enabled":true}
-                                """))
+                                {"code":"REMOTE_TEST_MARKET_%d","name":"Remote Test Market","baseUrl":"https://remote-%d.example.com","enabled":true}
+                                """.formatted(keyNumber, keyNumber)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.baseUrl").value("https://remote.example.com"))
+                .andExpect(jsonPath("$.data.baseUrl").value("https://remote-" + keyNumber + ".example.com"))
                 .andReturn();
         long marketId = data(marketResult).path("id").asLong();
         MvcResult connectionResult = mockMvc.perform(post("/api/v1/redemption-remote-connections").session(session)
@@ -311,9 +314,9 @@ class RedemptionCampaignHttpTest {
 
         MvcResult campaignResult = mockMvc.perform(post("/api/v1/redemption-campaigns").session(session)
                         .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON).content("""
-                                {"code":"remote_flow_aug","name":"自动远端领码","lookbackDays":7,
+                                {"code":"remote_flow_aug_%d","name":"自动远端领码","lookbackDays":7,
                                  "tiers":[{"displayName":"充值100","minDepositAmount":100,"bonusAmount":5,"bonusMaxAmount":17,"sortOrder":1}]}
-                                """))
+                                """.formatted(keyNumber)))
                 .andExpect(status().isOk()).andReturn();
         JsonNode campaign = data(campaignResult);
         long campaignId = campaign.path("id").asLong();
@@ -325,24 +328,28 @@ class RedemptionCampaignHttpTest {
         long tierId = campaign.at("/tiers/0/id").asLong();
         MvcResult batchResult = mockMvc.perform(post("/api/v1/redemption-campaigns/batches").session(session)
                         .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"campaignId\":" + campaignId + ",\"claimDateFrom\":\"2026-08-22\",\"claimDateTo\":\"2026-08-22\",\"remoteConnectionId\":" + connectionId + ",\"tierLabelIds\":{\"" + tierId + "\":[901026]},\"remoteOptions\":{\"publishEnvironment\":\"test\",\"flowTimes\":5,\"creationIntervalSeconds\":5,\"keyNumber\":1,\"singleUserLimit\":1,\"singleKeyLimit\":2000,\"requireBindBankCard\":false,\"requireBindPhone\":true,\"checkUuid\":true,\"uuidRewardLimit\":1,\"checkLoginIp\":true,\"loginIpRewardLimit\":1,\"checkRegisterIp\":true,\"registerIpRewardLimit\":1}}"))
+                        .content("{\"campaignId\":" + campaignId + ",\"claimDateFrom\":\"2026-08-22\",\"claimDateTo\":\"2026-08-22\",\"remoteConnectionId\":" + connectionId + ",\"tierLabelIds\":{\"" + tierId + "\":[901026]},\"remoteOptions\":{\"publishEnvironment\":\"test\",\"flowTimes\":5,\"creationIntervalSeconds\":5,\"keyNumber\":" + keyNumber + ",\"singleUserLimit\":1,\"singleKeyLimit\":2,\"requireBindBankCard\":false,\"requireBindPhone\":true,\"checkUuid\":true,\"uuidRewardLimit\":1,\"checkLoginIp\":true,\"loginIpRewardLimit\":1,\"checkRegisterIp\":true,\"registerIpRewardLimit\":1}}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.batch.remoteConnectionName").value("remote-admin"))
                 .andExpect(jsonPath("$.data.batch.remoteOptions.flowTimes").value(5))
+                .andExpect(jsonPath("$.data.batch.plannedCodeCount").value(keyNumber))
+                .andExpect(jsonPath("$.data.batch.expectedCodeCount").value(1))
                 .andReturn();
         JsonNode detail = data(batchResult);
         long issueId = detail.at("/issues/0/id").asLong();
-        when(remoteGiftCodeBackendClient.create(any(), any())).thenReturn(new RemoteGiftCodeBackendClient.CreatedConfiguration("1563", null));
+        String configurationId = "1563-" + keyNumber;
+        when(remoteGiftCodeBackendClient.create(any(), any())).thenReturn(new RemoteGiftCodeBackendClient.CreatedConfiguration(configurationId, null));
         when(remoteGiftCodeBackendClient.findGroupKey(any(), any(), any())).thenReturn("group-1563");
         MvcResult createdResult = mockMvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + issueId + "/remote-create").session(session)
                         .with(SecurityMockMvcRequestPostProcessors.csrf()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.issues[0].remoteConfigurationId").value("1563"))
+                .andExpect(jsonPath("$.data.issues[0].remoteConfigurationId").value(configurationId))
                 .andExpect(jsonPath("$.data.batch.status").value("READY_TO_PUBLISH"))
                 .andReturn();
         ArgumentCaptor<RemoteGiftCodeBackendClient.CreateConfigurationRequest> createRequest = ArgumentCaptor.forClass(RemoteGiftCodeBackendClient.CreateConfigurationRequest.class);
         verify(remoteGiftCodeBackendClient).create(any(), createRequest.capture());
         assertThat(createRequest.getValue().description()).isEqualTo("NEW-815到821存款100");
+        assertThat(createRequest.getValue().options().keyNumber()).isEqualTo(keyNumber);
         JsonNode createdDetail = data(createdResult);
         when(remoteGiftCodeBackendClient.publishAll(any(), any(), anyBoolean(), any())).thenReturn("17687");
         String scheduledTime = LocalDateTime.now(ZoneId.of("Asia/Kolkata")).plusHours(1).withNano(0)
@@ -376,12 +383,36 @@ class RedemptionCampaignHttpTest {
                 .andReturn();
         assertThat(data(publishedResult).at("/batch/status").asText()).isEqualTo("PUBLISHED");
 
-        when(remoteGiftCodeBackendClient.downloadCode(any(), any())).thenReturn("REMOTE-CODE-1");
+        List<String> downloadedCodes = java.util.stream.IntStream.range(0, keyNumber)
+                .mapToObj(index -> "REMOTE-CODE-" + keyNumber + "-" + index).toList();
+        if (keyNumber > 1) {
+            when(remoteGiftCodeBackendClient.downloadCode(any(), any())).thenReturn(downloadedCodes.getFirst());
+            mockMvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + issueId + "/remote-download").session(session)
+                            .with(SecurityMockMvcRequestPostProcessors.csrf()))
+                    .andExpect(status().isBadRequest());
+            mockMvc.perform(get("/api/v1/redemption-campaigns/batches/" + createdDetail.at("/batch/id").asLong()).session(session))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.batch.status").value("PUBLISHED"))
+                    .andExpect(jsonPath("$.data.batch.importedCodeCount").value(0));
+        }
+        when(remoteGiftCodeBackendClient.downloadCode(any(), any())).thenReturn(String.join("\n", downloadedCodes));
         mockMvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + issueId + "/remote-download").session(session)
                         .with(SecurityMockMvcRequestPostProcessors.csrf()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.batch.status").value("COMPLETED"))
-                .andExpect(jsonPath("$.data.issues[0].redemptionCode").value("REMOTE-CODE-1"));
+                .andExpect(jsonPath("$.data.batch.importedCount").value(1))
+                .andExpect(jsonPath("$.data.batch.importedCodeCount").value(keyNumber))
+                .andExpect(jsonPath("$.data.issues[0].redemptionCodes.length()").value(keyNumber))
+                .andExpect(jsonPath("$.data.issues[0].redemptionCode").value(String.join("\n", downloadedCodes)));
+
+        var rows = downloadedCodes.stream().map(code -> java.util.Map.of(
+                "remoteConfigurationId", configurationId, "redemptionCode", code)).toList();
+        mockMvc.perform(post("/api/v1/redemption-campaigns/batches/" + createdDetail.at("/batch/id").asLong() + "/codes/import")
+                        .session(session).with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(java.util.Map.of("rows", rows))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.importedCount").value(0))
+                .andExpect(jsonPath("$.data.batch.importedCodeCount").value(keyNumber));
 
         mockMvc.perform(get("/api/v1/redemption-campaigns/batches/" + createdDetail.at("/batch/id").asLong() + "/export").session(session))
                 .andExpect(status().isOk())

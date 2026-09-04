@@ -49,7 +49,12 @@ public final class RedemptionDtos {
                                     LocalDate depositWindowStart, LocalDate depositWindowEnd, String redemptionCode,
                                     String state, String remoteReferenceId, String remoteError, Instant generatedAt,
                                     Long rowVersion, BigDecimal bonusMaxAmount, Long batchId, String workflowStatus,
-                                    String remoteConfigurationId, String remoteGroupKey, List<Long> remoteLabelIds) { }
+                                    String remoteConfigurationId, String remoteGroupKey, List<Long> remoteLabelIds) {
+        @com.fasterxml.jackson.annotation.JsonProperty
+        public List<String> redemptionCodes() {
+            return redemptionCode == null ? List.of() : redemptionCode.lines().filter(code -> !code.isBlank()).toList();
+        }
+    }
 
     /** Creates a local task sheet; the actual code configuration stays manual in the remote management backend. */
     public record ManualBatchCreateRequest(@NotNull Long campaignId, @NotNull LocalDate claimDateFrom,
@@ -87,7 +92,7 @@ public final class RedemptionDtos {
             @Min(0) BigDecimal activityRecharge,
             @Min(0) @Max(100000) Integer activityRechargeCount,
             @Min(1) Long activityId,
-            @NotNull @Min(1) @Max(1) Integer keyNumber,
+            @NotNull @Min(1) @Max(1000) Integer keyNumber,
             @NotNull @Min(1) @Max(100) Integer singleUserLimit,
             @NotNull @Min(1) @Max(100000) Integer singleKeyLimit,
             @NotNull Boolean requireBindBankCard, @NotNull Boolean requireBindPhone,
@@ -118,7 +123,14 @@ public final class RedemptionDtos {
                                 String remotePublishTaskId, String remotePublishError, String remotePublishMode,
                                 java.time.LocalDateTime remoteScheduledPublishAt, String remotePublishNote,
                                 Instant remotePublishCancelledAt, RemoteCreationOptionsResponse remoteOptions,
-                                Long taskId) { }
+                                Long taskId) {
+        /** Historical expectedCodeCount/importedCount count configurations, not individual codes. */
+        @com.fasterxml.jackson.annotation.JsonProperty
+        public int plannedCodeCount() { return expectedCodeCount * codesPerGroup(); }
+        @com.fasterxml.jackson.annotation.JsonProperty
+        public int importedCodeCount() { return importedCount * codesPerGroup(); }
+        private int codesPerGroup() { return remoteOptions == null || remoteOptions.keyNumber() == null ? 1 : remoteOptions.keyNumber(); }
+    }
     public record BatchDetailResponse(BatchResponse batch, List<CodeIssueResponse> issues) { }
     public record CodeImportResponse(int importedCount, BatchResponse batch, List<CodeIssueResponse> issues) { }
 

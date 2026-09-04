@@ -16,8 +16,10 @@ from packages.domain.services.erp_redemption_remote_adapter import (
 )
 from packages.domain.services.erp_redemption_remote_gate import ErpRemoteExecutionGrant
 from packages.domain.services.erp_redemption_remote_http_adapter import (
+    ErpRedemptionRemoteHttpError,
     ErpRemoteAccountReadGrant,
     RajAdminGiftCodeAdapter,
+    _extract_code_text,
 )
 
 
@@ -40,6 +42,20 @@ def _options() -> RemoteCreationOptions:
         check_register_ip=True,
         register_ip_reward_limit=1,
     )
+
+
+@pytest.mark.parametrize(
+    "codes,expected_count", [([], 1), (["A"], 5), (["A", "A"], 2), (["A\nB"], 1)]
+)
+def test_download_rejects_incomplete_duplicate_or_invalid_codes(codes, expected_count):
+    workbook = Workbook()
+    workbook.active.append(["兑换码号码"])
+    for code in codes:
+        workbook.active.append([code])
+    output = BytesIO()
+    workbook.save(output)
+    with pytest.raises(ErpRedemptionRemoteHttpError):
+        _extract_code_text(output.getvalue(), expected_count)
 
 
 @pytest.mark.asyncio
@@ -148,11 +164,14 @@ async def test_http_adapter_maps_all_users_without_a_label_array() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_adapter_downloads_exactly_one_code() -> None:
+@pytest.mark.parametrize("key_number", [1, 5])
+async def test_http_adapter_downloads_all_requested_codes(key_number: int) -> None:
     workbook = Workbook()
     sheet = workbook.active
     sheet.append(["兑换码号码"])
-    sheet.append(["RAJ-TEST-CODE"])
+    codes = [f"RAJ-TEST-CODE-{index}" for index in range(key_number)]
+    for code in codes:
+        sheet.append([code])
     buffer = BytesIO()
     workbook.save(buffer)
 
@@ -186,9 +205,10 @@ async def test_http_adapter_downloads_exactly_one_code() -> None:
                 issue_id="issue-1",
                 remote_configuration_id="cfg-1",
                 remote_group_key="group-1",
+                key_number=key_number,
             ),
         )
-    assert result.redemption_code == "RAJ-TEST-CODE"
+    assert result.redemption_code.splitlines() == codes
 
 
 @pytest.mark.asyncio

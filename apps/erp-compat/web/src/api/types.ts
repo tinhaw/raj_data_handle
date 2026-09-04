@@ -335,6 +335,9 @@ export interface RedemptionCodeBatch {
   lookbackDays: number
   redemptionType: RedemptionCodeType
   expectedCodeCount: number
+  /** Number of individual codes; expectedCodeCount remains the configuration count. */
+  plannedCodeCount: number
+  importedCodeCount: number
   status: RedemptionBatchStatus
   pendingCreationCount: number
   createdCount: number
@@ -394,7 +397,7 @@ export interface RedemptionRemoteCreationOptions {
   activityRecharge?: number
   activityRechargeCount?: number
   activityId?: number
-  /** The supplied remote API creates one code per configuration. */
+  /** Codes generated per remote configuration (key_number), default 1. */
   keyNumber: number
   singleUserLimit: number
   singleKeyLimit: number

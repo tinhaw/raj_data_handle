@@ -18,6 +18,7 @@ from packages.common.settings import Settings
 from packages.domain.models import RemoteAccount, SourceConfig
 from packages.domain.schemas.remote_account import (
     ErpCompatibilityRemoteCreateRequest,
+    ErpCompatibilityRemoteDownloadRequest,
     ErpCompatibilityRemotePublishRequest,
 )
 from packages.domain.services.auth_service import write_audit
@@ -29,6 +30,8 @@ from packages.domain.services.erp_redemption_remote_adapter import (
     RemoteCreateCommand,
     RemoteCreateResult,
     RemoteCreationOptions,
+    RemoteDownloadCommand,
+    RemoteDownloadResult,
     RemotePublishCommand,
     RemotePublishResult,
 )
@@ -184,6 +187,85 @@ async def execute_compatibility_remote_create(
         remote_group_key=result.remote_group_key,
         remote_request_id=result.remote_request_id,
     )
+
+
+async def execute_compatibility_remote_download(
+    session: AsyncSession,
+    *,
+    payload: ErpCompatibilityRemoteDownloadRequest,
+    actor_user_id: int,
+    settings: Settings,
+    transport=None,
+) -> RemoteDownloadResult:
+    try:
+        account_id = await resolve_erp_compatibility_id(
+            session, entity_type="remote_account", legacy_id=payload.account_id
+        )
+        grant = await authorize_erp_redemption_remote_execution(
+            session,
+            account_id=account_id,
+            operation="DOWNLOAD",
+            execution_authorized=payload.execution_confirmed,
+        )
+        account = await session.get(RemoteAccount, account_id)
+        source = await session.get(SourceConfig, grant.source_id)
+        if account is None or source is None or not source.base_url:
+            raise ErpCompatibilityRemoteExecutionError("统一远端账号或盘口配置不可用。")
+        envelope = credential_envelope_for_account(account=account, source=source)
+        if envelope is None:
+            raise ErpCompatibilityRemoteExecutionError("统一远端账号凭据配置不完整。")
+        credentials = decrypt_remote_account_credentials(envelope, settings=settings)
+        async with RajAdminGiftCodeAdapter(
+            account_id=account.id,
+            source_id=source.source_id,
+            base_url=source.base_url,
+            username=credentials["username"],
+            password=credentials["password"],
+            totp_secret=credentials["totp_secret"],
+            business_timezone=settings.default_business_timezone,
+            transport=transport,
+        ) as adapter:
+            result = await adapter.download(
+                grant=grant,
+                command=RemoteDownloadCommand(
+                    issue_id=str(payload.issue_id),
+                    remote_configuration_id=payload.remote_configuration_id,
+                    remote_group_key=payload.remote_group_key,
+                    key_number=payload.key_number,
+                ),
+            )
+    except (
+        ErpCompatibilityRemoteExecutionError,
+        ErpCompatibilityIdError,
+        ErpRemoteExecutionGateError,
+        RemoteAccountCredentialsError,
+        ErpRedemptionRemoteHttpError,
+    ) as exc:
+        await write_audit(
+            session,
+            action="erp_compatibility_redemption.remote_download",
+            actor_user_id=actor_user_id,
+            target_type="erp_compatibility_remote_account",
+            target_id=str(payload.account_id),
+            result="failure",
+            metadata={"issue_id": payload.issue_id, "operation": "DOWNLOAD"},
+        )
+        await session.commit()
+        raise ErpCompatibilityRemoteExecutionError(str(exc)) from exc
+    await write_audit(
+        session,
+        action="erp_compatibility_redemption.remote_download",
+        actor_user_id=actor_user_id,
+        target_type="remote_account",
+        target_id=account.id,
+        metadata={
+            "issue_id": payload.issue_id,
+            "operation": "DOWNLOAD",
+            "code_count": payload.key_number,
+        },
+    )
+    await session.commit()
+    return result
 
 
 async def execute_compatibility_remote_publish(

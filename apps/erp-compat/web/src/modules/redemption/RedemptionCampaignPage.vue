@@ -520,7 +520,7 @@ function groupStatus(row: CodeGroupRow) {
 }
 function groupProgress(row: CodeGroupRow) {
   const batch = row.detail.batch
-  if (isSuccess(row)) return `${batch.importedCount} / ${batch.expectedCodeCount} 个兑换码已入库`
+  if (isSuccess(row)) return `${batch.importedCodeCount} / ${batch.plannedCodeCount} 个兑换码已入库`
   if (batch.remotePublishError) return `远端发布失败：${batch.remotePublishError}`
   if (hasScheduledPublishReached(row)) return '定时发布已到时，可开始下载兑换码'
   if (isScheduledPublish(row)) return `定时发布：${formatIndiaDateTime(batch.remoteScheduledPublishAt)}`
@@ -579,8 +579,9 @@ function taskProgress(task: CodeGroupTask) {
   if (!isMultiMarketTask(task)) return groupProgress(taskPrimary(task))
   const expected = task.members.reduce((total, member) => total + member.detail.batch.expectedCodeCount, 0)
   const created = task.members.reduce((total, member) => total + member.detail.batch.createdCount, 0)
-  const imported = task.members.reduce((total, member) => total + member.detail.batch.importedCount, 0)
-  if (task.members.every(isSuccess)) return `${imported} / ${expected} 个兑换码已入库`
+  const imported = task.members.reduce((total, member) => total + member.detail.batch.importedCodeCount, 0)
+  const plannedCodes = task.members.reduce((total, member) => total + member.detail.batch.plannedCodeCount, 0)
+  if (task.members.every(isSuccess)) return `${imported} / ${plannedCodes} 个兑换码已入库`
   if (task.members.every((member) => member.detail.batch.status === 'PUBLISHED')) {
     const published = task.members.reduce((total, member) => total + member.detail.batch.publishedCount, 0)
     return `${published} / ${expected} 条远端配置已发布，待下载兑换码`
@@ -624,7 +625,8 @@ function hasScheduledPublishReached(row: CodeGroupRow) {
   return isScheduledPublish(row) && Boolean(scheduledTime) && formatIndiaDateTime(scheduledTime) <= indiaNow.value
 }
 function canDownloadScheduledCodes(row: CodeGroupRow) {
-  return hasScheduledPublishReached(row) && row.detail.issues.some((issue) => issue.workflowStatus === 'CREATED' || issue.workflowStatus === 'PUBLISHED')
+  return row.detail.issues.some((issue) => issue.workflowStatus === 'PUBLISHED')
+    || (hasScheduledPublishReached(row) && row.detail.issues.some((issue) => issue.workflowStatus === 'CREATED'))
 }
 function publishTime(row: CodeGroupRow) {
   const batch = row.detail.batch
@@ -1008,6 +1010,8 @@ function wait(milliseconds: number) {
 }
 
 function validateForm() {
+  const keyNumber = form.value.remoteOptions.keyNumber
+  if (!Number.isInteger(keyNumber) || keyNumber < 1 || keyNumber > 1000) return '每组兑换码数量请输入 1–1000 的整数'
   const [from, to] = form.value.dateRange || []
   if (!from || !to || to < from) return '请选择有效的兑换日期范围'
   const [validFromDayOffset, validToDayOffset] = validityOffsets.value
@@ -1034,7 +1038,7 @@ async function createCodeGroup() {
   if (message) { ElMessage.warning(message); return }
   try {
     await ElMessageBox.confirm(
-      `系统会将 ${form.value.remoteMarketIds.length} 个盘口汇总为一条任务，并按盘口顺序串行创建远端配置；兑换码生效规则为“${validityRuleSummary.value}”。后续发布仍按盘口分别执行全量发布，并可能发布该盘口所有待发布的兑换码配置，请确认各远端后台不存在不应发布的内容。`,
+      `系统会将 ${form.value.remoteMarketIds.length} 个盘口汇总为一条任务，并按盘口顺序串行创建 ${expectedTaskCount()} 组远端配置，每组 ${form.value.remoteOptions.keyNumber} 个码，共 ${expectedTaskCount() * form.value.remoteOptions.keyNumber} 个兑换码；生效规则为“${validityRuleSummary.value}”。后续发布仍按盘口分别执行全量发布，并可能发布该盘口所有待发布的兑换码配置，请确认各远端后台不存在不应发布的内容。`,
       '确认批量生成兑换码组',
       { type: 'warning', confirmButtonText: '确认并开始生成', cancelButtonText: '取消' },
     )
@@ -1185,7 +1189,7 @@ async function submitPublish() {
         const replacement = { campaign: row.campaign, detail }
         replaceCodeGroup(replacement)
         if (detail.batch.remotePublishMode !== 'SCHEDULED' && detail.batch.status === 'PUBLISHED') {
-          await downloadPublishedCodes(replacement, false, true)
+          if (!await downloadPublishedCodes(replacement, false, true)) failures.push(`${remoteMarketLabel(row)}：已发布，部分兑换码下载失败，请重试下载`)
         }
       } catch (error) {
         failures.push(`${remoteMarketLabel(row)}：${error instanceof Error ? error.message : '发布失败'}`)
@@ -1211,6 +1215,7 @@ async function downloadPublishedCodes(row: CodeGroupRow, activateScheduled = fal
     for (const issue of downloadableIssues) try { detail = await api.redemption.downloadRemoteCode(issue.id) } catch { failed = true }
     replaceCodeGroup({ campaign: row.campaign, detail })
     if (!silent) ElMessage[failed ? 'warning' : 'success'](failed ? '部分兑换码下载失败，请查看任务备注' : '兑换码组生成成功，已可下载 Excel')
+    return !failed
   } finally { markProcessing(detail.batch.id, false); await loadCodeGroups() }
 }
 
@@ -1543,7 +1548,7 @@ onUnmounted(() => {
               </el-form-item>
               <el-form-item label="流水倍数"><el-input-number v-model="form.remoteOptions.flowTimes" :min="0" :max="1000" controls-position="right" /></el-form-item>
               <el-form-item label="串行间隔时间"><el-input-number v-model="form.remoteOptions.creationIntervalSeconds" :min="1" :max="60" controls-position="right" /><span class="field-unit">秒</span><p class="field-note">每条远端配置创建请求的最小间隔，默认 5 秒。</p></el-form-item>
-              <el-form-item label="兑换码数量"><el-input-number v-model="form.remoteOptions.keyNumber" :min="1" :max="1" controls-position="right" disabled /></el-form-item>
+              <el-form-item label="每组兑换码数量（邀请码数量）"><el-input-number v-model="form.remoteOptions.keyNumber" :min="1" :max="1000" :precision="0" step-strictly controls-position="right" /><p class="field-note">默认 1，可填写 1–1000。每个“开始兑换日 × 档位”生成一组，每组包含此数量的独立兑换码。</p></el-form-item>
               <el-form-item label="最低累计充值金额"><el-input-number v-model="form.remoteOptions.activityRecharge" :min="0" :max="100000000" :precision="2" controls-position="right" placeholder="不限制" /></el-form-item>
               <el-form-item label="最低充值次数"><el-input-number v-model="form.remoteOptions.activityRechargeCount" :min="0" :max="100000" controls-position="right" placeholder="不限制" /></el-form-item>
               <el-form-item label="关联活动 ID"><el-input-number v-model="form.remoteOptions.activityId" :min="1" :max="999999999999" controls-position="right" placeholder="不关联" /></el-form-item>
@@ -1564,7 +1569,7 @@ onUnmounted(() => {
             <p class="field-note">最低累计充值金额、最低充值次数和关联活动 ID 默认不限制；留空时创建请求会省略对应字段。</p>
           </el-collapse-item>
         </el-collapse>
-        <p v-if="form.remoteMarketIds.length" class="submit-hint">已选择 {{ form.remoteMarketIds.length }} 个盘口；每个盘口会自动选择自己的远端账号并使用其独立标签配置，共创建 {{ expectedTaskCount() }} 条远端兑换码任务。远端生效时间：{{ validityRuleSummary }}。全部创建完成后，可在任务列表按盘口分别选择发布方式。</p>
+        <p v-if="form.remoteMarketIds.length" class="submit-hint">已选择 {{ form.remoteMarketIds.length }} 个盘口，共创建 {{ expectedTaskCount() }} 组远端配置，每组 {{ form.remoteOptions.keyNumber || 1 }} 个码，预计 {{ expectedTaskCount() * (form.remoteOptions.keyNumber || 1) }} 个兑换码。远端生效时间：{{ validityRuleSummary }}。全部创建完成后，可在任务列表按盘口分别选择发布方式。</p>
       </el-form>
       <template #footer><el-button @click="codeGroupDialogVisible = false">取消</el-button><el-button type="primary" :loading="working" @click="createCodeGroup">开始生成</el-button></template>
     </el-dialog>
@@ -1616,7 +1621,7 @@ onUnmounted(() => {
           <el-table-column label="充值档位" min-width="150"><template #default="{ row }">{{ row.tierName || `充值 ≥ ${formatAmount(row.minDepositAmount)}` }}</template></el-table-column>
           <el-table-column label="兑换金额" width="128"><template #default="{ row }">{{ formatAmount(row.bonusAmount) }}–{{ formatAmount(row.bonusMaxAmount || row.bonusAmount) }}</template></el-table-column>
           <el-table-column label="状态" width="116"><template #default="{ row }"><el-tag :type="issueStatus(row).type" size="small">{{ issueStatus(row).text }}</el-tag></template></el-table-column>
-          <el-table-column label="兑换码 / 备注" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ row.redemptionCode || row.remoteError || '—' }}</template></el-table-column>
+          <el-table-column label="兑换码 / 备注" min-width="180"><template #default="{ row }"><span style="white-space: pre-line">{{ row.redemptionCode || row.remoteError || '—' }}</span></template></el-table-column>
           <el-table-column label="操作" width="96"><template #default="{ row }"><el-button v-if="canRetryRemoteCreation(row)" link type="primary" :loading="retryingIssueId === row.id" :disabled="retryingSelectedFailedTasks" @click="retryRemoteCreation(row)">{{ row.workflowStatus === 'CREATING_REMOTE' ? '恢复重试' : '重试创建' }}</el-button></template></el-table-column>
         </el-table>
         <div class="drawer-actions">

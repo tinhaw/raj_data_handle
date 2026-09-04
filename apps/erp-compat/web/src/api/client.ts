@@ -564,6 +564,8 @@ function normalizeRedemptionBatch(raw: unknown): RedemptionCodeBatch {
     lookbackDays: Number(value.lookbackDays ?? 7),
     redemptionType: String(value.redemptionType || 'SEVEN_DAY_DEPOSIT') as RedemptionCodeBatch['redemptionType'],
     expectedCodeCount: Number(value.expectedCodeCount ?? 0),
+    plannedCodeCount: Number(value.plannedCodeCount ?? Number(value.expectedCodeCount ?? 0) * Number(options?.keyNumber ?? 1)),
+    importedCodeCount: Number(value.importedCodeCount ?? Number(value.importedCount ?? 0) * Number(options?.keyNumber ?? 1)),
     status: String(value.status || 'CREATING') as RedemptionCodeBatch['status'],
     pendingCreationCount: Number(value.pendingCreationCount ?? 0),
     createdCount: Number(value.createdCount ?? 0),

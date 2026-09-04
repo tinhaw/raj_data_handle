@@ -15,6 +15,45 @@ class RedemptionCodeExcelExporterTest {
     private final RedemptionCodeExcelExporter exporter = new RedemptionCodeExcelExporter();
 
     @Test
+    void exportsEveryCodeInSingleAndMultiMarketWorkbooks() throws Exception {
+        var day = LocalDate.of(2026, 9, 5);
+        var tier = new RedemptionDtos.TierResponse(7L, "首档", BigDecimal.valueOf(100),
+                BigDecimal.valueOf(5), BigDecimal.valueOf(5), 1, 0L);
+        var campaign = new RedemptionDtos.CampaignResponse(1L, "MULTI", "多码活动", "ACTIVE", 7,
+                null, List.of(tier), 5, 0, 0L, null, null);
+        var codes = List.of("CODE-A", "CODE-B", "CODE-C", "CODE-D", "CODE-E");
+        var issue = new RedemptionDtos.CodeIssueResponse(9L, 1L, 7L, "首档", BigDecimal.valueOf(100),
+                BigDecimal.valueOf(5), day, day.minusDays(7), day.minusDays(1), String.join("\n", codes),
+                "GENERATED", null, null, null, 0L, BigDecimal.valueOf(5), 1L, "CODE_IMPORTED", "cfg-multi", null, List.of());
+        for (var type : RedemptionCodeType.values()) {
+            byte[] file = exporter.export(campaign, List.of(issue), day, day, "RajWin", type);
+            try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(file))) {
+                int firstRow = type == RedemptionCodeType.PREVIOUS_DAY_DEPOSIT ? 3 : 4;
+                int step = type == RedemptionCodeType.PREVIOUS_DAY_DEPOSIT ? 1 : 2;
+                for (int index = 0; index < codes.size(); index++) {
+                    assertThat(workbook.getSheetAt(0).getRow(firstRow + index * step).getCell(1).getStringCellValue())
+                            .isEqualTo(codes.get(index));
+                }
+            }
+        }
+        var markets = List.of(
+                new RedemptionCodeExcelExporter.MarketSheet("RajWin", campaign, RedemptionCodeType.SEVEN_DAY_DEPOSIT, List.of(issue), day, day),
+                new RedemptionCodeExcelExporter.MarketSheet("RajLuck", campaign, RedemptionCodeType.PREVIOUS_DAY_DEPOSIT, List.of(issue), day, day));
+        try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(exporter.exportMultiMarket(markets)))) {
+            assertThat(workbook.getNumberOfSheets()).isEqualTo(3);
+            for (var sheet : workbook) {
+                var exported = new java.util.ArrayList<String>();
+                for (var row : sheet) {
+                    var cell = row.getCell(1);
+                    if (cell != null && cell.getCellType() == org.apache.poi.ss.usermodel.CellType.STRING
+                            && cell.getStringCellValue().startsWith("CODE-")) exported.add(cell.getStringCellValue());
+                }
+                assertThat(exported).containsAll(codes).hasSize(sheet.getSheetName().equals("All") ? 10 : 5);
+            }
+        }
+    }
+
+    @Test
     void writesTheReferenceFixedHeaderCopyWhileKeepingDepositHeadersDynamic() throws Exception {
         RedemptionDtos.TierResponse tier = new RedemptionDtos.TierResponse(7L, "首档", new BigDecimal("100"),
                 new BigDecimal("5"), new BigDecimal("17"), 1, 0L);

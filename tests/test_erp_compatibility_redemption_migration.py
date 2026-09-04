@@ -4,6 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config
 
@@ -111,6 +112,11 @@ def test_0037_projects_redemption_state_and_unified_remote_account(
             )
             connection.commit()
 
+        command.upgrade(config, "20260905_0040")
+        with sqlite3.connect(database_path) as connection:
+            connection.execute(
+                "UPDATE erp_compat_redemption_code_issues SET redemption_code = 'LEGACY-ONE'"
+            )
         command.upgrade(config, "head")
         with sqlite3.connect(database_path) as connection:
             campaign = connection.execute(
@@ -179,5 +185,32 @@ def test_0037_projects_redemption_state_and_unified_remote_account(
         assert json.loads(issue[6]) == [901, 902]
         assert issue[7:] == ("compat:issue-uuid", 6)
         assert default_and_capabilities == (1, 8, 8)
+        with sqlite3.connect(database_path) as connection:
+            assert connection.execute(
+                "SELECT issue_id, code_index, code FROM erp_compat_redemption_issue_codes"
+            ).fetchall() == [(issue[0], 0, "LEGACY-ONE")]
+            connection.execute(
+                "UPDATE erp_compat_redemption_code_batches SET remote_key_number = 5"
+            )
+            for index in range(1, 5):
+                connection.execute(
+                    "INSERT INTO erp_compat_redemption_issue_codes VALUES (?, ?, ?)",
+                    (issue[0], index, f"MULTI-{index}"),
+                )
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO erp_compat_redemption_issue_codes VALUES (?, 5, 'MULTI-1')",
+                    (issue[0],),
+                )
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    "UPDATE erp_compat_redemption_code_batches SET remote_key_number = 0"
+                )
+        with pytest.raises(RuntimeError, match="Multi-code batches exist"):
+            command.downgrade(config, "20260905_0040")
+        with sqlite3.connect(database_path) as connection:
+            assert connection.execute(
+                "SELECT count(*) FROM erp_compat_redemption_issue_codes"
+            ).fetchone() == (5,)
     finally:
         get_settings.cache_clear()

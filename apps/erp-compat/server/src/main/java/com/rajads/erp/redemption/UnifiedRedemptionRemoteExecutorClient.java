@@ -136,6 +136,28 @@ public class UnifiedRedemptionRemoteExecutorClient {
                 responseText(body, "remoteRequestId", "remote_request_id"));
     }
 
+    public DownloadedCodes download(Long accountId, Long issueId, String configurationId, String groupKey, int keyNumber) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("account_id", accountId);
+        payload.put("issue_id", issueId);
+        payload.put("remote_configuration_id", configurationId);
+        payload.put("remote_group_key", groupKey);
+        payload.put("key_number", keyNumber);
+        payload.put("execution_confirmed", true);
+        JsonNode body = postJson("/download", payload, "统一远端下载服务拒绝了该请求",
+                "UNIFIED_REMOTE_DOWNLOAD_REJECTED", "统一远端下载服务暂时不可用");
+        JsonNode codes = body.has("redemptionCodes") ? body.path("redemptionCodes") : body.path("redemption_codes");
+        if (!codes.isArray() || codes.isEmpty()) throw new CompatibilityIdentityUnavailableException("统一远端下载返回无效结果");
+        List<String> values = new java.util.ArrayList<>();
+        for (JsonNode code : codes) {
+            if (!code.isTextual() || code.asText().isBlank()) throw new CompatibilityIdentityUnavailableException("统一远端下载返回无效兑换码");
+            values.add(code.asText());
+        }
+        return new DownloadedCodes(List.copyOf(values), responseText(body, "remoteGroupKey", "remote_group_key"));
+    }
+
+    public record DownloadedCodes(List<String> codes, String groupKey) { }
+
     private Map<String, Object> options(RemoteCreationOptions options) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("publish_environment", options.publishEnvironment());

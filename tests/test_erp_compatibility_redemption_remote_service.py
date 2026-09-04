@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 from datetime import date, datetime
 from decimal import Decimal
+from io import BytesIO
 
 import httpx
 import pytest
+from openpyxl import Workbook
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from packages.common.settings import Settings
@@ -13,6 +15,7 @@ from packages.domain.models import Base
 from packages.domain.schemas.remote_account import (
     ErpCompatibilityRemoteCreateOptions,
     ErpCompatibilityRemoteCreateRequest,
+    ErpCompatibilityRemoteDownloadRequest,
     ErpCompatibilityRemotePublishRequest,
     RemoteAccountCreateRequest,
     RemoteAccountCredentialsWrite,
@@ -22,6 +25,7 @@ from packages.domain.services.erp_compatibility_id_service import get_erp_compat
 from packages.domain.services.erp_compatibility_redemption_remote_service import (
     ErpCompatibilityRemoteExecutionError,
     execute_compatibility_remote_create,
+    execute_compatibility_remote_download,
     execute_compatibility_remote_publish,
 )
 from packages.domain.services.erp_remote_account_tag_service import (
@@ -39,7 +43,7 @@ def _settings() -> Settings:
     )
 
 
-def _payload(account_id: int) -> ErpCompatibilityRemoteCreateRequest:
+def _payload(account_id: int, key_number: int = 1) -> ErpCompatibilityRemoteCreateRequest:
     return ErpCompatibilityRemoteCreateRequest(
         account_id=account_id,
         issue_id=42,
@@ -53,7 +57,7 @@ def _payload(account_id: int) -> ErpCompatibilityRemoteCreateRequest:
         options=ErpCompatibilityRemoteCreateOptions(
             publish_environment="test",
             flow_times=5,
-            key_number=1,
+            key_number=key_number,
             single_user_limit=1,
             single_key_limit=2000,
             require_bind_bank_card=False,
@@ -70,13 +74,23 @@ def _payload(account_id: int) -> ErpCompatibilityRemoteCreateRequest:
 
 
 @pytest.mark.asyncio
-async def test_compatibility_create_uses_mapped_unified_account_without_legacy_secret() -> None:
+@pytest.mark.parametrize("key_number", [1, 5])
+async def test_compatibility_create_uses_mapped_unified_account_without_legacy_secret(
+    key_number: int,
+) -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     settings = _settings()
     captured: dict[str, object] = {}
+    codes = [f"TEST-CODE-{index}" for index in range(key_number)]
+    workbook = Workbook()
+    workbook.active.append(["兑换码号码"])
+    for code in codes:
+        workbook.active.append([code])
+    output = BytesIO()
+    workbook.save(output)
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/system/login":
@@ -96,6 +110,9 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
                 200,
                 json={"data": {"items": [{"id": "cfg-1", "group_key": "group-1"}]}},
             )
+        if request.url.path == "/api/common/giftCodeConfig/export":
+            assert request.url.params["groupKey"] == "group-1"
+            return httpx.Response(200, content=output.getvalue())
         raise AssertionError(request.url)
 
     async with factory() as session:
@@ -141,7 +158,7 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
 
         result = await execute_compatibility_remote_create(
             session,
-            payload=_payload(compatibility_id),
+            payload=_payload(compatibility_id, key_number),
             actor_user_id=1,
             settings=settings,
             transport=httpx.MockTransport(handler),
@@ -152,11 +169,40 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
             "2026-09-09 00:00:00",
             "2026-09-10 23:59:59",
         ]
+        download_request = ErpCompatibilityRemoteDownloadRequest(
+            account_id=compatibility_id,
+            issue_id=42,
+            remote_configuration_id="cfg-1",
+            remote_group_key="group-1",
+            key_number=key_number,
+            execution_confirmed=True,
+        )
+        downloaded = await execute_compatibility_remote_download(
+            session,
+            payload=download_request,
+            actor_user_id=1,
+            settings=settings,
+            transport=httpx.MockTransport(handler),
+        )
+        assert downloaded.redemption_code.splitlines() == codes
+
+        def remote_must_not_be_called(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("Unconfirmed download must not reach the remote")
+
+        with pytest.raises(ErpCompatibilityRemoteExecutionError):
+            await execute_compatibility_remote_download(
+                session,
+                payload=download_request.model_copy(update={"execution_confirmed": False}),
+                actor_user_id=1,
+                settings=settings,
+                transport=httpx.MockTransport(remote_must_not_be_called),
+            )
     assert result.remote_group_key == "group-1"
     assert result.remote_request_id == "create-1"
     assert captured["label_array"] == [901091]
     assert captured["reward_min"] == "1"
     assert captured["reward_max"] == "3"
+    assert int(captured["key_number"]) == key_number
     await engine.dispose()
 
 

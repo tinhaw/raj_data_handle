@@ -77,6 +77,7 @@ class RemoteDownloadCommand:
     issue_id: str
     remote_configuration_id: str
     remote_group_key: str | None
+    key_number: int = 1
 
 
 @dataclass(frozen=True, slots=True)

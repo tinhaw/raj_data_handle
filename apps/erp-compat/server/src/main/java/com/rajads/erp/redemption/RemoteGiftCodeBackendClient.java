@@ -113,7 +113,7 @@ public class RemoteGiftCodeBackendClient {
         URI uri = uri(connection.getBaseUrl(), "/api/common/giftCodeConfig/export?groupKey=" + encode(groupKey));
         byte[] bytes = send(connection, HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(30))
                 .header("Content-Type", "application/json;charset=UTF-8").POST(HttpRequest.BodyPublishers.ofString("{}")), HttpResponse.BodyHandlers.ofByteArray());
-        return extractSingleCode(bytes);
+        return extractCodeText(bytes);
     }
 
     public String findGroupKey(RedemptionRemoteConnection connection, String configurationId, String description) {
@@ -341,7 +341,7 @@ public class RemoteGiftCodeBackendClient {
         }
     }
 
-    private String extractSingleCode(byte[] bytes) {
+    private String extractCodeText(byte[] bytes) {
         try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
             var sheet = workbook.getNumberOfSheets() == 0 ? null : workbook.getSheetAt(0);
             if (sheet == null) throw new RemoteGiftCodeException("下载的远端兑换码文件为空");
@@ -357,10 +357,10 @@ public class RemoteGiftCodeBackendClient {
                 Row row = sheet.getRow(index);
                 if (row == null) continue;
                 String code = clean(formatter.formatCellValue(row.getCell(codeColumn)));
-                if (code != null) codes.add(code);
+                if (code != null && !codes.add(code)) throw new RemoteGiftCodeException("下载文件包含重复的兑换码");
             }
-            if (codes.size() != 1) throw new RemoteGiftCodeException("下载文件应包含 1 个兑换码，实际读取到 " + codes.size() + " 个");
-            return codes.iterator().next();
+            if (codes.isEmpty() || codes.size() > 1000) throw new RemoteGiftCodeException("下载文件的兑换码数量须为 1–1000");
+            return String.join("\n", codes);
         } catch (RemoteGiftCodeException exception) {
             throw exception;
         } catch (IOException exception) {

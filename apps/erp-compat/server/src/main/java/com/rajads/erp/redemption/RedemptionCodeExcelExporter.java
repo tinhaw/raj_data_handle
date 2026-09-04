@@ -153,34 +153,38 @@ public class RedemptionCodeExcelExporter {
         for (RedemptionDtos.CodeIssueResponse issue : marketSheet.issues()) {
             codes.put(issue.claimDate() + ":" + issue.campaignTierId(), issue);
         }
+        Map<Long, List<String>> importedCodes = importedCodeMap(marketSheet.issues());
         int rowIndex = startRow + 4;
         for (LocalDate date = marketSheet.from(); !date.isAfter(marketSheet.to()); date = date.plusDays(1)) {
             LocalDate depositStart = date.minusDays(campaign.lookbackDays());
             LocalDate depositEnd = date.minusDays(1);
-            Row claimRow = sheet.createRow(rowIndex);
-            Row depositRow = sheet.createRow(rowIndex + 1);
-            claimRow.setHeightInPoints(21);
-            depositRow.setHeightInPoints(30);
+            int codeCount = codesOnDate(marketSheet.issues(), importedCodes, date);
+            for (int codeIndex = 0; codeIndex < codeCount; codeIndex++) {
+                Row claimRow = sheet.createRow(rowIndex);
+                Row depositRow = sheet.createRow(rowIndex + 1);
+                claimRow.setHeightInPoints(21);
+                depositRow.setHeightInPoints(30);
 
-            Cell claimCell = claimRow.createCell(0);
-            claimCell.setCellValue("Bonus Claim Time " + SHORT_DATE.format(date) + " ⏰");
-            claimCell.setCellStyle(claimTime);
-            Cell depositCell = depositRow.createCell(0);
-            depositCell.setCellValue("Deposit time: (" + SHORT_DATE.format(depositStart) + "—" + SHORT_DATE.format(depositEnd) + ")");
-            depositCell.setCellStyle(depositTime);
+                Cell claimCell = claimRow.createCell(0);
+                claimCell.setCellValue("Bonus Claim Time " + SHORT_DATE.format(date) + " ⏰");
+                claimCell.setCellStyle(claimTime);
+                Cell depositCell = depositRow.createCell(0);
+                depositCell.setCellValue("Deposit time: (" + SHORT_DATE.format(depositStart) + "—" + SHORT_DATE.format(depositEnd) + ")");
+                depositCell.setCellStyle(depositTime);
 
-            for (int index = 0; index < campaign.tiers().size(); index++) {
-                RedemptionDtos.TierResponse tier = campaign.tiers().get(index);
-                RedemptionDtos.CodeIssueResponse issue = codes.get(date + ":" + tier.id());
-                Cell codeCell = claimRow.createCell(index + 1);
-                Cell mergedBottomCell = depositRow.createCell(index + 1);
-                CellStyle cellStyle = issueStyle(issue, code, failed);
-                codeCell.setCellValue(safeText(codeValue(issue)));
-                codeCell.setCellStyle(cellStyle);
-                mergedBottomCell.setCellStyle(cellStyle);
-                sheet.addMergedRegion(new CellRangeAddress(rowIndex, rowIndex + 1, index + 1, index + 1));
+                for (int index = 0; index < campaign.tiers().size(); index++) {
+                    RedemptionDtos.TierResponse tier = campaign.tiers().get(index);
+                    RedemptionDtos.CodeIssueResponse issue = codes.get(date + ":" + tier.id());
+                    Cell codeCell = claimRow.createCell(index + 1);
+                    Cell mergedBottomCell = depositRow.createCell(index + 1);
+                    CellStyle cellStyle = issueStyle(issue, code, failed);
+                    codeCell.setCellValue(safeText(codeValue(issue, importedCodes, codeIndex)));
+                    codeCell.setCellStyle(cellStyle);
+                    mergedBottomCell.setCellStyle(cellStyle);
+                    sheet.addMergedRegion(new CellRangeAddress(rowIndex, rowIndex + 1, index + 1, index + 1));
+                }
+                rowIndex += 2;
             }
-            rowIndex += 2;
         }
         if (startRow == 0) sheet.createFreezePane(1, 4);
         sheet.setColumnWidth(0, 31 * 256);
@@ -216,18 +220,22 @@ public class RedemptionCodeExcelExporter {
         }
 
         Map<String, RedemptionDtos.CodeIssueResponse> codes = issueMap(marketSheet.issues());
+        Map<Long, List<String>> importedCodes = importedCodeMap(marketSheet.issues());
         int rowIndex = startRow + 3;
         for (LocalDate claimDate = marketSheet.from(); !claimDate.isAfter(marketSheet.to()); claimDate = claimDate.plusDays(1)) {
-            Row dataRow = sheet.createRow(rowIndex++);
-            Cell dateCell = dataRow.createCell(0);
-            dateCell.setCellValue(java.sql.Date.valueOf(claimDate));
-            dateCell.setCellStyle(date);
-            for (int index = 0; index < campaign.tiers().size(); index++) {
-                RedemptionDtos.TierResponse tier = campaign.tiers().get(index);
-                RedemptionDtos.CodeIssueResponse issue = codes.get(claimDate + ":" + tier.id());
-                Cell codeCell = dataRow.createCell(index + 1);
-                codeCell.setCellValue(safeText(codeValue(issue)));
-                codeCell.setCellStyle(issueStyle(issue, code, failed));
+            int codeCount = codesOnDate(marketSheet.issues(), importedCodes, claimDate);
+            for (int codeIndex = 0; codeIndex < codeCount; codeIndex++) {
+                Row dataRow = sheet.createRow(rowIndex++);
+                Cell dateCell = dataRow.createCell(0);
+                dateCell.setCellValue(java.sql.Date.valueOf(claimDate));
+                dateCell.setCellStyle(date);
+                for (int index = 0; index < campaign.tiers().size(); index++) {
+                    RedemptionDtos.TierResponse tier = campaign.tiers().get(index);
+                    RedemptionDtos.CodeIssueResponse issue = codes.get(claimDate + ":" + tier.id());
+                    Cell codeCell = dataRow.createCell(index + 1);
+                    codeCell.setCellValue(safeText(codeValue(issue, importedCodes, codeIndex)));
+                    codeCell.setCellStyle(issueStyle(issue, code, failed));
+                }
             }
         }
         if (startRow == 0) sheet.createFreezePane(1, startRow + 3);
@@ -293,10 +301,23 @@ public class RedemptionCodeExcelExporter {
         return issue != null && "FAILED".equals(issue.state()) ? failed : code;
     }
 
-    private String codeValue(RedemptionDtos.CodeIssueResponse issue) {
+    private Map<Long, List<String>> importedCodeMap(List<RedemptionDtos.CodeIssueResponse> issues) {
+        Map<Long, List<String>> result = new HashMap<>();
+        issues.forEach(issue -> result.put(issue.id(), issue.redemptionCodes()));
+        return result;
+    }
+
+    private int codesOnDate(List<RedemptionDtos.CodeIssueResponse> issues, Map<Long, List<String>> importedCodes, LocalDate date) {
+        return Math.max(1, issues.stream().filter(issue -> issue.claimDate().equals(date))
+                .mapToInt(issue -> importedCodes.get(issue.id()).size()).max().orElse(1));
+    }
+
+    private String codeValue(RedemptionDtos.CodeIssueResponse issue, Map<Long, List<String>> importedCodes, int codeIndex) {
         if (issue == null || "PENDING".equals(issue.state())) return "Pending";
         if ("FAILED".equals(issue.state())) return "Generation failed";
-        return issue.redemptionCode() == null || issue.redemptionCode().isBlank() ? "Pending" : issue.redemptionCode();
+        List<String> codes = importedCodes.get(issue.id());
+        if (codes.isEmpty()) return "Pending";
+        return codeIndex < codes.size() ? codes.get(codeIndex) : "";
     }
 
     private CellStyle titleStyle(Workbook workbook) {
