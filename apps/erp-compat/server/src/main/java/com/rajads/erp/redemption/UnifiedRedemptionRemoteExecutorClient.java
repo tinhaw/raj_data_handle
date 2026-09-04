@@ -123,12 +123,15 @@ public class UnifiedRedemptionRemoteExecutorClient {
                 throw remoteError(response);
             }
             JsonNode body = objectMapper.readTree(response.body());
-            String configurationId = body.path("remote_configuration_id").asText(null);
+            String configurationId = responseText(
+                    body,
+                    "remoteConfigurationId",
+                    "remote_configuration_id");
             if (configurationId == null || configurationId.isBlank()) {
                 throw new CompatibilityIdentityUnavailableException("统一远端创建服务返回无效结果");
             }
-            String groupKey = text(body.path("remote_group_key"));
-            String requestId = text(body.path("remote_request_id"));
+            String groupKey = responseText(body, "remoteGroupKey", "remote_group_key");
+            String requestId = responseText(body, "remoteRequestId", "remote_request_id");
             return new CreatedConfiguration(configurationId, groupKey, requestId);
         } catch (ApiException | CompatibilityIdentityUnavailableException exception) {
             throw exception;
@@ -169,6 +172,11 @@ public class UnifiedRedemptionRemoteExecutorClient {
 
     private static String text(JsonNode node) {
         return node != null && node.isTextual() && !node.asText().isBlank() ? node.asText() : null;
+    }
+
+    private static String responseText(JsonNode body, String apiField, String legacyField) {
+        String value = text(body.path(apiField));
+        return value != null ? value : text(body.path(legacyField));
     }
 
     private static boolean containsHeaderBreak(String value) {

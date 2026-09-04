@@ -41,9 +41,9 @@ class UnifiedRedemptionRemoteExecutorClientTest {
             assertThat(request.path("options").path("single_key_limit").asInt()).isEqualTo(3);
             assertThat(request.path("execution_confirmed").asBoolean()).isTrue();
 
-            byte[] body = ("{\"remote_configuration_id\":\"remote-123\","
-                    + "\"remote_group_key\":\"group-123\","
-                    + "\"remote_request_id\":\"request-123\"}")
+            byte[] body = ("{\"remoteConfigurationId\":\"remote-123\","
+                    + "\"remoteGroupKey\":\"group-123\","
+                    + "\"remoteRequestId\":\"request-123\"}")
                     .getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             exchange.sendResponseHeaders(200, body.length);
