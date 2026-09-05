@@ -186,6 +186,12 @@ def test_0037_projects_redemption_state_and_unified_remote_account(
         assert issue[7:] == ("compat:issue-uuid", 6)
         assert default_and_capabilities == (1, 8, 8)
         with sqlite3.connect(database_path) as connection:
+            connection.execute(
+                "UPDATE erp_compat_redemption_code_batches SET redemption_type = 'AGENT'"
+            )
+            assert connection.execute(
+                "SELECT redemption_type FROM erp_compat_redemption_code_batches"
+            ).fetchone() == ("AGENT",)
             # PostgreSQL unique constraints create schema-wide index names;
             # SQLite alone would otherwise miss a collision with the legacy table.
             new_table_sql = connection.execute(
@@ -214,6 +220,10 @@ def test_0037_projects_redemption_state_and_unified_remote_account(
                 connection.execute(
                     "UPDATE erp_compat_redemption_code_batches SET remote_key_number = 0"
                 )
+            connection.execute(
+                "UPDATE erp_compat_redemption_code_batches "
+                "SET redemption_type = 'SEVEN_DAY_DEPOSIT'"
+            )
         with pytest.raises(RuntimeError, match="Multi-code batches exist"):
             command.downgrade(config, "20260905_0040")
         with sqlite3.connect(database_path) as connection:

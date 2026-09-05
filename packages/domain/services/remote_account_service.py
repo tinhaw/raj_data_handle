@@ -64,6 +64,11 @@ REMOTE_ACCOUNT_CAPABILITIES: dict[str, str] = {
 }
 MANAGED_CREDENTIAL_MODE = "MANAGED"
 LEGACY_SOURCE_CREDENTIAL_MODE = "LEGACY_SOURCE"
+REWARD_PRESET_REDEMPTION_TYPES = (
+    "SEVEN_DAY_DEPOSIT",
+    "PREVIOUS_DAY_DEPOSIT",
+    "AGENT",
+)
 
 
 class RemoteAccountError(ValueError):
@@ -600,7 +605,7 @@ async def delete_legacy_remote_account(
             raise RemoteAccountConflictError("当前账号与历史账号的标签快照不一致，请先核对并迁移。")
 
     migrated_preset = False
-    for redemption_type in ("SEVEN_DAY_DEPOSIT", "PREVIOUS_DAY_DEPOSIT"):
+    for redemption_type in REWARD_PRESET_REDEMPTION_TYPES:
         legacy_preset = await session.get(
             RemoteAccountRewardTierPreset, (account.id, redemption_type)
         )
@@ -717,7 +722,7 @@ async def save_remote_tag_snapshot(
         row.stale = False
         if changed:
             row.row_version += 1
-            for redemption_type in ("SEVEN_DAY_DEPOSIT", "PREVIOUS_DAY_DEPOSIT"):
+            for redemption_type in REWARD_PRESET_REDEMPTION_TYPES:
                 preset = await session.get(
                     RemoteAccountRewardTierPreset, (account_id, redemption_type)
                 )
@@ -739,7 +744,7 @@ async def get_reward_tier_preset(
     session: AsyncSession, *, account_id: str, redemption_type: str = "SEVEN_DAY_DEPOSIT"
 ) -> RewardTierPresetResponse:
     await _get_account(session, account_id)
-    if redemption_type not in ("SEVEN_DAY_DEPOSIT", "PREVIOUS_DAY_DEPOSIT"):
+    if redemption_type not in REWARD_PRESET_REDEMPTION_TYPES:
         raise RemoteAccountValidationError("不支持的兑换码类型。")
     row = await session.get(RemoteAccountRewardTierPreset, (account_id, redemption_type))
     current = await session.get(RemoteAccountTagSnapshot, account_id)
@@ -771,7 +776,7 @@ async def save_reward_tier_preset(
     used_labels = {label for tier in request.tiers for label in tier.label_ids}
     if not used_labels.issubset(allowed_labels):
         raise RemoteAccountValidationError("档位引用了标签快照中不存在的标签 ID。")
-    if redemption_type not in ("SEVEN_DAY_DEPOSIT", "PREVIOUS_DAY_DEPOSIT"):
+    if redemption_type not in REWARD_PRESET_REDEMPTION_TYPES:
         raise RemoteAccountValidationError("不支持的兑换码类型。")
     row = await session.get(RemoteAccountRewardTierPreset, (account_id, redemption_type))
     tiers_json = [tier.model_dump(mode="json") for tier in request.tiers]

@@ -221,15 +221,38 @@ async def test_deleting_legacy_account_migrates_local_configuration_to_managed_d
             ),
             actor_user_id=1,
         )
+        await save_reward_tier_preset(
+            session,
+            account_id=legacy.id,
+            redemption_type="AGENT",
+            request=RewardTierPresetWrite(
+                tiers=[
+                    RewardTierPresetTier(
+                        user_type="LABEL_USERS",
+                        label_ids=[901027],
+                        display_name="代理存款200",
+                        min_deposit_amount="200",
+                        bonus_amount="7",
+                        bonus_max_amount="9",
+                    )
+                ],
+                tag_snapshot=tags,
+            ),
+            actor_user_id=1,
+        )
         async with factory() as reopened:
             snapshot = await reopened.get(RemoteAccountTagSnapshot, legacy.id)
             assert 901027 in [tag["id"] for tag in snapshot.tags_json]
             daily = await get_reward_tier_preset(
                 reopened, account_id=legacy.id, redemption_type="PREVIOUS_DAY_DEPOSIT"
             )
+            agent = await get_reward_tier_preset(
+                reopened, account_id=legacy.id, redemption_type="AGENT"
+            )
             seven = await get_reward_tier_preset(reopened, account_id=legacy.id)
             assert daily.tiers[0].user_type == "ALL_USERS"
             assert daily.tiers[1].label_ids == [901027]
+            assert agent.tiers[0].display_name == "代理存款200"
             assert seven.tiers[0].label_ids == [901091]
 
         await delete_legacy_remote_account(
@@ -250,6 +273,10 @@ async def test_deleting_legacy_account_migrates_local_configuration_to_managed_d
             await session.get(
                 RemoteAccountRewardTierPreset, (managed.account.id, "PREVIOUS_DAY_DEPOSIT")
             )
+            is not None
+        )
+        assert (
+            await session.get(RemoteAccountRewardTierPreset, (managed.account.id, "AGENT"))
             is not None
         )
         remaining = list(await session.scalars(select(RemoteAccount)))

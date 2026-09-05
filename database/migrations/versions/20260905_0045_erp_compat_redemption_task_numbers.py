@@ -24,24 +24,50 @@ INDEX = "idx_erp_redemption_task_date_sequence"
 def upgrade() -> None:
     op.add_column(TABLE, sa.Column("task_date", sa.Date(), nullable=True))
     op.add_column(TABLE, sa.Column("daily_sequence", sa.Integer(), nullable=True))
-    op.execute(
-        sa.text(
-            f"""
-            UPDATE {TABLE} target
-            SET task_date = (target.created_at AT TIME ZONE 'Asia/Shanghai')::date,
-                daily_sequence = (
-                    SELECT COUNT(*)
-                    FROM {TABLE} earlier
-                    WHERE (earlier.created_at AT TIME ZONE 'Asia/Shanghai')::date
-                            = (target.created_at AT TIME ZONE 'Asia/Shanghai')::date
-                      AND (
-                          earlier.created_at < target.created_at
-                          OR (earlier.created_at = target.created_at AND earlier.id <= target.id)
-                      )
-                )
-            """
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute(
+            sa.text(
+                f"""
+                UPDATE {TABLE} target
+                SET task_date = (target.created_at AT TIME ZONE 'Asia/Shanghai')::date,
+                    daily_sequence = (
+                        SELECT COUNT(*)
+                        FROM {TABLE} earlier
+                        WHERE (earlier.created_at AT TIME ZONE 'Asia/Shanghai')::date
+                                = (target.created_at AT TIME ZONE 'Asia/Shanghai')::date
+                          AND (
+                              earlier.created_at < target.created_at
+                              OR (
+                                  earlier.created_at = target.created_at
+                                  AND earlier.id <= target.id
+                              )
+                          )
+                    )
+                """
+            )
         )
-    )
+    else:
+        op.execute(
+            sa.text(
+                f"""
+                WITH numbered AS (
+                    SELECT id,
+                           date(created_at) AS task_date,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY date(created_at) ORDER BY created_at, id
+                           ) AS daily_sequence
+                    FROM {TABLE}
+                )
+                UPDATE {TABLE}
+                SET task_date = (
+                        SELECT task_date FROM numbered WHERE numbered.id = {TABLE}.id
+                    ),
+                    daily_sequence = (
+                        SELECT daily_sequence FROM numbered WHERE numbered.id = {TABLE}.id
+                    )
+                """
+            )
+        )
     with op.batch_alter_table(TABLE) as batch:
         batch.alter_column("task_date", nullable=False)
         batch.alter_column("daily_sequence", nullable=False)

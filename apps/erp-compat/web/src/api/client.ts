@@ -557,6 +557,7 @@ function normalizeRedemptionBatch(raw: unknown): RedemptionCodeBatch {
     id: value.id as string | number,
     taskId: value.taskId as string | number | undefined,
     taskNumber: value.taskNumber ? String(value.taskNumber) : undefined,
+    subtaskNumber: value.subtaskNumber ? String(value.subtaskNumber) : undefined,
     operatorUsername: value.operatorUsername ? String(value.operatorUsername) : undefined,
     campaignId: value.campaignId as string | number,
     claimDateFrom: String(value.claimDateFrom || ''),

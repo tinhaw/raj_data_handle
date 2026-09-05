@@ -271,7 +271,7 @@ export type RedemptionCampaignStatus = 'DRAFT' | 'ACTIVE' | 'ARCHIVED'
 export type RedemptionCodeState = 'PENDING' | 'GENERATED' | 'FAILED'
 export type RedemptionWorkflowStatus = 'PENDING_CREATION' | 'CREATING_REMOTE' | 'CREATED' | 'PUBLISHED' | 'CODE_IMPORTED' | 'FAILED'
 export type RedemptionBatchStatus = 'CREATING' | 'READY_TO_PUBLISH' | 'PUBLISHED' | 'COMPLETED'
-export type RedemptionCodeType = 'SEVEN_DAY_DEPOSIT' | 'PREVIOUS_DAY_DEPOSIT'
+export type RedemptionCodeType = 'SEVEN_DAY_DEPOSIT' | 'PREVIOUS_DAY_DEPOSIT' | 'AGENT'
 
 export interface RedemptionCampaignTier {
   id?: string | number
@@ -328,6 +328,8 @@ export interface RedemptionCodeBatch {
   taskId?: string | number
   /** Stable human-facing number: Shanghai date plus that day's four-digit task sequence. */
   taskNumber?: string
+  /** Stable child-task number: parent task number plus that day's three-digit child sequence. */
+  subtaskNumber?: string
   /** Username of the administrator who created the containing task. */
   operatorUsername?: string
   campaignId: string | number

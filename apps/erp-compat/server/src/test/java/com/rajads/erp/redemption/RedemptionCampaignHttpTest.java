@@ -101,6 +101,7 @@ class RedemptionCampaignHttpTest {
                 .andExpect(jsonPath("$.data.batch.status").value("CREATING"))
                 .andExpect(jsonPath("$.data.batch.taskId").isNumber())
                 .andExpect(jsonPath("$.data.batch.taskNumber").value(matchesPattern("\\d{12}")))
+                .andExpect(jsonPath("$.data.batch.subtaskNumber").value(matchesPattern("\\d{12}-\\d{3}")))
                 .andExpect(jsonPath("$.data.batch.operatorUsername").value("admin"))
                 .andExpect(jsonPath("$.data.batch.expectedCodeCount").value(4))
                 .andExpect(jsonPath("$.data.batch.validFromDayOffset").value(1))
@@ -176,6 +177,47 @@ class RedemptionCampaignHttpTest {
         assertThat(createRequest.getValue().description()).isEqualTo("NEW-818存款0");
         assertThat(createRequest.getValue().allUsers()).isTrue();
         assertThat(createRequest.getValue().labelIds()).isEmpty();
+    }
+
+    @Test
+    void agentCodeGroupUsesEffectiveStartDateForItsRemoteDescription() throws Exception {
+        MockHttpSession session = login();
+        long marketId = data(mockMvc.perform(post("/api/v1/redemption-remote-markets").session(session)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON).content("""
+                                {"code":"AGENT_MARKET","name":"代理测试盘口","baseUrl":"https://agent.example.com","enabled":true}
+                                """))
+                .andExpect(status().isOk()).andReturn()).path("id").asLong();
+        mockMvc.perform(post("/api/v1/redemption-remote-connections").session(session)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON).content("""
+                                {"username":"agent-admin","marketId":%s,"password":"test-password","totpSecret":"JBSWY3DPEHPK3PXP","enabled":true}
+                                """.formatted(marketId)))
+                .andExpect(status().isOk());
+        when(remoteGiftCodeBackendClient.tags(any())).thenReturn(List.of(
+                new RemoteGiftCodeBackendClient.RemoteTag(901027, "(901027)日充值200")));
+
+        MvcResult groupResult = mockMvc.perform(post("/api/v1/redemption-campaigns/groups").session(session)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON).content("""
+                                {"code":"agent_sep","name":"代理兑换码组","claimDateFrom":"2026-09-01","claimDateTo":"2026-09-01","lookbackDays":7,
+                                 "validFromDayOffset":1,"validToDayOffset":1,
+                                 "tiers":[{"displayName":"代理存款200","minDepositAmount":200,"bonusAmount":7,"bonusMaxAmount":9,"sortOrder":1}],
+                                 "remoteMarketId":%s,"redemptionType":"AGENT","tierUserTypes":["LABEL_USERS"],"tierLabelIds":[[901027]],
+                                 "remoteOptions":{"publishEnvironment":"test","flowTimes":5,"creationIntervalSeconds":5,"keyNumber":1,"singleUserLimit":1,"singleKeyLimit":3000,"requireBindBankCard":false,"requireBindPhone":true,"checkUuid":true,"uuidRewardLimit":1,"checkLoginIp":true,"loginIpRewardLimit":1,"checkRegisterIp":true,"registerIpRewardLimit":1}}
+                                """.formatted(marketId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.batch.redemptionType").value("AGENT"))
+                .andReturn();
+
+        long issueId = data(groupResult).at("/issues/0/id").asLong();
+        when(remoteGiftCodeBackendClient.create(any(), any())).thenReturn(new RemoteGiftCodeBackendClient.CreatedConfiguration("agent-200", null));
+        when(remoteGiftCodeBackendClient.findGroupKey(any(), any(), any())).thenReturn("agent-group");
+        mockMvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + issueId + "/remote-create").session(session)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf()))
+                .andExpect(status().isOk());
+        ArgumentCaptor<RemoteGiftCodeBackendClient.CreateConfigurationRequest> createRequest = ArgumentCaptor.forClass(RemoteGiftCodeBackendClient.CreateConfigurationRequest.class);
+        verify(remoteGiftCodeBackendClient).create(any(), createRequest.capture());
+        assertThat(createRequest.getValue().description()).isEqualTo("9-02代理存款200");
+        assertThat(createRequest.getValue().allUsers()).isFalse();
+        assertThat(createRequest.getValue().labelIds()).containsExactly(901027L);
     }
 
     @Test

@@ -28,8 +28,8 @@ class RedemptionCodeExcelExporterTest {
         for (var type : RedemptionCodeType.values()) {
             byte[] file = exporter.export(campaign, List.of(issue), day, day, "RajWin", type);
             try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(file))) {
-                int firstRow = type == RedemptionCodeType.PREVIOUS_DAY_DEPOSIT ? 3 : 4;
-                int step = type == RedemptionCodeType.PREVIOUS_DAY_DEPOSIT ? 1 : 2;
+                int firstRow = type == RedemptionCodeType.AGENT ? 2 : type == RedemptionCodeType.PREVIOUS_DAY_DEPOSIT ? 3 : 4;
+                int step = type == RedemptionCodeType.SEVEN_DAY_DEPOSIT ? 2 : 1;
                 for (int index = 0; index < codes.size(); index++) {
                     assertThat(workbook.getSheetAt(0).getRow(firstRow + index * step).getCell(1).getStringCellValue())
                             .isEqualTo(codes.get(index));

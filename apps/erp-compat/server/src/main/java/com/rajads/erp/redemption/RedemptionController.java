@@ -131,7 +131,7 @@ public class RedemptionController {
         RedemptionDtos.BatchDetailResponse detail = service.batch(batchId);
         RedemptionDtos.CampaignResponse campaign = service.campaign(detail.batch().campaignId());
         byte[] workbook = excelExporter.export(campaign, detail.issues(), detail.batch().claimDateFrom(), detail.batch().claimDateTo(),
-                detail.batch().remoteMarketName(), detail.batch().redemptionType());
+                detail.batch().remoteMarketName(), detail.batch().redemptionType(), detail.batch().validFromDayOffset());
         auditService.record("REDEMPTION_BATCH_EXPORTED", "REDEMPTION_CODE_BATCH", batchId.toString(), null, null,
                 Map.of("campaignCode", campaign.code(), "expectedCodeCount", detail.batch().expectedCodeCount(),
                         "importedCount", detail.batch().importedCount()));
@@ -152,7 +152,7 @@ public class RedemptionController {
             RedemptionDtos.CampaignResponse campaign = service.campaign(detail.batch().campaignId());
             String marketName = detail.batch().remoteMarketName();
             return new RedemptionCodeExcelExporter.MarketSheet(marketName, campaign, detail.batch().redemptionType(), detail.issues(),
-                    detail.batch().claimDateFrom(), detail.batch().claimDateTo());
+                    detail.batch().claimDateFrom(), detail.batch().claimDateTo(), detail.batch().validFromDayOffset());
         }).toList();
         byte[] workbook = excelExporter.exportMultiMarket(sheets);
         RedemptionDtos.BatchResponse first = details.get(0).batch();

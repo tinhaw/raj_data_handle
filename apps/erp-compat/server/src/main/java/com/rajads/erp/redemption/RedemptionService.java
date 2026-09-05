@@ -29,6 +29,7 @@ public class RedemptionService {
     private static final Set<String> CAMPAIGN_STATUSES = Set.of("DRAFT", "ACTIVE", "ARCHIVED");
     private static final ZoneId TASK_NUMBER_ZONE = ZoneId.of("Asia/Shanghai");
     private static final Map<LocalDate, ReentrantLock> TASK_NUMBER_LOCKS = new ConcurrentHashMap<>();
+    private static final Map<LocalDate, ReentrantLock> SUBTASK_NUMBER_LOCKS = new ConcurrentHashMap<>();
     private final RedemptionCampaignRepository campaignRepository;
     private final RedemptionCampaignTierRepository tierRepository;
     private final RedemptionCodeBatchRepository batchRepository;
@@ -175,6 +176,7 @@ public class RedemptionService {
         int validToDayOffset = request.validToDayOffset() == null ? 0 : request.validToDayOffset();
         requireValidityOffsets(validFromDayOffset, validToDayOffset);
         RedemptionCampaign campaign = requireCampaign(request.campaignId());
+        RedemptionCodeTask task = taskRepository.findById(taskId).orElseThrow(() -> ApiException.notFound("兑换码主任务"));
         RedemptionCodeType redemptionType = request.redemptionType() == null ? RedemptionCodeType.SEVEN_DAY_DEPOSIT : request.redemptionType();
         if (!"ACTIVE".equals(campaign.getStatus())) {
             throw ApiException.conflict("CAMPAIGN_NOT_ACTIVE", "请先将活动设为“进行中”，再创建人工兑换码批次");
@@ -201,9 +203,10 @@ public class RedemptionService {
         batch.setRedemptionType(redemptionType);
         batch.setExpectedCodeCount(Math.multiplyExact(dates, tiers.size()));
         batch.setRemoteConnectionId(remoteConnection == null ? null : remoteConnection.id());
-        batch.setTaskId(taskId);
+        batch.setTaskId(task.getId());
         if (remoteConnection != null) applyRemoteOptions(batch, request.remoteOptions());
         batch.setCreatedBy(currentUser.require().id());
+        assignSubtaskNumber(batch, task);
         batch = batchRepository.save(batch);
 
         List<RedemptionCodeIssue> tasks = new ArrayList<>();
@@ -452,7 +455,8 @@ public class RedemptionService {
                 batch.getExportGroupKey(),
                 batch.getRemotePublishTaskId(), batch.getRemotePublishError(), batch.getRemotePublishMode(),
                 batch.getRemoteScheduledPublishAt(), batch.getRemotePublishNote(), batch.getRemotePublishCancelledAt(), remoteOptionsResponse(batch),
-                batch.getTaskId(), task == null ? null : task.taskNumber(), task == null ? null : task.getCreatedByUsername());
+                batch.getTaskId(), task == null ? null : task.taskNumber(), subtaskNumber(task, batch),
+                task == null ? null : task.getCreatedByUsername());
     }
 
     private RedemptionCodeTask resolveTask(String exportGroupKey) {
@@ -463,6 +467,41 @@ public class RedemptionService {
 
     private RedemptionCodeTask createStandaloneTask() {
         return createTask("request:" + UUID.randomUUID());
+    }
+
+    private void assignSubtaskNumber(RedemptionCodeBatch batch, RedemptionCodeTask task) {
+        LocalDate subtaskDate = task.getTaskDate();
+        ReentrantLock lock = SUBTASK_NUMBER_LOCKS.computeIfAbsent(subtaskDate, ignored -> new ReentrantLock());
+        lock.lock();
+        boolean unlockAfterTransaction = false;
+        try {
+            // The child-task sequence is global within the task business day,
+            // rather than the database primary key or a sequence within only
+            // one multi-market task.  Keep this lock until commit for the
+            // same visibility guarantee as the main task sequence.
+            if (TransactionSynchronizationManager.isSynchronizationActive()
+                    && TransactionSynchronizationManager.isActualTransactionActive()) {
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override public void afterCompletion(int status) { lock.unlock(); }
+                });
+                unlockAfterTransaction = true;
+            }
+            int nextSequence = batchRepository.findFirstBySubtaskDateOrderBySubtaskDailySequenceDesc(subtaskDate)
+                    .map(existing -> existing.getSubtaskDailySequence() + 1)
+                    .orElse(1);
+            if (nextSequence > 999) {
+                throw ApiException.conflict("SUBTASK_DAILY_SEQUENCE_EXHAUSTED", "当天兑换码子任务已达到 999 个，请联系管理员处理");
+            }
+            batch.setSubtaskDate(subtaskDate);
+            batch.setSubtaskDailySequence(nextSequence);
+        } finally {
+            if (!unlockAfterTransaction) lock.unlock();
+        }
+    }
+
+    private String subtaskNumber(RedemptionCodeTask task, RedemptionCodeBatch batch) {
+        if (task == null || task.taskNumber() == null || batch.getSubtaskDailySequence() == null) return null;
+        return task.taskNumber() + "-" + String.format(Locale.ROOT, "%03d", batch.getSubtaskDailySequence());
     }
 
     private RedemptionCodeTask createTask(String groupingKey) {

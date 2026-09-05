@@ -28,6 +28,10 @@ public class RedemptionCodeBatch {
     @Column(nullable = false, length = 30) private String status = "CREATING";
     @Column(name = "remote_connection_id") private Long remoteConnectionId;
     @Column(name = "task_id", nullable = false) private Long taskId;
+    /** Shanghai business day used for the child-task sequence. */
+    @Column(name = "subtask_date", nullable = false) private LocalDate subtaskDate;
+    /** One-based sequence of a child task created within {@link #subtaskDate}. */
+    @Column(name = "subtask_daily_sequence", nullable = false) private Integer subtaskDailySequence;
     @Column(name = "export_group_key", length = 100) private String exportGroupKey;
     @Column(name = "remote_publish_environment", length = 20) private String remotePublishEnvironment;
     @Column(name = "remote_flow_times") private Integer remoteFlowTimes;

@@ -648,6 +648,13 @@ public class RedemptionRemoteOperationService {
     }
     /** The remote console uses the same value for {@code group_desc} and {@code remark}. */
     private String remoteDescription(RedemptionCodeBatch batch, RedemptionCodeIssue issue) {
+        if (batch.getRedemptionType() == RedemptionCodeType.AGENT) {
+            LocalDate effectiveDate = issue.getClaimDate().plusDays(batch.getValidFromDayOffset() == null ? 0 : batch.getValidFromDayOffset());
+            String audience = labelIds(issue).isEmpty()
+                    ? "全部"
+                    : "存款" + issue.getMinDepositAmount().stripTrailingZeros().toPlainString();
+            return "%d-%02d代理%s".formatted(effectiveDate.getMonthValue(), effectiveDate.getDayOfMonth(), audience);
+        }
         if (batch.getRedemptionType() == RedemptionCodeType.PREVIOUS_DAY_DEPOSIT) {
             return "NEW-" + compactMonthDay(issue.getClaimDate()) + "存款" + issue.getMinDepositAmount().stripTrailingZeros().toPlainString();
         }

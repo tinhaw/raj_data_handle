@@ -496,7 +496,9 @@ async def put_account_tag_snapshot(
 @router.get("/{account_id}/reward-tier-preset", response_model=RewardTierPresetResponse)
 async def get_account_reward_tier_preset(
     account_id: str,
-    redemption_type: Literal["SEVEN_DAY_DEPOSIT", "PREVIOUS_DAY_DEPOSIT"] = "SEVEN_DAY_DEPOSIT",
+    redemption_type: Literal[
+        "SEVEN_DAY_DEPOSIT", "PREVIOUS_DAY_DEPOSIT", "AGENT"
+    ] = "SEVEN_DAY_DEPOSIT",
     _: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REDEMPTION_VIEW)),
     session: AsyncSession = Depends(get_db_session),
 ) -> RewardTierPresetResponse:
@@ -512,7 +514,9 @@ async def get_account_reward_tier_preset(
 async def put_account_reward_tier_preset(
     account_id: str,
     payload: RewardTierPresetWrite,
-    redemption_type: Literal["SEVEN_DAY_DEPOSIT", "PREVIOUS_DAY_DEPOSIT"] = "SEVEN_DAY_DEPOSIT",
+    redemption_type: Literal[
+        "SEVEN_DAY_DEPOSIT", "PREVIOUS_DAY_DEPOSIT", "AGENT"
+    ] = "SEVEN_DAY_DEPOSIT",
     auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REMOTE_ACCOUNT_MANAGE)),
     session: AsyncSession = Depends(get_db_session),
 ) -> RewardTierPresetResponse:

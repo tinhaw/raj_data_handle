@@ -359,8 +359,12 @@ function previousDayTiers(profile: PreviousDayProfile): CodeGroupTierDraft[] {
 }
 
 function isPreviousDayDeposit() { return form.value.redemptionType === 'PREVIOUS_DAY_DEPOSIT' }
+function isAgentCodeGroup() { return form.value.redemptionType === 'AGENT' }
 function isAllUsersTier(tier: CodeGroupTierDraft) { return tier.userType === 'ALL_USERS' }
-function redemptionTypeLabel(type: RedemptionCodeType) { return type === 'PREVIOUS_DAY_DEPOSIT' ? '日充值' : '近 7 天充值' }
+function redemptionTypeLabel(type: RedemptionCodeType) {
+  if (type === 'AGENT') return '代理'
+  return type === 'PREVIOUS_DAY_DEPOSIT' ? '日充值' : '近 7 天充值'
+}
 
 function newCodeGroupForm(): CodeGroupForm {
   const range = futureRange(7)
@@ -572,14 +576,18 @@ function taskName(task: CodeGroupTask) {
   return `${first?.campaign.name?.replace(/\s*·\s*[^·]+$/, '') || '批量兑换码组'} · ${task.members.length} 个盘口`
 }
 function taskBatchNumbers(task: CodeGroupTask) {
-  return task.members.map((member) => `#${member.detail.batch.id}`).join('、')
+  return task.members.map(subtaskDisplayId).join('、')
 }
 function taskSummary(task: CodeGroupTask) {
-  if (!isMultiMarketTask(task)) return `执行批次 #${taskPrimary(task).detail.batch.id}`
-  return `执行批次 ${taskBatchNumbers(task)} · 包含 ${task.members.length} 个盘口，按选择顺序串行执行`
+  if (!isMultiMarketTask(task)) return `子任务 ${subtaskDisplayId(taskPrimary(task))}`
+  return `子任务 ${taskBatchNumbers(task)} · 包含 ${task.members.length} 个盘口，按选择顺序串行执行`
 }
 function taskMemberLabel(member: CodeGroupRow) {
-  return `${remoteMarketLabel(member)} · 批次 #${member.detail.batch.id}`
+  return `${remoteMarketLabel(member)} · 子任务 ${subtaskDisplayId(member)}`
+}
+function subtaskDisplayId(member: CodeGroupRow | undefined) {
+  if (!member) return '—'
+  return member.detail.batch.subtaskNumber || `#${member.detail.batch.id}`
 }
 function taskMarkets(task: CodeGroupTask) {
   return task.members.map(remoteMarketLabel).filter((value, index, values) => values.indexOf(value) === index).join(' → ') || '—'
@@ -901,6 +909,13 @@ function standardSevenDayTiers() {
   }
 }
 
+function defaultAgentTiers(): CodeGroupTierDraft[] {
+  return [{
+    userType: 'ALL_USERS', displayName: '全部用户', minDepositAmount: 0,
+    bonusAmount: 1, bonusMaxAmount: 3, labelIds: [],
+  }]
+}
+
 /** Applies a saved market preset when usable, otherwise that market's standard five tiers. */
 function applyMarketTierDefaults() {
   const preset = rewardTierPreset.value
@@ -910,6 +925,10 @@ function applyMarketTierDefaults() {
   }
   if (isPreviousDayDeposit()) {
     resetPreviousDayTiers()
+    return
+  }
+  if (isAgentCodeGroup()) {
+    form.value.tiers = defaultAgentTiers()
     return
   }
   const standard = standardSevenDayTiers()
@@ -997,6 +1016,10 @@ function isLabelUsedByOtherTier(labelId: string | number, currentTier: CodeGroup
 }
 
 function restoreStandardTiers() {
+  if (isAgentCodeGroup()) {
+    form.value.tiers = defaultAgentTiers()
+    return
+  }
   const standard = standardSevenDayTiers()
   if (standard.missing.length) {
     ElMessage.warning(`当前盘口标签目录未包含完整标准五档；缺少 ${standard.missing.map((tier) => tier.minDepositAmount).join('、')} 起档`)
@@ -1534,7 +1557,7 @@ onUnmounted(() => {
           <el-form-item class="code-group-form__date-range" label="开始兑换日期范围（表格列）" required>
             <el-date-picker v-model="form.dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" :disabled-date="(date: Date) => date < new Date(`${todayIso()}T00:00:00`)" style="width: 100%" />
             <div class="date-presets"><span>快捷选择</span><el-button size="small" @click="applyFutureRange(7)">未来 7 天</el-button><el-button size="small" @click="applyFutureRange(30)">未来 30 天</el-button></div>
-            <p class="field-note">范围内每一天对应表格中的一列；系统按照“开始兑换日 × 用户类型/标签档位”生成独立兑换码组，例如 <strong>{{ isPreviousDayDeposit() ? 'NEW-818存款200' : 'NEW-808到814存款100' }}</strong>。</p>
+            <p class="field-note">范围内每一天对应表格中的一列；系统按照“开始兑换日 × 用户类型/标签档位”生成独立兑换码组，例如 <strong>{{ isAgentCodeGroup() ? '9-02代理存款200' : (isPreviousDayDeposit() ? 'NEW-818存款200' : 'NEW-808到814存款100') }}</strong>。</p>
           </el-form-item>
           <el-form-item class="code-group-form__validity" label="兑换码生效时间（远端 valid_time）" required>
             <div class="validity-editor">
@@ -1560,8 +1583,9 @@ onUnmounted(() => {
             <el-radio-group v-model="form.redemptionType" @change="changeRedemptionType">
               <el-radio value="SEVEN_DAY_DEPOSIT">近 7 天充值</el-radio>
               <el-radio value="PREVIOUS_DAY_DEPOSIT">日充值</el-radio>
+              <el-radio value="AGENT">代理</el-radio>
             </el-radio-group>
-            <p class="field-note">日充值类型只核验开始兑换日前一天的充值金额；兑换码实际有效期以上方生效时间规则为准。</p>
+            <p class="field-note">日充值只核验开始兑换日前一天的充值金额；代理类型将按生效首日生成“9-02代理全部 / 9-02代理存款200”名称，并导出代理模板样式。兑换码实际有效期以上方规则为准。</p>
           </el-form-item>
           <el-form-item v-if="isPreviousDayDeposit() && form.remoteMarketId" class="code-group-form__code-type" label="当前编辑盘口的日充值标签方案">
             <el-tag type="info">{{ previousDayProfileLabel }}</el-tag>
@@ -1581,7 +1605,7 @@ onUnmounted(() => {
         </el-tabs>
         <section class="tier-panel">
           <div class="tier-panel__heading">
-          <div><strong>{{ marketLabel(form.remoteMarketId) }} · 用户类型与兑换金额</strong><p>每个档位先选择用户类型。“标签用户”必须选择标签 ID；“全部用户”不会向远端发送标签数组。预设按当前账号和兑换码类型独立保存，日充值与近 7 天充值互不覆盖。</p>
+          <div><strong>{{ marketLabel(form.remoteMarketId) }} · 用户类型与兑换金额</strong><p>每个档位先选择用户类型。“标签用户”必须选择标签 ID；“全部用户”不会向远端发送标签数组。预设按当前账号和兑换码类型独立保存，三种兑换码类型互不覆盖。</p>
             <p v-if="rewardTierPresetLoading" class="field-note">正在读取已保存标签和组合预设…</p>
             <p v-else-if="rewardTierPreset?.exists" class="field-note"><el-tag size="small" :type="rewardTierPreset.stale ? 'warning' : 'success'">{{ rewardTierPreset.stale ? '预设待确认' : '已保存预设' }}</el-tag> 保存于 {{ formatDateTime(rewardTierPreset.savedAt) }}</p>
             <p v-else class="field-note">当前类型尚未保存预设，已加载默认档位。修改后可另存当前预设。</p>
@@ -1677,7 +1701,7 @@ onUnmounted(() => {
         <el-descriptions :column="2" border class="group-detail-summary">
           <el-descriptions-item label="任务编号">{{ selectedTaskDisplayId }}</el-descriptions-item>
           <el-descriptions-item label="操作人">{{ selectedGroup.detail.batch.operatorUsername || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="执行批次">#{{ selectedGroup.detail.batch.id }}</el-descriptions-item>
+          <el-descriptions-item label="子任务编号">{{ subtaskDisplayId(selectedGroup) }}</el-descriptions-item>
           <el-descriptions-item label="开始兑换日期">{{ formatDate(selectedGroup.detail.batch.claimDateFrom) }} 至 {{ formatDate(selectedGroup.detail.batch.claimDateTo) }}</el-descriptions-item>
           <el-descriptions-item label="任务状态"><el-tag :type="groupStatus(selectedGroup).type">{{ groupStatus(selectedGroup).text }}</el-tag></el-descriptions-item>
           <el-descriptions-item label="远端账号">{{ selectedGroup.detail.batch.remoteConnectionName || '—' }}</el-descriptions-item>
