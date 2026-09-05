@@ -40,12 +40,17 @@ async def save_session_policy(
         raise RemoteSessionError("远端账号不存在。")
     now = datetime.now(UTC)
     account.auto_relogin = request.auto_relogin
+    interval_minutes = (
+        request.relogin_interval_hours * 60
+        if request.relogin_interval_hours is not None
+        else None
+    )
     # Identical saves do not postpone the existing schedule.
-    if account.relogin_interval_minutes != request.relogin_interval_minutes:
-        account.relogin_interval_minutes = request.relogin_interval_minutes
+    if account.relogin_interval_minutes != interval_minutes:
+        account.relogin_interval_minutes = interval_minutes
         account.next_relogin_at = (
-            now + timedelta(minutes=request.relogin_interval_minutes)
-            if request.relogin_interval_minutes
+            now + timedelta(minutes=interval_minutes)
+            if interval_minutes
             else None
         )
     account.updated_by = actor_user_id
@@ -57,7 +62,7 @@ async def save_session_policy(
         target_id=account.id,
         metadata={
             "auto_relogin": request.auto_relogin,
-            "relogin_interval_minutes": request.relogin_interval_minutes,
+            "relogin_interval_hours": request.relogin_interval_hours,
         },
     )
     await session.commit()
@@ -144,7 +149,7 @@ async def operate_account_connection(
             not utc(account.next_relogin_at) or utc(account.next_relogin_at) <= datetime.now(UTC)
         ):
             account.next_relogin_at = datetime.now(UTC) + timedelta(
-                minutes=account.relogin_interval_minutes or 15
+                minutes=account.relogin_interval_minutes or 60
             )
     if operation == "CHECK":
         account.last_tested_at = datetime.now(UTC)

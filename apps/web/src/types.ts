@@ -110,7 +110,7 @@ export interface RemoteAccount {
   sessionLastError: string | null
   loginRetryAfter: string | null
   autoRelogin: boolean
-  reloginIntervalMinutes: number | null
+  reloginIntervalHours: number | null
   nextReloginAt: string | null
   capabilities: Record<string, boolean>
   createdAt: string

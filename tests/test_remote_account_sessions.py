@@ -413,9 +413,13 @@ async def test_periodic_login_is_opt_in_durable_and_not_driven_by_browser(regist
             account_id=ids[0],
             actor_user_id=1,
             request=RemoteAccountSessionPolicyWrite(
-                relogin_interval_minutes=15, execution_confirmed=True
+                relogin_interval_hours=2, execution_confirmed=True
             ),
         )
+        account = await session.get(RemoteAccount, ids[0])
+        assert account.relogin_interval_minutes == 120
+        source = await session.get(SourceConfig, account.source_id)
+        assert session_public_state(account, source)["relogin_interval_hours"] == 2
     assert calls == 0
     await mutate(registry, next_relogin_at=datetime.now(UTC) - timedelta(seconds=1))
     async with factory() as session:
@@ -476,17 +480,17 @@ async def test_disabled_account_and_missing_check_grant_make_no_remote_calls(reg
             )
 
 
-@pytest.mark.parametrize("value", [0, 1, 14, 10081, 15.5])
+@pytest.mark.parametrize("value", [0, -1, 169, 1.5])
 def test_interval_validation(value):
     with pytest.raises(ValidationError):
-        RemoteAccountSessionPolicyWrite(relogin_interval_minutes=value, execution_confirmed=True)
+        RemoteAccountSessionPolicyWrite(relogin_interval_hours=value, execution_confirmed=True)
 
 
 def test_explicit_confirmation_required_and_opaque_expiry_labelled():
     with pytest.raises(ValidationError):
         RemoteAccountConnectionRequest(operation="RELOGIN")
     with pytest.raises(ValidationError):
-        RemoteAccountSessionPolicyWrite(relogin_interval_minutes=60)
+        RemoteAccountSessionPolicyWrite(relogin_interval_hours=1)
     now = datetime.now(UTC)
     expiry, estimated = token_expiry("opaque-mock", now)
     assert expiry == now + timedelta(minutes=30) and estimated

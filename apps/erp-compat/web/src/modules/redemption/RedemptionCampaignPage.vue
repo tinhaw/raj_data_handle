@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Download, Plus, Refresh, Setting } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, TableV2FixedDir } from 'element-plus'
+import type { Columns } from 'element-plus'
 import { api } from '@/api/client'
 import type {
   RedemptionBatchDetail,
@@ -94,6 +95,8 @@ const advancedOptionsOpen = ref<string[]>([])
 const publishOptionsOpen = ref<string[]>([])
 const campaigns = ref<RedemptionCampaign[]>([])
 const codeGroups = ref<CodeGroupRow[]>([])
+const codeGroupTaskCurrentPage = ref(1)
+const codeGroupTaskPageSize = ref(20)
 const selectedTaskMembers = ref<CodeGroupRow[]>([])
 const activeTaskBatchId = ref('')
 const remoteConnections = ref<RedemptionRemoteConnection[]>([])
@@ -103,6 +106,7 @@ const marketTierDrafts = ref<Record<string, MarketTierDraft>>({})
 const activeMarketTab = ref('')
 const selectedGroup = ref<CodeGroupRow>()
 const selectedTaskId = computed(() => selectedTaskMembers.value[0]?.detail.batch.taskId ?? selectedTaskMembers.value[0]?.detail.batch.id)
+const selectedTaskDisplayId = computed(() => formatTaskNumber(selectedTaskId.value, selectedTaskMembers.value[0]?.detail.batch.createdAt))
 const publishTarget = ref<CodeGroupRow | CodeGroupTask>()
 const publishing = ref(false)
 const cancellingPublishId = ref<string | number>()
@@ -200,6 +204,36 @@ const codeGroupTasks = computed<CodeGroupTask[]>(() => {
     ) }))
     .sort((left, right) => String(right.members.at(-1)?.detail.batch.createdAt || '')
       .localeCompare(String(left.members.at(-1)?.detail.batch.createdAt || '')))
+})
+const paginatedCodeGroupTasks = computed(() => {
+  const start = (codeGroupTaskCurrentPage.value - 1) * codeGroupTaskPageSize.value
+  return codeGroupTasks.value.slice(start, start + codeGroupTaskPageSize.value)
+})
+const codeGroupTaskColumns: Columns<CodeGroupTask> = [
+  { key: 'taskId', dataKey: 'taskId', title: '任务编号', width: 142, align: 'center', fixed: TableV2FixedDir.LEFT },
+  { key: 'name', dataKey: 'id', title: '兑换码组', width: 210 },
+  { key: 'claimDate', dataKey: 'id', title: '开始兑换日期', width: 175 },
+  { key: 'account', dataKey: 'id', title: '远端账号', width: 135 },
+  { key: 'market', dataKey: 'id', title: '盘口', width: 150 },
+  { key: 'status', dataKey: 'id', title: '状态', width: 112, align: 'center' },
+  { key: 'labels', dataKey: 'id', title: '用户类型 / 标签 ID', width: 240 },
+  { key: 'redemptionType', dataKey: 'id', title: '兑换码类型', width: 128 },
+  { key: 'tiers', dataKey: 'id', title: '充值档位 · 兑换金额', width: 250 },
+  { key: 'progress', dataKey: 'id', title: '生成进度', width: 180 },
+  { key: 'publishedAt', dataKey: 'id', title: '发布时间', width: 205 },
+  { key: 'remark', dataKey: 'id', title: '备注', width: 250 },
+  { key: 'createdAt', dataKey: 'id', title: '创建时间', width: 170 },
+  { key: 'actions', dataKey: 'id', title: '操作', width: 228, fixed: TableV2FixedDir.RIGHT },
+]
+
+function changeCodeGroupTaskPageSize(pageSize: number) {
+  codeGroupTaskPageSize.value = pageSize
+  codeGroupTaskCurrentPage.value = 1
+}
+
+watch([() => codeGroupTasks.value.length, codeGroupTaskPageSize], () => {
+  const lastPage = Math.max(1, Math.ceil(codeGroupTasks.value.length / codeGroupTaskPageSize.value))
+  if (codeGroupTaskCurrentPage.value > lastPage) codeGroupTaskCurrentPage.value = lastPage
 })
 const failedRemoteCreationCount = computed(() => selectedGroup.value ? failedRemoteCreationIssues(selectedGroup.value).length : 0)
 const selectedFailedIssueCount = computed(() => selectedFailedRemoteCreations().length)
@@ -436,6 +470,19 @@ function issueValidityLabel(batch: RedemptionBatchDetail['batch'], claimDate: st
 }
 
 function formatDate(value?: string) { return value ? value.replaceAll('-', '/') : '—' }
+function formatTaskNumber(taskId?: string | number, createdAt?: string) {
+  const sequence = String(taskId ?? '').padStart(4, '0')
+  if (!createdAt) return sequence
+  const timestamp = new Date(createdAt)
+  if (Number.isNaN(timestamp.getTime())) return `${createdAt.slice(0, 10).replaceAll('-', '')}-${sequence}`
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(timestamp).reduce<Record<string, string>>((result, part) => {
+    if (part.type !== 'literal') result[part.type] = part.value
+    return result
+  }, {})
+  return `${parts.year}${parts.month}${parts.day}-${sequence}`
+}
 function formatDateTime(value?: string) {
   if (!value) return '—'
   const date = new Date(value)
@@ -595,6 +642,7 @@ function taskRemark(task: CodeGroupTask) {
   return task.members.map(groupRemark).filter((value) => value !== '—').join('；') || '—'
 }
 function taskCreatedAt(task: CodeGroupTask) { return taskPrimary(task)?.detail.batch.createdAt }
+function taskDisplayId(task: CodeGroupTask) { return formatTaskNumber(task.taskId, taskCreatedAt(task)) }
 function canExportMultiMarketTask(task: CodeGroupTask) {
   return Boolean(task.exportGroupKey) && isMultiMarketTask(task) && task.members.every(isSuccess)
 }
@@ -1185,12 +1233,20 @@ async function submitPublish() {
     ElMessage.warning('仍有盘口尚未完成远端配置，请先处理完成后再统一发布')
     return
   }
+  // Keep the submitted options after the dialog is destroyed.  A multi-market
+  // publish also downloads codes serially, which can take considerably longer
+  // than the request that accepts the publish action.
+  const { mode, scheduledTime, fallbackToScheduled } = publishForm.value
   publishing.value = true
+  publishDialogVisible.value = false
+  ElMessage.info(rows.length > 1
+    ? `已开始按盘口顺序发布 ${rows.length} 个盘口，任务进度会自动刷新`
+    : '已开始发布，任务进度会自动刷新')
   try {
     const failures: string[] = []
     for (const row of rows) {
       try {
-        const detail = await api.redemption.publishRemoteBatch(row.detail.batch.id, row.detail.batch.rowVersion, publishForm.value.mode, publishForm.value.scheduledTime, publishForm.value.fallbackToScheduled)
+        const detail = await api.redemption.publishRemoteBatch(row.detail.batch.id, row.detail.batch.rowVersion, mode, scheduledTime, fallbackToScheduled)
         const replacement = { campaign: row.campaign, detail }
         replaceCodeGroup(replacement)
         if (detail.batch.remotePublishMode !== 'SCHEDULED' && detail.batch.status === 'PUBLISHED') {
@@ -1200,15 +1256,17 @@ async function submitPublish() {
         failures.push(`${remoteMarketLabel(row)}：${error instanceof Error ? error.message : '发布失败'}`)
       }
     }
-    publishDialogVisible.value = false
-    const scheduled = publishForm.value.mode === 'SCHEDULED'
+    const scheduled = mode === 'SCHEDULED'
     ElMessage[failures.length ? 'warning' : 'success'](failures.length
       ? `${scheduled ? '定时发布' : '立即发布'}部分失败：${failures.join('；')}`
       : rows.length > 1
         ? (scheduled ? `已按盘口顺序提交 ${rows.length} 个定时发布任务` : `已按盘口顺序发布并下载 ${rows.length} 个盘口的兑换码`)
-        : (scheduled ? '已提交定时发布' : '已立即发布并下载兑换码'))
+      : (scheduled ? '已提交定时发布' : '已立即发布并下载兑换码'))
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : '远端发布失败') }
-  finally { publishing.value = false }
+  finally {
+    publishing.value = false
+    await loadCodeGroups()
+  }
 }
 
 async function downloadPublishedCodes(row: CodeGroupRow, activateScheduled = false, silent = false) {
@@ -1404,64 +1462,67 @@ onUnmounted(() => {
         <span class="code-group-list__count">共 {{ codeGroupTasks.length }} 个兑换码组任务</span>
       </header>
 
-      <el-table v-if="codeGroupTasks.length" v-loading="loading" :data="codeGroupTasks" class="code-group-table">
-        <el-table-column label="任务批次号" width="118" align="center">
-          <template #default="{ row }">#{{ row.taskId }}</template>
-        </el-table-column>
-        <el-table-column label="兑换码组" min-width="210">
-          <template #default="{ row }">
-            <div class="group-name">
-              <strong>{{ taskName(row) }}</strong>
-              <span>{{ taskSummary(row) }}</span>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="开始兑换日期" min-width="175">
-          <template #default="{ row }">{{ formatDate(taskPrimary(row).detail.batch.claimDateFrom) }} 至 {{ formatDate(taskPrimary(row).detail.batch.claimDateTo) }}</template>
-        </el-table-column>
-        <el-table-column label="远端账号" min-width="135" show-overflow-tooltip>
-          <template #default="{ row }">{{ taskAccounts(row) }}</template>
-        </el-table-column>
-        <el-table-column label="盘口" min-width="150" show-overflow-tooltip>
-          <template #default="{ row }">{{ taskMarkets(row) }}</template>
-        </el-table-column>
-        <el-table-column label="状态" width="112">
-          <template #default="{ row }"><el-tag :type="taskStatus(row).type" effect="light">{{ taskStatus(row).text }}</el-tag></template>
-        </el-table-column>
-        <el-table-column label="用户类型 / 标签 ID" min-width="240" show-overflow-tooltip>
-          <template #default="{ row }">{{ taskLabels(row) }}</template>
-        </el-table-column>
-        <el-table-column label="兑换码类型" width="128"><template #default="{ row }">{{ redemptionTypeLabel(taskPrimary(row).detail.batch.redemptionType) }}</template></el-table-column>
-        <el-table-column label="充值档位 · 兑换金额" min-width="250" show-overflow-tooltip>
-          <template #default="{ row }">{{ taskTiers(row) }}</template>
-        </el-table-column>
-        <el-table-column label="生成进度" min-width="180">
-          <template #default="{ row }"><span class="group-progress">{{ taskProgress(row) }}</span></template>
-        </el-table-column>
-        <el-table-column label="发布时间" min-width="205" show-overflow-tooltip>
-          <template #default="{ row }">{{ taskPublishTime(row) }}</template>
-        </el-table-column>
-        <el-table-column label="备注" min-width="250" show-overflow-tooltip>
-          <template #default="{ row }">{{ taskRemark(row) }}</template>
-        </el-table-column>
-        <el-table-column label="创建时间" width="170"><template #default="{ row }">{{ formatDateTime(taskCreatedAt(row)) }}</template></el-table-column>
-        <el-table-column label="操作" width="228" fixed="right">
-          <template #default="{ row }">
-            <el-button link type="primary" :loading="row.members.some(isProcessing)" @click="isMultiMarketTask(row) ? openTaskDetail(row) : openGroupDetail(taskPrimary(row))">查看任务</el-button>
-            <template v-if="!isMultiMarketTask(row)">
-              <el-button v-if="hasPendingPublishReservation(taskPrimary(row))" link type="warning" :loading="recoveringPublishId === taskPrimary(row).detail.batch.id" @click="recoverPublishReservation(taskPrimary(row))">恢复发布</el-button>
-              <el-button v-else-if="taskPrimary(row).detail.batch.status === 'READY_TO_PUBLISH'" link type="primary" @click="openPublishDialog(taskPrimary(row))">选择发布方式</el-button>
-              <el-button v-if="isScheduledPublish(taskPrimary(row))" link type="danger" :disabled="!canCancelScheduledPublish(taskPrimary(row))" :loading="cancellingPublishId === taskPrimary(row).detail.batch.id" @click="cancelScheduledPublish(taskPrimary(row))">撤销发布</el-button>
-              <el-button v-if="canDownloadScheduledCodes(taskPrimary(row))" link type="primary" :loading="isProcessing(taskPrimary(row))" @click="downloadPublishedCodes(taskPrimary(row), true)">下载兑换码</el-button>
-              <template v-if="isSuccess(taskPrimary(row)) && canExport">
-                <el-button link type="primary" :icon="Download" :loading="exportingId === taskPrimary(row).detail.batch.id" @click="exportGroup(taskPrimary(row))">下载 Excel</el-button>
+      <div v-if="codeGroupTasks.length" v-loading="loading" class="code-group-virtual-table">
+        <el-auto-resizer>
+          <template #default="{ height, width }">
+            <el-table-v2
+              :columns="codeGroupTaskColumns"
+              :data="paginatedCodeGroupTasks"
+              :width="width"
+              :height="height"
+              :header-height="42"
+              :row-height="94"
+              row-key="id"
+              fixed
+              scrollbar-always-on
+              class="code-group-table"
+            >
+              <template #cell="{ column, rowData: row }">
+                <span v-if="column.key === 'taskId'">{{ taskDisplayId(row) }}</span>
+                <div v-else-if="column.key === 'name'" class="group-name">
+                  <strong>{{ taskName(row) }}</strong>
+                  <span>{{ taskSummary(row) }}</span>
+                </div>
+                <span v-else-if="column.key === 'claimDate'" class="virtual-cell" :title="`${formatDate(taskPrimary(row).detail.batch.claimDateFrom)} 至 ${formatDate(taskPrimary(row).detail.batch.claimDateTo)}`">{{ formatDate(taskPrimary(row).detail.batch.claimDateFrom) }} 至 {{ formatDate(taskPrimary(row).detail.batch.claimDateTo) }}</span>
+                <span v-else-if="column.key === 'account'" class="virtual-cell" :title="taskAccounts(row)">{{ taskAccounts(row) }}</span>
+                <span v-else-if="column.key === 'market'" class="virtual-cell" :title="taskMarkets(row)">{{ taskMarkets(row) }}</span>
+                <el-tag v-else-if="column.key === 'status'" :type="taskStatus(row).type" effect="light">{{ taskStatus(row).text }}</el-tag>
+                <span v-else-if="column.key === 'labels'" class="virtual-cell" :title="taskLabels(row)">{{ taskLabels(row) }}</span>
+                <span v-else-if="column.key === 'redemptionType'" class="virtual-cell">{{ redemptionTypeLabel(taskPrimary(row).detail.batch.redemptionType) }}</span>
+                <span v-else-if="column.key === 'tiers'" class="virtual-cell" :title="taskTiers(row)">{{ taskTiers(row) }}</span>
+                <span v-else-if="column.key === 'progress'" class="group-progress">{{ taskProgress(row) }}</span>
+                <span v-else-if="column.key === 'publishedAt'" class="virtual-cell" :title="taskPublishTime(row)">{{ taskPublishTime(row) }}</span>
+                <span v-else-if="column.key === 'remark'" class="virtual-cell" :title="taskRemark(row)">{{ taskRemark(row) }}</span>
+                <span v-else-if="column.key === 'createdAt'" class="virtual-cell">{{ formatDateTime(taskCreatedAt(row)) }}</span>
+                <div v-else-if="column.key === 'actions'" class="virtual-actions">
+                  <el-button link type="primary" size="small" :loading="row.members.some(isProcessing)" @click="isMultiMarketTask(row) ? openTaskDetail(row) : openGroupDetail(taskPrimary(row))">查看任务</el-button>
+                  <template v-if="!isMultiMarketTask(row)">
+                    <el-button v-if="hasPendingPublishReservation(taskPrimary(row))" link type="warning" size="small" :loading="recoveringPublishId === taskPrimary(row).detail.batch.id" @click="recoverPublishReservation(taskPrimary(row))">恢复发布</el-button>
+                    <el-button v-else-if="taskPrimary(row).detail.batch.status === 'READY_TO_PUBLISH'" link type="primary" size="small" @click="openPublishDialog(taskPrimary(row))">选择发布方式</el-button>
+                    <el-button v-if="isScheduledPublish(taskPrimary(row))" link type="danger" size="small" :disabled="!canCancelScheduledPublish(taskPrimary(row))" :loading="cancellingPublishId === taskPrimary(row).detail.batch.id" @click="cancelScheduledPublish(taskPrimary(row))">撤销发布</el-button>
+                    <el-button v-if="canDownloadScheduledCodes(taskPrimary(row))" link type="primary" size="small" :loading="isProcessing(taskPrimary(row))" @click="downloadPublishedCodes(taskPrimary(row), true)">下载兑换码</el-button>
+                    <el-button v-if="isSuccess(taskPrimary(row)) && canExport" link type="primary" size="small" :icon="Download" :loading="exportingId === taskPrimary(row).detail.batch.id" @click="exportGroup(taskPrimary(row))">下载 Excel</el-button>
+                  </template>
+                  <el-button v-if="canPublishMultiMarketTask(row)" link type="primary" size="small" :loading="publishing" @click="openPublishDialog(row)">选择发布方式</el-button>
+                  <el-button v-if="canExportMultiMarketTask(row) && canExport" link type="primary" size="small" :icon="Download" :loading="exportingGroupKey === row.exportGroupKey" @click="exportMultiMarketGroup(row)">下载 Excel</el-button>
+                </div>
               </template>
-            </template>
-            <el-button v-if="canPublishMultiMarketTask(row)" link type="primary" :loading="publishing" @click="openPublishDialog(row)">选择发布方式</el-button>
-            <el-button v-if="canExportMultiMarketTask(row) && canExport" link type="primary" :icon="Download" :loading="exportingGroupKey === row.exportGroupKey" @click="exportMultiMarketGroup(row)">下载 Excel</el-button>
+            </el-table-v2>
           </template>
-        </el-table-column>
-      </el-table>
+        </el-auto-resizer>
+      </div>
+      <div v-if="codeGroupTasks.length" class="code-group-list__pagination">
+        <el-pagination
+          v-model:current-page="codeGroupTaskCurrentPage"
+          :page-size="codeGroupTaskPageSize"
+          :page-sizes="[20, 50, 100]"
+          :total="codeGroupTasks.length"
+          :disabled="loading"
+          background
+          layout="total, sizes, prev, pager, next, jumper"
+          @size-change="changeCodeGroupTaskPageSize"
+        />
+      </div>
       <el-empty v-else v-loading="loading" :image-size="68" description="还没有兑换码组，点击右上角“批量生成兑换码组”开始创建" />
     </article>
 
@@ -1605,14 +1666,14 @@ onUnmounted(() => {
       <template #footer><el-button @click="publishDialogVisible = false">取消</el-button><el-button type="primary" :loading="publishing" @click="submitPublish">确认发布</el-button></template>
     </el-dialog>
 
-    <el-drawer v-model="detailDrawerVisible" :title="selectedTaskMembers.length > 1 ? `任务 #${selectedTaskId} · 多盘口兑换码组任务明细` : (selectedGroup ? `任务 #${selectedTaskId} · ${selectedGroup.campaign.name} · 任务明细` : '兑换码组任务明细')" size="720px">
+    <el-drawer v-model="detailDrawerVisible" :title="selectedTaskMembers.length > 1 ? `任务 ${selectedTaskDisplayId} · 多盘口兑换码组任务明细` : (selectedGroup ? `任务 ${selectedTaskDisplayId} · ${selectedGroup.campaign.name} · 任务明细` : '兑换码组任务明细')" size="720px">
       <template v-if="selectedGroup">
         <el-tabs v-if="selectedTaskMembers.length > 1" v-model="activeTaskBatchId" class="task-market-tabs" @tab-change="selectTaskMember">
           <el-tab-pane v-for="member in selectedTaskMembers" :key="member.detail.batch.id" :name="String(member.detail.batch.id)" :label="taskMemberLabel(member)" />
         </el-tabs>
         <p v-if="selectedTaskMembers.length > 1" class="field-note task-detail-note">各盘口保留独立的远端创建、发布与下载进度；系统会按盘口顺序完成创建，所有盘口完成后可在任务列表下载同一份多 Sheet Excel。</p>
         <el-descriptions :column="2" border class="group-detail-summary">
-          <el-descriptions-item label="任务编号">#{{ selectedGroup.detail.batch.taskId || selectedGroup.detail.batch.id }}</el-descriptions-item>
+          <el-descriptions-item label="任务编号">{{ selectedTaskDisplayId }}</el-descriptions-item>
           <el-descriptions-item label="执行批次">#{{ selectedGroup.detail.batch.id }}</el-descriptions-item>
           <el-descriptions-item label="开始兑换日期">{{ formatDate(selectedGroup.detail.batch.claimDateFrom) }} 至 {{ formatDate(selectedGroup.detail.batch.claimDateTo) }}</el-descriptions-item>
           <el-descriptions-item label="任务状态"><el-tag :type="groupStatus(selectedGroup).type">{{ groupStatus(selectedGroup).text }}</el-tag></el-descriptions-item>
@@ -1658,10 +1719,17 @@ onUnmounted(() => {
 .code-group-list__heading h3 { margin: 0; color: #101828; font-size: 15px; }
 .code-group-list__heading p { margin: 5px 0 0; color: #667085; font-size: 12px; }
 .code-group-list__count { padding-top: 3px; color: #667085; font-size: 12px; white-space: nowrap; }
+.code-group-virtual-table { height: clamp(360px, calc(100vh - 320px), 640px); min-width: 0; }
 .code-group-table { --el-table-header-bg-color: #f9fafb; --el-table-border-color: #eaecf0; --el-table-row-hover-bg-color: #f8fbff; }
+.code-group-table :deep(.el-table-v2__header-cell) { color: #667085; font-size: 12px; font-weight: 600; }
+.code-group-table :deep(.el-table-v2__row-cell) { padding: 0 12px; color: #475467; font-size: 12px; }
+.code-group-list__pagination { display: flex; justify-content: flex-end; padding: 14px 20px; border-top: 1px solid #eaecf0; }
 .group-name { display: grid; gap: 5px; }
 .group-name strong { color: #182230; font-size: 13px; }
-.group-name span { color: #98a2b3; font-size: 11px; }
+.group-name span { overflow: hidden; color: #98a2b3; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.virtual-cell { display: block; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.virtual-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; width: 100%; }
+.virtual-actions :deep(.el-button + .el-button) { margin-left: 0; }
 .group-progress { color: #475467; font-size: 12px; white-space: nowrap; }
 .code-group-form__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
 .code-group-form__grid--options { grid-template-columns: 1.15fr 1fr 1fr; }

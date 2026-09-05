@@ -27,7 +27,7 @@ export async function operateAccountConnection(
 export async function saveAccountSessionPolicy(
   accountId: string, payload: {
     autoRelogin: boolean
-    reloginIntervalMinutes: number | null
+    reloginIntervalHours: number | null
     executionConfirmed: boolean
   },
 ): Promise<RemoteAccount> {

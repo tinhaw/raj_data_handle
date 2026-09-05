@@ -39,7 +39,7 @@ const connectionBusy = reactive<Record<string, string>>({})
 const policyAccount = ref<RemoteAccount | null>(null)
 const policyVisible = ref(false)
 const policySaving = ref(false)
-const policyForm = reactive({ autoRelogin: true, periodic: false, intervalMinutes: 60 })
+const policyForm = reactive({ autoRelogin: true, periodic: false, intervalHours: 1 })
 const clockNow = ref(Date.now())
 let clockTimer: ReturnType<typeof setInterval> | undefined
 const presetAccount = ref<RemoteAccount | null>(null)
@@ -107,6 +107,11 @@ function sessionLabel(account: RemoteAccount): string {
   return account.lastLoggedInAt ? '会话已过期' : '尚未连接'
 }
 
+function reloginIntervalLabel(intervalHours: number | null): string {
+  if (intervalHours === null) return '关闭'
+  return `每 ${Number(intervalHours.toFixed(2))} 小时`
+}
+
 async function runConnection(account: RemoteAccount, operation: 'CHECK' | 'RELOGIN'): Promise<void> {
   if (connectionBusy[account.id] || coolingDown(account)) return
   try {
@@ -133,23 +138,23 @@ async function runConnection(account: RemoteAccount, operation: 'CHECK' | 'RELOG
 function openSessionPolicy(account: RemoteAccount): void {
   policyAccount.value = account
   policyForm.autoRelogin = account.autoRelogin
-  policyForm.periodic = account.reloginIntervalMinutes !== null
-  policyForm.intervalMinutes = account.reloginIntervalMinutes || 60
+  policyForm.periodic = account.reloginIntervalHours !== null
+  policyForm.intervalHours = Math.max(1, Math.ceil(account.reloginIntervalHours || 1))
   policyVisible.value = true
 }
 
 async function saveSessionPolicy(): Promise<void> {
   if (!policyAccount.value) return
-  if (policyForm.periodic && (!Number.isInteger(policyForm.intervalMinutes)
-      || policyForm.intervalMinutes < 15 || policyForm.intervalMinutes > 10080)) {
-    ElMessage.warning('重登间隔必须为 15～10080 分钟的整数。')
+  if (policyForm.periodic && (!Number.isInteger(policyForm.intervalHours)
+      || policyForm.intervalHours < 1 || policyForm.intervalHours > 168)) {
+    ElMessage.warning('重登间隔必须为 1～168 小时的整数。')
     return
   }
   policySaving.value = true
   try {
     await saveAccountSessionPolicy(policyAccount.value.id, {
       autoRelogin: policyForm.autoRelogin,
-      reloginIntervalMinutes: policyForm.periodic ? policyForm.intervalMinutes : null,
+      reloginIntervalHours: policyForm.periodic ? policyForm.intervalHours : null,
       executionConfirmed: policyForm.periodic,
     })
     policyVisible.value = false
@@ -435,7 +440,7 @@ onUnmounted(() => { if (clockTimer) clearInterval(clockTimer) })
         <el-table-column label="自动登录策略" min-width="200">
           <template #default="{ row }">
             <div>过期重登：{{ row.autoRelogin ? '开启（按需）' : '关闭' }}</div>
-            <small class="table-subtext">定时重登：{{ row.reloginIntervalMinutes ? `每 ${row.reloginIntervalMinutes} 分钟` : '关闭' }}</small>
+            <small class="table-subtext">定时重登：{{ reloginIntervalLabel(row.reloginIntervalHours) }}</small>
             <small v-if="row.nextReloginAt" class="table-subtext">下次计划：{{ displayTime(row.nextReloginAt) }}</small>
           </template>
         </el-table-column>
@@ -480,9 +485,9 @@ onUnmounted(() => { if (clockTimer) clearInterval(clockTimer) })
           <el-switch v-model="policyForm.periodic" />
           <span class="field-help">由后台执行，关闭页面仍生效。默认关闭；开启会增加远端登录次数。</span>
         </el-form-item>
-        <el-form-item v-if="policyForm.periodic" label="重登间隔（分钟）">
-          <el-input-number v-model="policyForm.intervalMinutes" :min="15" :max="10080" :precision="0" />
-          <span class="field-help">15～10080 分钟。首次在保存间隔后执行；此后从最近成功登录计算。登录失败会进入冷却。</span>
+        <el-form-item v-if="policyForm.periodic" label="重登间隔（小时）">
+          <el-input-number v-model="policyForm.intervalHours" :min="1" :max="168" :precision="0" />
+          <span class="field-help">1～168 小时。首次在保存间隔后执行；此后从最近成功登录计算。登录失败会进入冷却。</span>
         </el-form-item>
         <el-alert :closable="false" type="warning" show-icon
           title="登录限流保护"

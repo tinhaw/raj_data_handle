@@ -143,7 +143,11 @@ def session_public_state(account: RemoteAccount, source: SourceConfig) -> dict:
         "session_last_error": account.session_last_error,
         "login_retry_after": account.login_retry_after,
         "auto_relogin": account.auto_relogin,
-        "relogin_interval_minutes": account.relogin_interval_minutes,
+        "relogin_interval_hours": (
+            account.relogin_interval_minutes / 60
+            if account.relogin_interval_minutes is not None
+            else None
+        ),
         "next_relogin_at": account.next_relogin_at,
     }
 

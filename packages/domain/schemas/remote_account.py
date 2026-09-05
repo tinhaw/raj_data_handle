@@ -77,7 +77,10 @@ class RemoteAccountResponse(ApiSchema):
     session_last_error: str | None = None
     login_retry_after: datetime | None = None
     auto_relogin: bool = True
-    relogin_interval_minutes: int | None = None
+    # The persistence layer keeps minutes for scheduling precision, while the
+    # administrative API deliberately exposes hours as the operator-facing
+    # policy unit.
+    relogin_interval_hours: float | None = None
     next_relogin_at: datetime | None = None
     capabilities: dict[str, bool]
     created_at: datetime
@@ -97,12 +100,12 @@ class RemoteAccountConnectionRequest(ApiSchema):
 
 class RemoteAccountSessionPolicyWrite(ApiSchema):
     auto_relogin: bool = True
-    relogin_interval_minutes: int | None = Field(default=None, ge=15, le=10080)
+    relogin_interval_hours: int | None = Field(default=None, ge=1, le=168)
     execution_confirmed: bool = False
 
     @model_validator(mode="after")
     def require_schedule_confirmation(self) -> RemoteAccountSessionPolicyWrite:
-        if self.relogin_interval_minutes is not None and not self.execution_confirmed:
+        if self.relogin_interval_hours is not None and not self.execution_confirmed:
             raise ValueError("开启定时重登前必须确认允许后台按此间隔登录远端。")
         return self
 
