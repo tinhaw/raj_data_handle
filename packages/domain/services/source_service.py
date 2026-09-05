@@ -44,6 +44,7 @@ from packages.domain.services.remote_account_credentials import (
     decrypt_remote_account_credentials,
     resolve_default_remote_account_credentials,
 )
+from packages.domain.services.remote_account_session_service import account_session
 from packages.domain.services.remote_charge_service import RajAdminChargeClient, RemoteChargeError
 from packages.domain.services.remote_scoring_review_service import (
     RemoteScoringReviewError,
@@ -676,6 +677,9 @@ async def test_source_connection(
     payment_dictionary_entries = 0
     try:
         async with RajAdminChargeClient(
+            remote_session=account_session(
+                session, envelope=credential_envelope, base_url=source.base_url, settings=settings
+            ),
             base_url=source.base_url,
             username=credentials["username"],
             password=credentials["password"],

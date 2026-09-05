@@ -10,8 +10,8 @@ from typing import Any
 import httpx
 from openpyxl import load_workbook
 
+from packages.domain.services.remote_account_session_service import response_requires_relogin
 from packages.domain.services.remote_charge_service import (
-    AUTH_FAILURE_STATUSES,
     EXPORT_TASK_SAVE_PATH,
     WITHDRAW_ORDER_INDEX_PATH,
     WITHDRAW_STATUS_DICTIONARY_PATH,
@@ -246,12 +246,13 @@ class RajAdminWithdrawClient(RajAdminChargeClient):
             raise RemoteResponseError("远端提现订单导出请求超时。") from exc
         except httpx.HTTPError as exc:
             raise RemoteResponseError("远端提现订单导出请求失败。") from exc
-        if response.status_code in AUTH_FAILURE_STATUSES and allow_relogin:
+        if response_requires_relogin(response) and allow_relogin:
             await self.login(force=True)
             return await self._post_withdraw_export_bytes(
                 body=body,
                 allow_relogin=False,
             )
+        await self._reject_expired_response(response, token)
         if response.status_code >= 400:
             raise RemoteResponseError("远端提现订单导出返回非成功 HTTP 状态。")
         content = response.content

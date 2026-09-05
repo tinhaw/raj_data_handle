@@ -16,6 +16,24 @@ export async function fetchRemoteAccounts(): Promise<RemoteAccount[]> {
   return (await api.get<RemoteAccount[]>('/erp/remote-accounts')).data
 }
 
+export async function operateAccountConnection(
+  accountId: string, operation: 'CHECK' | 'RELOGIN',
+): Promise<RemoteAccount> {
+  return (await api.post<RemoteAccount>(`/erp/remote-accounts/${accountId}/connection`, {
+    operation, executionConfirmed: true,
+  }, { timeout: 90000 })).data
+}
+
+export async function saveAccountSessionPolicy(
+  accountId: string, payload: {
+    autoRelogin: boolean
+    reloginIntervalMinutes: number | null
+    executionConfirmed: boolean
+  },
+): Promise<RemoteAccount> {
+  return (await api.put<RemoteAccount>(`/erp/remote-accounts/${accountId}/session-policy`, payload)).data
+}
+
 export async function createRemoteAccount(payload: {
   sourceId: string
   loginUsername: string

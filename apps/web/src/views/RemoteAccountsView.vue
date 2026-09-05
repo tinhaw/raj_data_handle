@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Delete, Edit, Plus, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import {
@@ -13,6 +13,8 @@ import {
   updateRemoteAccount,
   saveRemoteTagSnapshot,
   saveRewardTierPreset,
+  operateAccountConnection,
+  saveAccountSessionPolicy,
 } from '../api/remoteAccounts'
 import { fetchAllSources } from '../api/sources'
 import { apiErrorMessage } from '../api/client'
@@ -33,6 +35,13 @@ const sources = ref<SourceConfig[]>([])
 const accountDialogVisible = ref(false)
 const presetDialogVisible = ref(false)
 const editingAccount = ref<RemoteAccount | null>(null)
+const connectionBusy = reactive<Record<string, string>>({})
+const policyAccount = ref<RemoteAccount | null>(null)
+const policyVisible = ref(false)
+const policySaving = ref(false)
+const policyForm = reactive({ autoRelogin: true, periodic: false, intervalMinutes: 60 })
+const clockNow = ref(Date.now())
+let clockTimer: ReturnType<typeof setInterval> | undefined
 const presetAccount = ref<RemoteAccount | null>(null)
 const presetTags = ref<RemoteTag[]>([])
 const presetTiers = ref<RewardTierPresetTier[]>([])
@@ -79,6 +88,76 @@ function resetAccountForm(): void {
   accountForm.totpSecret = ''
   accountForm.enabled = true
   accountForm.isDefault = false
+}
+
+function displayTime(value: string | null): string {
+  return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
+}
+
+function coolingDown(account: RemoteAccount): boolean {
+  return Boolean(account.loginRetryAfter && new Date(account.loginRetryAfter).getTime() > clockNow.value)
+}
+
+function sessionLabel(account: RemoteAccount): string {
+  if (!account.enabled || !account.sourceEnabled) return '已停用'
+  if (coolingDown(account)) return '登录冷却中'
+  if (account.hasActiveSession && account.sessionExpiresAt
+      && new Date(account.sessionExpiresAt).getTime() > clockNow.value) return '会话可用'
+  if (account.sessionLastError) return '连接异常'
+  return account.lastLoggedInAt ? '会话已过期' : '尚未连接'
+}
+
+async function runConnection(account: RemoteAccount, operation: 'CHECK' | 'RELOGIN'): Promise<void> {
+  if (connectionBusy[account.id] || coolingDown(account)) return
+  try {
+    await ElMessageBox.confirm(
+      operation === 'CHECK'
+        ? '将访问远端检查兑换码配置读取权限；会话不可用时按自动重登设置登录，不会创建或发布兑换码。'
+        : '将重新登录远端并更新统一会话，可能使旧会话失效。不会重试失败的兑换码任务。',
+      operation === 'CHECK' ? '检测连接' : '重新登录',
+      { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch { return }
+  connectionBusy[account.id] = operation
+  try {
+    await operateAccountConnection(account.id, operation)
+    ElMessage.success(operation === 'CHECK' ? '连接正常，已验证配置读取权限。' : '重新登录成功，会话已更新。')
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '远端连接操作失败。'))
+  } finally {
+    delete connectionBusy[account.id]
+    await load()
+  }
+}
+
+function openSessionPolicy(account: RemoteAccount): void {
+  policyAccount.value = account
+  policyForm.autoRelogin = account.autoRelogin
+  policyForm.periodic = account.reloginIntervalMinutes !== null
+  policyForm.intervalMinutes = account.reloginIntervalMinutes || 60
+  policyVisible.value = true
+}
+
+async function saveSessionPolicy(): Promise<void> {
+  if (!policyAccount.value) return
+  if (policyForm.periodic && (!Number.isInteger(policyForm.intervalMinutes)
+      || policyForm.intervalMinutes < 15 || policyForm.intervalMinutes > 10080)) {
+    ElMessage.warning('重登间隔必须为 15～10080 分钟的整数。')
+    return
+  }
+  policySaving.value = true
+  try {
+    await saveAccountSessionPolicy(policyAccount.value.id, {
+      autoRelogin: policyForm.autoRelogin,
+      reloginIntervalMinutes: policyForm.periodic ? policyForm.intervalMinutes : null,
+      executionConfirmed: policyForm.periodic,
+    })
+    policyVisible.value = false
+    ElMessage.success('登录设置已保存；本次保存不会立即连接远端。')
+    await load()
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '登录设置保存失败。'))
+  } finally { policySaving.value = false }
 }
 
 function openCreateAccount(): void {
@@ -267,11 +346,13 @@ async function savePreset(): Promise<void> {
 }
 
 onMounted(async () => {
+  clockTimer = setInterval(() => { clockNow.value = Date.now() }, 1000)
   await load()
   if (route.query.create === '1' && hasErpPermission('ERP_REMOTE_ACCOUNT_MANAGE')) {
     openCreateAccount()
   }
 })
+onUnmounted(() => { if (clockTimer) clearInterval(clockTimer) })
 </script>
 
 <template>
@@ -299,13 +380,13 @@ onMounted(async () => {
 
     <section class="surface-card table-card">
       <el-table v-loading="loading" :data="accounts" row-key="id">
-        <el-table-column label="盘口" min-width="190">
+        <el-table-column label="盘口" min-width="160">
           <template #default="{ row }">
             <strong>{{ row.sourceDisplayName }}</strong>
             <small class="table-subtext">{{ row.sourceId }}</small>
           </template>
         </el-table-column>
-        <el-table-column label="远端账号" min-width="190">
+        <el-table-column label="远端账号" min-width="170">
           <template #default="{ row }">
             <strong>{{ row.loginUsername || row.displayName }}</strong>
             <small class="table-subtext">{{ row.displayName }}</small>
@@ -334,16 +415,40 @@ onMounted(async () => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="115" align="center">
+        <el-table-column label="启用状态" width="115" align="center">
           <template #default="{ row }">
             <el-tag :type="row.enabled && row.sourceEnabled ? 'success' : 'info'">
               {{ row.enabled && row.sourceEnabled ? '已启用' : '已停用' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column v-if="hasErpPermission('ERP_REMOTE_ACCOUNT_MANAGE')" label="操作" width="350" fixed="right">
+        <el-table-column label="连接 / 登录会话" min-width="250">
+          <template #default="{ row }">
+            <el-tag :type="sessionLabel(row) === '会话可用' ? 'success' : 'info'">{{ sessionLabel(row) }}</el-tag>
+            <small class="table-subtext">最近登录：{{ displayTime(row.lastLoggedInAt) }}</small>
+            <small class="table-subtext">{{ row.sessionExpiryEstimated ? '缓存有效至（估计）' : '会话有效至' }}：{{ displayTime(row.sessionExpiresAt) }}</small>
+            <small class="table-subtext">最近检测：{{ displayTime(row.lastTestedAt) }}{{ row.lastTestStatus ? (row.lastTestStatus === 'SUCCESS' ? ' · 正常' : ' · 失败') : '' }}</small>
+            <small v-if="row.sessionLastError" class="connection-error">{{ row.sessionLastError }}</small>
+            <small v-if="coolingDown(row)" class="table-subtext">可重试时间：{{ displayTime(row.loginRetryAfter) }}</small>
+          </template>
+        </el-table-column>
+        <el-table-column label="自动登录策略" min-width="200">
+          <template #default="{ row }">
+            <div>过期重登：{{ row.autoRelogin ? '开启（按需）' : '关闭' }}</div>
+            <small class="table-subtext">定时重登：{{ row.reloginIntervalMinutes ? `每 ${row.reloginIntervalMinutes} 分钟` : '关闭' }}</small>
+            <small v-if="row.nextReloginAt" class="table-subtext">下次计划：{{ displayTime(row.nextReloginAt) }}</small>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="hasErpPermission('ERP_REMOTE_ACCOUNT_MANAGE')" label="操作" width="320" fixed="right">
           <template #default="{ row }">
             <div class="account-actions">
+              <el-button text type="primary" :loading="connectionBusy[row.id] === 'CHECK'"
+                :disabled="Boolean(connectionBusy[row.id]) || coolingDown(row) || !row.enabled || !row.sourceEnabled || !row.credentialConfigured"
+                @click="runConnection(row, 'CHECK')">检测连接</el-button>
+              <el-button text type="primary" :loading="connectionBusy[row.id] === 'RELOGIN'"
+                :disabled="Boolean(connectionBusy[row.id]) || coolingDown(row) || !row.enabled || !row.sourceEnabled || !row.credentialConfigured"
+                @click="runConnection(row, 'RELOGIN')">重新登录</el-button>
+              <el-button text type="primary" @click="openSessionPolicy(row)">登录设置</el-button>
               <el-button text type="primary" :icon="Edit" @click="openEditAccount(row)">
                 配置账号
               </el-button>
@@ -363,6 +468,31 @@ onMounted(async () => {
         </el-table-column>
       </el-table>
     </section>
+
+    <el-dialog v-model="policyVisible" title="自动登录设置" width="580px">
+      <p v-if="policyAccount">{{ policyAccount.sourceDisplayName }} · {{ policyAccount.loginUsername }}</p>
+      <el-form label-position="top" class="session-policy-form">
+        <el-form-item label="会话过期后自动重新登录">
+          <el-switch v-model="policyForm.autoRelogin" />
+          <span class="field-help">业务请求发现会话过期时重新登录；明确的登录失效响应最多重登并重试一次。关闭后需手动重新登录。</span>
+        </el-form-item>
+        <el-form-item label="按指定时间间隔重新登录">
+          <el-switch v-model="policyForm.periodic" />
+          <span class="field-help">由后台执行，关闭页面仍生效。默认关闭；开启会增加远端登录次数。</span>
+        </el-form-item>
+        <el-form-item v-if="policyForm.periodic" label="重登间隔（分钟）">
+          <el-input-number v-model="policyForm.intervalMinutes" :min="15" :max="10080" :precision="0" />
+          <span class="field-help">15～10080 分钟。首次在保存间隔后执行；此后从最近成功登录计算。登录失败会进入冷却。</span>
+        </el-form-item>
+        <el-alert :closable="false" type="warning" show-icon
+          title="登录限流保护"
+          :description="policyForm.periodic ? '保存即授权后台按此间隔登录该账号。重新登录可能使旧会话失效；冷却期内不会强行重登。不会自动补跑兑换码任务。' : '检测连接会优先复用已有会话；手动重登仍受冷却保护。保存设置不会立即登录远端。'" />
+      </el-form>
+      <template #footer>
+        <el-button @click="policyVisible = false">取消</el-button>
+        <el-button type="primary" :loading="policySaving" @click="saveSessionPolicy">{{ policyForm.periodic ? '保存并启用定时登录' : '保存设置' }}</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="accountDialogVisible"
@@ -487,11 +617,15 @@ onMounted(async () => {
 }
 
 .account-actions {
-  display: flex;
-  flex-wrap: nowrap;
+  display: grid;
+  grid-template-columns: repeat(3, max-content);
+  gap: 4px;
   align-items: center;
   white-space: nowrap;
 }
+.account-actions :deep(.el-button) { margin-left: 0; }
+.session-policy-form .field-help { width: 100%; line-height: 1.6; }
+.connection-error { display: block; color: var(--el-color-danger); margin-top: 4px; }
 
 .preset-heading { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 10px; }
 .tag-editor { display: grid; gap: 8px; }

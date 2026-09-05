@@ -102,6 +102,16 @@ export interface RemoteAccount {
   credentialUpdatedAt: string | null
   lastTestedAt: string | null
   lastTestStatus: string | null
+  sessionStatus: 'DISABLED' | 'COOLDOWN' | 'AVAILABLE' | 'ERROR' | 'EXPIRED' | 'NOT_CONNECTED'
+  hasActiveSession: boolean
+  sessionExpiresAt: string | null
+  sessionExpiryEstimated: boolean
+  lastLoggedInAt: string | null
+  sessionLastError: string | null
+  loginRetryAfter: string | null
+  autoRelogin: boolean
+  reloginIntervalMinutes: number | null
+  nextReloginAt: string | null
   capabilities: Record<string, boolean>
   createdAt: string
   updatedAt: string

@@ -48,6 +48,7 @@ from packages.domain.services.remote_account_credentials import (
     credential_envelope_for_account,
     decrypt_remote_account_credentials,
 )
+from packages.domain.services.remote_account_session_service import account_session
 
 
 class ErpCompatibilityRemoteExecutionError(ValueError):
@@ -124,6 +125,9 @@ async def execute_compatibility_remote_create(
             raise ErpCompatibilityRemoteExecutionError("统一远端账号凭据配置不完整。")
         credentials = decrypt_remote_account_credentials(envelope, settings=settings)
         async with RajAdminGiftCodeAdapter(
+            remote_session=account_session(
+                session, envelope=envelope, base_url=source.base_url, settings=settings
+            ),
             account_id=account.id,
             source_id=source.source_id,
             base_url=source.base_url,
@@ -219,6 +223,9 @@ async def execute_compatibility_remote_download(
             raise ErpCompatibilityRemoteExecutionError("统一远端账号凭据配置不完整。")
         credentials = decrypt_remote_account_credentials(envelope, settings=settings)
         async with RajAdminGiftCodeAdapter(
+            remote_session=account_session(
+                session, envelope=envelope, base_url=source.base_url, settings=settings
+            ),
             account_id=account.id,
             source_id=source.source_id,
             base_url=source.base_url,
@@ -308,6 +315,9 @@ async def execute_compatibility_remote_publish(
                 else scheduled_time.astimezone(business_timezone)
             )
         async with RajAdminGiftCodeAdapter(
+            remote_session=account_session(
+                session, envelope=envelope, base_url=source.base_url, settings=settings
+            ),
             account_id=account.id,
             source_id=source.source_id,
             base_url=source.base_url,

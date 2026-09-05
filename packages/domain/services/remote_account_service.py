@@ -342,6 +342,7 @@ async def update_remote_account(
     account = await _get_account(session, account_id)
     source = await _get_source(session, account.source_id)
     changed_fields: list[str] = []
+    await session.refresh(account, with_for_update=True)
     if request.display_name is not None:
         display_name = _normalize_display_name(request.display_name)
         if display_name != account.display_name:
@@ -445,6 +446,11 @@ async def update_remote_account(
         changed_fields.append("capabilities")
 
     if changed_fields:
+        if set(changed_fields) & {"login_username", "credentials", "credential_mode", "enabled"}:
+            account.session_ciphertext = None
+            account.session_identity = None
+            account.session_expires_at = None
+            account.session_last_error = None
         account.updated_by = actor_user_id
         try:
             await session.flush()

@@ -69,9 +69,42 @@ class RemoteAccountResponse(ApiSchema):
     credential_updated_at: datetime | None
     last_tested_at: datetime | None
     last_test_status: str | None
+    session_status: str = "NOT_CONNECTED"
+    has_active_session: bool = False
+    session_expires_at: datetime | None = None
+    session_expiry_estimated: bool = False
+    last_logged_in_at: datetime | None = None
+    session_last_error: str | None = None
+    login_retry_after: datetime | None = None
+    auto_relogin: bool = True
+    relogin_interval_minutes: int | None = None
+    next_relogin_at: datetime | None = None
     capabilities: dict[str, bool]
     created_at: datetime
     updated_at: datetime
+
+
+class RemoteAccountConnectionRequest(ApiSchema):
+    operation: Literal["CHECK", "RELOGIN"]
+    execution_confirmed: bool = False
+
+    @model_validator(mode="after")
+    def require_confirmation(self) -> RemoteAccountConnectionRequest:
+        if not self.execution_confirmed:
+            raise ValueError("必须明确确认本次远端连接操作。")
+        return self
+
+
+class RemoteAccountSessionPolicyWrite(ApiSchema):
+    auto_relogin: bool = True
+    relogin_interval_minutes: int | None = Field(default=None, ge=15, le=10080)
+    execution_confirmed: bool = False
+
+    @model_validator(mode="after")
+    def require_schedule_confirmation(self) -> RemoteAccountSessionPolicyWrite:
+        if self.relogin_interval_minutes is not None and not self.execution_confirmed:
+            raise ValueError("开启定时重登前必须确认允许后台按此间隔登录远端。")
+        return self
 
 
 class ErpCompatibilityRemoteMarket(ApiSchema):

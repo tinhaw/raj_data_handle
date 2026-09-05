@@ -11,6 +11,11 @@ import httpx
 from openpyxl import load_workbook
 
 from packages.common.totp import generate_totp
+from packages.domain.services.remote_account_session_service import (
+    RemoteAccountSession,
+    RemoteSessionError,
+    response_requires_relogin,
+)
 
 LOGIN_PATH = "/api/system/login"
 CHARGE_ORDER_INDEX_PATH = "/api/operate/chargeOrder/index"
@@ -277,6 +282,7 @@ class RajAdminChargeClient:
         timeout_seconds: float = REMOTE_REQUEST_TIMEOUT_SECONDS,
         page_size: int = 100,
         transport: httpx.AsyncBaseTransport | None = None,
+        remote_session: RemoteAccountSession | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.username = username
@@ -284,6 +290,7 @@ class RajAdminChargeClient:
         self.totp_secret = totp_secret
         self.page_size = page_size
         self._token: str | None = None
+        self._remote_session = remote_session
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(
                 timeout_seconds,
@@ -312,8 +319,22 @@ class RajAdminChargeClient:
         }
 
     async def login(self, *, force: bool = False) -> str:
+        if self._remote_session is not None:
+            try:
+                self._token = await self._remote_session.token(
+                    self._login_uncached,
+                    force=force,
+                    rejected_token=self._token if force else None,
+                )
+                return self._token
+            except RemoteSessionError as exc:
+                raise RemoteAuthenticationError(str(exc)) from exc
         if self._token and not force:
             return self._token
+        self._token = await self._login_uncached()
+        return self._token
+
+    async def _login_uncached(self) -> str:
         try:
             code = generate_totp(self.totp_secret)
         except ValueError as exc:
@@ -330,6 +351,8 @@ class RajAdminChargeClient:
             )
         except httpx.HTTPError as exc:
             raise RemoteAuthenticationError("远端登录请求失败。") from exc
+        if response.status_code == 429:
+            raise RemoteAuthenticationError("远端登录次数受限（429）。")
         if response.status_code >= 400:
             raise RemoteAuthenticationError("远端登录返回非成功 HTTP 状态。")
         try:
@@ -337,11 +360,13 @@ class RajAdminChargeClient:
         except ValueError as exc:
             raise RemoteAuthenticationError("远端登录响应不是有效 JSON。") from exc
         if isinstance(payload, dict) and payload.get("success") is False:
+            message = str(payload.get("message") or payload.get("msg") or "").lower()
+            if any(word in message for word in ("登录次数", "频繁", "too many", "rate limit")):
+                raise RemoteAuthenticationError("远端登录次数受限。")
             raise RemoteAuthenticationError("远端登录被拒绝。")
         token = _extract_token(payload)
         if not token:
             raise RemoteAuthenticationError("远端登录响应中没有 JWT。")
-        self._token = token
         return token
 
     async def _get_json(
@@ -363,9 +388,10 @@ class RajAdminChargeClient:
             )
         except httpx.HTTPError as exc:
             raise RemoteResponseError("远端只读请求失败。") from exc
-        if response.status_code in AUTH_FAILURE_STATUSES and allow_relogin:
+        if response_requires_relogin(response) and allow_relogin:
             await self.login(force=True)
             return await self._get_json(path, params=params, allow_relogin=False)
+        await self._reject_expired_response(response, token)
         if response.status_code >= 400:
             raise RemoteResponseError("远端只读接口返回非成功 HTTP 状态。")
         try:
@@ -392,9 +418,10 @@ class RajAdminChargeClient:
             )
         except httpx.HTTPError as exc:
             raise RemoteResponseError("远端只读请求失败。") from exc
-        if response.status_code in AUTH_FAILURE_STATUSES and allow_relogin:
+        if response_requires_relogin(response) and allow_relogin:
             await self.login(force=True)
             return await self._post_json(path, body=body, allow_relogin=False)
+        await self._reject_expired_response(response, token)
         if response.status_code >= 400:
             raise RemoteResponseError("远端只读接口返回非成功 HTTP 状态。")
         try:
@@ -423,15 +450,22 @@ class RajAdminChargeClient:
             raise RemoteResponseError("远端充值订单导出请求超时。") from exc
         except httpx.HTTPError as exc:
             raise RemoteResponseError("远端充值订单导出请求失败。") from exc
-        if response.status_code in AUTH_FAILURE_STATUSES and allow_relogin:
+        if response_requires_relogin(response) and allow_relogin:
             await self.login(force=True)
             return await self._post_bytes(path, body=body, allow_relogin=False)
+        await self._reject_expired_response(response, token)
         if response.status_code >= 400:
             raise RemoteResponseError("远端充值订单导出返回非成功 HTTP 状态。")
         content = response.content
         if not content.startswith(b"PK"):
             raise RemoteResponseError("远端充值订单导出未返回 Excel 文件。")
         return content
+
+    async def _reject_expired_response(self, response: httpx.Response, token: str) -> None:
+        if response_requires_relogin(response):
+            if self._remote_session:
+                await self._remote_session.reject(token)
+            raise RemoteAuthenticationError("重新登录后远端仍拒绝会话，已停止重试。")
 
     async def fetch_channels(self) -> list[dict[str, str]]:
         data = _response_data(await self._get_json(CHARGE_CHANNEL_PATH))
@@ -476,10 +510,7 @@ class RajAdminChargeClient:
             channels_by_code[code] = label
         if not channels_by_code:
             raise RemoteResponseError("远端支付渠道字典为空。")
-        return [
-            {"code": code, "label": label}
-            for code, label in sorted(channels_by_code.items())
-        ]
+        return [{"code": code, "label": label} for code, label in sorted(channels_by_code.items())]
 
     def _charge_params(
         self,

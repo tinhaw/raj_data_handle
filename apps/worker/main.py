@@ -20,6 +20,7 @@ from packages.domain.services.data_dictionary_refresh_service import (
 from packages.domain.services.reconciliation_execution_service import (
     execute_reconciliation_batch,
 )
+from packages.domain.services.remote_account_connection_service import run_due_account_relogins
 from packages.domain.services.retention_cleanup_service import cleanup_expired_data
 from packages.domain.services.spin_order_refresh_service import run_due_spin_order_refreshes
 from packages.domain.services.withdraw_order_refresh_service import (
@@ -182,6 +183,17 @@ async def run_data_dictionary_refresh_loop() -> None:
         await asyncio.sleep(WITHDRAW_ORDER_REFRESH_POLL_SECONDS)
 
 
+async def run_remote_account_relogin_loop() -> None:
+    """Only accounts with an explicitly saved interval are eligible."""
+    while True:
+        try:
+            async with AsyncSessionLocal() as session:
+                await run_due_account_relogins(session, settings=get_settings())
+        except Exception:
+            logger.warning("remote account login cycle unavailable; retrying later")
+        await asyncio.sleep(30)
+
+
 async def run() -> None:
     settings = get_settings()
     storage = LocalFileStorage(settings.storage_root, settings.upload_max_bytes)
@@ -202,6 +214,10 @@ async def run() -> None:
     dictionary_refresh_task = asyncio.create_task(
         run_data_dictionary_refresh_loop(),
         name="data-dictionary-refresh-loop",
+    )
+    account_relogin_task = asyncio.create_task(
+        run_remote_account_relogin_loop(),
+        name="remote-account-relogin-loop",
     )
     try:
         while True:
@@ -233,6 +249,7 @@ async def run() -> None:
         charge_refresh_task.cancel()
         spin_refresh_task.cancel()
         dictionary_refresh_task.cancel()
+        account_relogin_task.cancel()
         try:
             await refresh_task
         except asyncio.CancelledError:
@@ -247,6 +264,10 @@ async def run() -> None:
             pass
         try:
             await dictionary_refresh_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await account_relogin_task
         except asyncio.CancelledError:
             pass
 

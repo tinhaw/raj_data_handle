@@ -85,6 +85,7 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
     factory = async_sessionmaker(engine, expire_on_commit=False)
     settings = _settings()
     captured: dict[str, object] = {}
+    login_count = 0
     codes = [f"TEST-CODE-{index}" for index in range(key_number)]
     workbook = Workbook()
     workbook.active.append(["兑换码号码"])
@@ -94,7 +95,9 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
     workbook.save(output)
 
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal login_count
         if request.url.path == "/api/system/login":
+            login_count += 1
             # The credentials remain inside the Python executor.  This mocked
             # remote endpoint sees only the normal login request, not a Java
             # compatibility credential payload.
@@ -195,6 +198,7 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
             transport=httpx.MockTransport(handler),
         )
         assert downloaded.redemption_code.splitlines() == codes
+        assert login_count == 1  # New adapter instances reuse the unified account session.
 
         def remote_must_not_be_called(request: httpx.Request) -> httpx.Response:
             raise AssertionError("Unconfirmed download must not reach the remote")

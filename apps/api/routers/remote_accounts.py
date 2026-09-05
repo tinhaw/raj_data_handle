@@ -23,9 +23,11 @@ from packages.domain.schemas.remote_account import (
     ErpCompatibilityRemotePublishResponse,
     ErpCompatibilityRemoteRegistry,
     RemoteAccountCapabilityUpdateRequest,
+    RemoteAccountConnectionRequest,
     RemoteAccountCreateRequest,
     RemoteAccountPatchRequest,
     RemoteAccountResponse,
+    RemoteAccountSessionPolicyWrite,
     RemoteTagSnapshotResponse,
     RemoteTagSnapshotWrite,
     RemoteTagSyncRequest,
@@ -52,6 +54,10 @@ from packages.domain.services.erp_remote_account_tag_service import (
     RemoteAccountTagSyncError,
     sync_remote_account_tags,
 )
+from packages.domain.services.remote_account_connection_service import (
+    operate_account_connection,
+    save_session_policy,
+)
 from packages.domain.services.remote_account_service import (
     RemoteAccountError,
     RemoteAccountNotFoundError,
@@ -59,6 +65,7 @@ from packages.domain.services.remote_account_service import (
     capability_definitions,
     create_remote_account,
     delete_legacy_remote_account,
+    get_remote_account,
     get_remote_tag_snapshot,
     get_reward_tier_preset,
     list_remote_accounts,
@@ -66,6 +73,10 @@ from packages.domain.services.remote_account_service import (
     save_reward_tier_preset,
     update_remote_account,
     update_remote_account_capabilities,
+)
+from packages.domain.services.remote_account_session_service import (
+    RemoteSessionError,
+    session_public_state,
 )
 from packages.domain.services.source_service import list_sources
 
@@ -85,6 +96,7 @@ def _response(item: RemoteAccountView) -> RemoteAccountResponse:
     source = item.source
     is_legacy = account.credential_mode == "LEGACY_SOURCE"
     return RemoteAccountResponse(
+        **session_public_state(account, source),
         id=account.id,
         source_id=account.source_id,
         source_display_name=source.display_name,
@@ -229,10 +241,16 @@ def _compatibility_registry(
                 base_url=item.source.base_url,
                 has_password=_credential_configured(item),
                 has_totp_secret=_credential_configured(item),
+                **{
+                    key: value
+                    for key, value in session_public_state(item.account, item.source).items()
+                    if key in {"has_active_session", "session_expires_at", "last_logged_in_at"}
+                },
                 enabled=item.account.enabled,
                 is_default=item.account.is_default,
                 last_checked_at=item.account.last_tested_at,
-                last_error=(
+                last_error=item.account.session_last_error
+                or (
                     None
                     if item.account.last_test_status in {None, "SUCCESS", "OK"}
                     else item.account.last_test_status
@@ -307,6 +325,43 @@ async def get_remote_accounts(
     session: AsyncSession = Depends(get_db_session),
 ) -> list[RemoteAccountResponse]:
     return [_response(item) for item in await list_remote_accounts(session)]
+
+
+@router.post("/{account_id}/connection", response_model=RemoteAccountResponse)
+async def post_account_connection(
+    account_id: str,
+    payload: RemoteAccountConnectionRequest,
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REMOTE_ACCOUNT_MANAGE)),
+    session: AsyncSession = Depends(get_db_session),
+) -> RemoteAccountResponse:
+    try:
+        await operate_account_connection(
+            session,
+            account_id=account_id,
+            operation=payload.operation,
+            execution_confirmed=payload.execution_confirmed,
+            actor_user_id=auth.user.id,
+            settings=get_settings(),
+        )
+    except RemoteSessionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _response(await get_remote_account(session, account_id=account_id))
+
+
+@router.put("/{account_id}/session-policy", response_model=RemoteAccountResponse)
+async def put_account_session_policy(
+    account_id: str,
+    payload: RemoteAccountSessionPolicyWrite,
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REMOTE_ACCOUNT_MANAGE)),
+    session: AsyncSession = Depends(get_db_session),
+) -> RemoteAccountResponse:
+    try:
+        await save_session_policy(
+            session, account_id=account_id, request=payload, actor_user_id=auth.user.id
+        )
+    except RemoteSessionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _response(await get_remote_account(session, account_id=account_id))
 
 
 @router.post("", response_model=RemoteAccountResponse, status_code=status.HTTP_201_CREATED)

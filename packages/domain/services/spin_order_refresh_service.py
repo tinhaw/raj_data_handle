@@ -38,6 +38,7 @@ from packages.domain.services.remote_account_credentials import (
     decrypt_remote_account_credentials,
     resolve_default_remote_account_credentials,
 )
+from packages.domain.services.remote_account_session_service import account_session
 from packages.domain.services.remote_spin_service import RajAdminSpinClient, SpinFetchResult
 from packages.domain.services.source_service import get_source
 from packages.domain.services.spin_order_service import SPIN_CONFIG_LABELS
@@ -90,6 +91,7 @@ class SpinOrderRefreshRunResult:
 
 @dataclass(frozen=True, slots=True)
 class _Claim:
+    account_id: str | None
     source_id: str
     base_url: str
     encrypted_credentials: str
@@ -146,11 +148,7 @@ def _missing_schema(error: OperationalError | ProgrammingError) -> bool:
         "pending_sync_run_id" in message
         or "active_sync_run_id" in message
         or "automatic_failure_count" in message
-    ) and (
-        "does not exist" in message
-        or "no such table" in message
-        or "no such column" in message
-    )
+    ) and ("does not exist" in message or "no such table" in message or "no such column" in message)
     return missing_table or missing_pointer
 
 
@@ -274,9 +272,7 @@ def _automatic_window(
     return review_start_local.astimezone(UTC), completed_end_local.astimezone(UTC)
 
 
-def _automatic_slot_is_ready(
-    *, timezone_name: str, now: datetime, interval_hours: int
-) -> bool:
+def _automatic_slot_is_ready(*, timezone_name: str, now: datetime, interval_hours: int) -> bool:
     """Wait briefly after a configured time-slot boundary before refreshing."""
 
     local_now = now.astimezone(ZoneInfo(timezone_name))
@@ -521,6 +517,7 @@ async def _claim_due(
         state.active_sync_run_id = sync_run.id
         await session.commit()
         return _Claim(
+            account_id=credential_envelope.account_id,
             source_id=source.source_id,
             base_url=source.base_url or "",
             encrypted_credentials=credential_envelope.encrypted_credentials,
@@ -874,19 +871,23 @@ async def _execute(
     settings: Settings,
 ) -> SpinOrderRefreshRunResult:
     try:
+        envelope = RemoteAccountCredentialEnvelope(
+            source_id=claim.source_id,
+            account_id=claim.account_id,
+            login_username=claim.login_username,
+            encrypted_credentials=claim.encrypted_credentials,
+            credential_scope=claim.credential_scope,
+            credential_version=claim.credential_version,
+            credential_mode="CLAIM",
+        )
         credentials = decrypt_remote_account_credentials(
-            RemoteAccountCredentialEnvelope(
-                source_id=claim.source_id,
-                account_id=None,
-                login_username=claim.login_username,
-                encrypted_credentials=claim.encrypted_credentials,
-                credential_scope=claim.credential_scope,
-                credential_version=claim.credential_version,
-                credential_mode="CLAIM",
-            ),
+            envelope,
             settings=settings,
         )
         async with RajAdminSpinClient(
+            remote_session=account_session(
+                session, envelope=envelope, base_url=claim.base_url, settings=settings
+            ),
             base_url=claim.base_url,
             username=credentials["username"],
             password=credentials["password"],

@@ -32,6 +32,7 @@ from packages.domain.services.remote_account_credentials import (
     decrypt_remote_account_credentials,
     resolve_default_remote_account_credentials,
 )
+from packages.domain.services.remote_account_session_service import account_session
 from packages.domain.services.remote_charge_service import ChargeFetchResult, RajAdminChargeClient
 from packages.domain.services.source_service import get_source
 from packages.domain.services.system_setting_service import get_retention_settings
@@ -66,6 +67,7 @@ class ChargeOrderRefreshRunResult:
 
 @dataclass(frozen=True, slots=True)
 class _RefreshClaim:
+    account_id: str | None
     source_id: str
     base_url: str
     encrypted_credentials: str
@@ -120,11 +122,7 @@ def _is_missing_charge_schema(error: OperationalError | ProgrammingError) -> boo
         or "pending_sync_run_id" in message
         or "active_sync_run_id" in message
         or "automatic_failure_count" in message
-    ) and (
-        "does not exist" in message
-        or "no such table" in message
-        or "no such column" in message
-    )
+    ) and ("does not exist" in message or "no such table" in message or "no such column" in message)
 
 
 async def _credentials_for_source(
@@ -356,10 +354,7 @@ async def _claim_due(
             timezone_name=source.business_timezone,
         )
         manual_requested = _manual_request_is_pending(state)
-        if (
-            not manual_requested
-            and _as_utc(state.last_window_start_utc) != automatic_window_start
-        ):
+        if not manual_requested and _as_utc(state.last_window_start_utc) != automatic_window_start:
             state.automatic_failure_count = 0
         if not _due(
             state,
@@ -432,6 +427,7 @@ async def _claim_due(
         state.active_sync_run_id = sync_run.id
         await session.commit()
         return _RefreshClaim(
+            account_id=credential_envelope.account_id,
             source_id=source.source_id,
             base_url=source.base_url or "",
             encrypted_credentials=credential_envelope.encrypted_credentials,
@@ -706,19 +702,23 @@ async def _execute(
     session: AsyncSession, *, claim: _RefreshClaim, settings: Settings
 ) -> ChargeOrderRefreshRunResult:
     try:
+        envelope = RemoteAccountCredentialEnvelope(
+            source_id=claim.source_id,
+            account_id=claim.account_id,
+            login_username=claim.login_username,
+            encrypted_credentials=claim.encrypted_credentials,
+            credential_scope=claim.credential_scope,
+            credential_version=claim.credential_version,
+            credential_mode="CLAIM",
+        )
         credentials = decrypt_remote_account_credentials(
-            RemoteAccountCredentialEnvelope(
-                source_id=claim.source_id,
-                account_id=None,
-                login_username=claim.login_username,
-                encrypted_credentials=claim.encrypted_credentials,
-                credential_scope=claim.credential_scope,
-                credential_version=claim.credential_version,
-                credential_mode="CLAIM",
-            ),
+            envelope,
             settings=settings,
         )
         async with RajAdminChargeClient(
+            remote_session=account_session(
+                session, envelope=envelope, base_url=claim.base_url, settings=settings
+            ),
             base_url=claim.base_url,
             username=credentials["username"],
             password=credentials["password"],

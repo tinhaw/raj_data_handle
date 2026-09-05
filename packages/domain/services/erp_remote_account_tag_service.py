@@ -24,6 +24,7 @@ from packages.domain.services.remote_account_credentials import (
     decrypt_remote_account_credentials,
 )
 from packages.domain.services.remote_account_service import save_remote_tag_snapshot
+from packages.domain.services.remote_account_session_service import account_session
 
 TAG_SYNC_CAPABILITY = "ERP_TAG_SYNC"
 
@@ -61,14 +62,15 @@ async def sync_remote_account_tags(
             )
         )
         if not capability_enabled:
-            raise RemoteAccountTagSyncError(
-                f"远端账号未获得 {TAG_SYNC_CAPABILITY} 能力授权。"
-            )
+            raise RemoteAccountTagSyncError(f"远端账号未获得 {TAG_SYNC_CAPABILITY} 能力授权。")
         envelope = credential_envelope_for_account(account=account, source=source)
         if envelope is None:
             raise RemoteAccountTagSyncError("统一远端账号凭据配置不完整。")
         credentials = decrypt_remote_account_credentials(envelope, settings=settings)
         async with RajAdminGiftCodeAdapter(
+            remote_session=account_session(
+                session, envelope=envelope, base_url=source.base_url, settings=settings
+            ),
             account_id=account.id,
             source_id=source.source_id,
             base_url=source.base_url,
@@ -86,10 +88,7 @@ async def sync_remote_account_tags(
                     capability=TAG_SYNC_CAPABILITY,
                 )
             )
-        tags_by_id = {
-            tag.id: RemoteTag(id=tag.id, name=tag.name)
-            for tag in remote_tags
-        }
+        tags_by_id = {tag.id: RemoteTag(id=tag.id, name=tag.name) for tag in remote_tags}
         snapshot = await save_remote_tag_snapshot(
             session,
             account_id=account.id,

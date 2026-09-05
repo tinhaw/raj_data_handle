@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import pytest
@@ -97,3 +98,30 @@ async def test_due_data_dictionary_cycle_hides_remote_error_details(
 
     assert "data dictionary refresh cycle failed; retrying later" in caplog.text
     assert "must-not-appear-in-dictionary-log" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_account_relogin_worker_closes_session_and_hides_raw_errors(monkeypatch, caplog):
+    session = object()
+    scope = _SessionScope(session)
+    calls = 0
+
+    async def run_cycle(received_session, *, settings):
+        nonlocal calls
+        assert received_session is session
+        calls += 1
+        raise RuntimeError("synthetic-sensitive-error-must-not-appear")
+
+    async def finish_after_cycle(seconds):
+        assert seconds == 30
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(worker_main, "AsyncSessionLocal", lambda: scope)
+    monkeypatch.setattr(worker_main, "run_due_account_relogins", run_cycle)
+    monkeypatch.setattr(worker_main.asyncio, "sleep", finish_after_cycle)
+    with caplog.at_level(logging.WARNING, logger="raj-worker"):
+        with pytest.raises(asyncio.CancelledError):
+            await worker_main.run_remote_account_relogin_loop()
+    assert calls == 1 and scope.exited
+    assert "remote account login cycle unavailable" in caplog.text
+    assert "synthetic-sensitive-error-must-not-appear" not in caplog.text

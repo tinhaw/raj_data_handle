@@ -43,6 +43,7 @@ from packages.domain.services.remote_account_credentials import (
     credential_envelope_for_account,
     decrypt_remote_account_credentials,
 )
+from packages.domain.services.remote_account_session_service import account_session
 
 
 class ErpRedemptionRemoteRunnerError(ValueError):
@@ -119,7 +120,11 @@ async def execute_erp_redemption_remote_operation(
         if account is None or source is None or not source.base_url:
             raise ErpRedemptionRemoteRunnerError("统一远端账号或盘口配置不可用。")
         username, password, totp_secret = _credentials(account, source, settings)
+        envelope = credential_envelope_for_account(account=account, source=source)
         async with RajAdminGiftCodeAdapter(
+            remote_session=account_session(
+                session, envelope=envelope, base_url=source.base_url, settings=settings
+            ),
             account_id=account.id,
             source_id=source.source_id,
             base_url=source.base_url,

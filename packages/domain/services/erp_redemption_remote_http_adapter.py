@@ -29,6 +29,11 @@ from packages.domain.services.erp_redemption_remote_adapter import (
     RemotePublishResult,
 )
 from packages.domain.services.erp_redemption_remote_gate import ErpRemoteExecutionGrant
+from packages.domain.services.remote_account_session_service import (
+    RemoteAccountSession,
+    RemoteSessionError,
+    response_requires_relogin,
+)
 
 LOGIN_PATH = "/api/system/login"
 CREATE_PATH = "/api/common/giftCodeConfig/save"
@@ -159,6 +164,7 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
         business_timezone: str,
         timeout_seconds: float = 30,
         transport: httpx.AsyncBaseTransport | None = None,
+        remote_session: RemoteAccountSession | None = None,
     ) -> None:
         self.account_id = account_id
         self.source_id = source_id
@@ -168,6 +174,7 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
         self.totp_secret = totp_secret
         self.business_timezone = ZoneInfo(business_timezone)
         self._token: str | None = None
+        self._remote_session = remote_session
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout_seconds, connect=min(10, timeout_seconds)),
             follow_redirects=False,
@@ -218,8 +225,22 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
         return headers
 
     async def _login(self, *, force: bool = False) -> str:
+        if self._remote_session is not None:
+            try:
+                self._token = await self._remote_session.token(
+                    self._login_uncached,
+                    force=force,
+                    rejected_token=self._token if force else None,
+                )
+                return self._token
+            except RemoteSessionError as exc:
+                raise ErpRedemptionRemoteHttpError(str(exc)) from exc
         if self._token and not force:
             return self._token
+        self._token = await self._login_uncached()
+        return self._token
+
+    async def _login_uncached(self) -> str:
         try:
             response = await self._client.post(
                 f"{self.base_url}{LOGIN_PATH}",
@@ -232,12 +253,13 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
             )
         except (httpx.HTTPError, ValueError) as exc:
             raise ErpRedemptionRemoteHttpError("远端登录失败。") from exc
+        if response.status_code == 429:
+            raise ErpRedemptionRemoteHttpError("远端登录次数受限（429）。")
         if response.status_code >= 400:
             raise ErpRedemptionRemoteHttpError("远端登录返回非成功 HTTP 状态。")
         token = _extract_token(_success_payload(response))
         if not token:
             raise ErpRedemptionRemoteHttpError("远端登录响应中没有访问令牌。")
-        self._token = token
         return token
 
     async def _request(
@@ -261,7 +283,7 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
             )
         except httpx.HTTPError as exc:
             raise ErpRedemptionRemoteHttpError("无法连接远端管理后台。") from exc
-        if response.status_code in {401, 403} and allow_relogin:
+        if response_requires_relogin(response) and allow_relogin:
             await self._login(force=True)
             return await self._request(
                 method,
@@ -271,6 +293,10 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
                 bytes_response=bytes_response,
                 allow_relogin=False,
             )
+        if response_requires_relogin(response):
+            if self._remote_session:
+                await self._remote_session.reject(token)
+            raise ErpRedemptionRemoteHttpError("重新登录后远端仍拒绝会话，已停止重试。")
         if response.status_code >= 400:
             raise ErpRedemptionRemoteHttpError("远端管理后台返回非成功 HTTP 状态。")
         request_id = _clean(response.headers.get("x-request-id"))

@@ -709,6 +709,10 @@ class RemoteAccount(Base):
             name="uq_remote_account_source_login_username",
         ),
         Index("ix_remote_account_source_enabled", "source_id", "enabled"),
+        CheckConstraint(
+            "relogin_interval_minutes IS NULL OR relogin_interval_minutes BETWEEN 15 AND 10080",
+            name="ck_remote_account_relogin_interval",
+        ),
         Index(
             "uq_remote_account_source_default",
             "source_id",
@@ -740,6 +744,19 @@ class RemoteAccount(Base):
     last_test_status: Mapped[str | None] = mapped_column(String(30))
     last_test_request_id: Mapped[str | None] = mapped_column(String(64))
     created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    # Shared by analysis and ERP. Ciphertext/identity never enter response schemas.
+    session_ciphertext: Mapped[str | None] = mapped_column(Text)
+    session_identity: Mapped[str | None] = mapped_column(String(64))
+    session_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    session_expiry_estimated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_logged_in_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_login_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    login_failure_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    login_retry_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    session_last_error: Mapped[str | None] = mapped_column(String(500))
+    auto_relogin: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    relogin_interval_minutes: Mapped[int | None] = mapped_column(Integer)
+    next_relogin_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow

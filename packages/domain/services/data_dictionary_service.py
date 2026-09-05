@@ -16,6 +16,7 @@ from packages.domain.services.remote_account_credentials import (
     decrypt_remote_account_credentials,
     resolve_default_remote_account_credentials,
 )
+from packages.domain.services.remote_account_session_service import account_session
 from packages.domain.services.remote_charge_service import RajAdminChargeClient, RemoteChargeError
 from packages.domain.services.remote_spin_service import RajAdminSpinClient
 from packages.domain.services.remote_withdraw_service import RajAdminWithdrawClient
@@ -369,6 +370,12 @@ async def sync_remote_user_source_channels(
             settings=current_settings,
         )
         async with RajAdminSpinClient(
+            remote_session=account_session(
+                session,
+                envelope=credential_envelope,
+                base_url=source.base_url,
+                settings=current_settings,
+            ),
             base_url=source.base_url,
             username=credentials["username"],
             password=credentials["password"],
@@ -596,6 +603,12 @@ async def sync_remote_payment_dictionary(
             settings=current_settings,
         )
         async with RajAdminChargeClient(
+            remote_session=account_session(
+                session,
+                envelope=credential_envelope,
+                base_url=source.base_url,
+                settings=current_settings,
+            ),
             base_url=source.base_url,
             username=credentials["username"],
             password=credentials["password"],
@@ -893,6 +906,12 @@ async def sync_remote_withdraw_statuses(
 
     try:
         async with RajAdminWithdrawClient(
+            remote_session=account_session(
+                session,
+                envelope=credential_envelope,
+                base_url=source.base_url,
+                settings=current_settings,
+            ),
             base_url=source.base_url,
             username=username,
             password=password,
