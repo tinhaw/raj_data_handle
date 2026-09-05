@@ -378,6 +378,11 @@ stateDiagram-v2
 
 ### 8.3 分页
 
+本节适用于仍以 JSON 列表采集的端点、Token 探测和后续精确复查。当前充值、提现订单
+明细缓存不在页面刷新时遍历分页，而是按来源业务时区导出完整自然日 Excel，在内存严格
+校验白名单后再幂等写入本地；提现具体口径见
+[提现订单 Excel 导出字段映射核对表](提现订单字段对照表.md)。
+
 参考系统的远端分页上限为 100，虽然本地 API 页面允许更大的 `page_size`，
 Connector 仍应将远端 `pageSize` 限制在已验证上限。
 
@@ -499,8 +504,8 @@ Gold 表保存指标版本、生成时间和来源水位，便于解释页面数
 - `payment_platforms`
 - `payment_template_versions`
 - `payment_channel_bindings`
+- `data_dictionary_entries`
 - `time_calibration_profiles`
-- `remote_channel_dictionary_items`
 - `reconciliation_batch_channels`
 - `manual_spend_revisions`
 - `audit_logs`
@@ -919,8 +924,8 @@ WithdrawOrderReconciliationAdapter
 
 | 项目 | 代收/充值 | 代付/提现 |
 |---|---|---|
-| 远端列表 | `chargeOrder/index` | `withdrawOrder/index` |
-| HTTP 方法 | GET | POST |
+| 当前日常缓存 | 完整自然日 Excel 导出 | 完整自然日 Excel 导出（`withdrawOrder/export`） |
+| 列表接口用途 | Token 探测、精确复查、接口联调 | Token 探测、精确复查、接口联调 |
 | 渠道字段 | `pay_method` | `pay_channel` / `pay_channel_name` |
 | 标准事实表 | `fact_charge_order` | `fact_withdraw_order` |
 | 特有字段 | 首充、通知状态 | 实付金额、回调状态、UTR |

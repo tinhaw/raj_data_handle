@@ -6,6 +6,19 @@ export type RetentionSettingsUpdate = Pick<
   | 'uploadedFileRetentionDays'
   | 'resultRetentionDays'
   | 'remoteCacheRetentionDays'
+  | 'withdrawOrderExportDateMode'
+  | 'withdrawOrderExportSpecificDate'
+  | 'withdrawOrderExportTime'
+  | 'automaticSyncRetryLimit'
+  | 'automaticSyncRetryIntervalMinutes'
+  | 'remoteOrderSyncTimeoutSeconds'
+  | 'chargeOrderExportDateMode'
+  | 'chargeOrderExportSpecificDate'
+  | 'chargeOrderExportTime'
+  | 'spinOrderRefreshIntervalHours'
+  | 'spinOrderRefreshPageSize'
+  | 'spinOrderQueryRange'
+  | 'sessionTtlDays'
 >
 
 export async function fetchRetentionSettings(): Promise<RetentionSettings> {
