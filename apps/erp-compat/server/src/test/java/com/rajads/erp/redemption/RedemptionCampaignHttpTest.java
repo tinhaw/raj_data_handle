@@ -101,6 +101,7 @@ class RedemptionCampaignHttpTest {
                 .andExpect(jsonPath("$.data.batch.status").value("CREATING"))
                 .andExpect(jsonPath("$.data.batch.taskId").isNumber())
                 .andExpect(jsonPath("$.data.batch.taskNumber").value(matchesPattern("\\d{12}")))
+                .andExpect(jsonPath("$.data.batch.operatorUsername").value("admin"))
                 .andExpect(jsonPath("$.data.batch.expectedCodeCount").value(4))
                 .andExpect(jsonPath("$.data.batch.validFromDayOffset").value(1))
                 .andExpect(jsonPath("$.data.batch.validToDayOffset").value(2))

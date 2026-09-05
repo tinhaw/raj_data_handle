@@ -328,6 +328,8 @@ export interface RedemptionCodeBatch {
   taskId?: string | number
   /** Stable human-facing number: Shanghai date plus that day's four-digit task sequence. */
   taskNumber?: string
+  /** Username of the administrator who created the containing task. */
+  operatorUsername?: string
   campaignId: string | number
   claimDateFrom: string
   claimDateTo: string

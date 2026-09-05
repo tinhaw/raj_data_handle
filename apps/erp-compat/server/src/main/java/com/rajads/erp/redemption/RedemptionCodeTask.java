@@ -30,6 +30,8 @@ public class RedemptionCodeTask {
     /** One-based task sequence within {@link #taskDate}; it is not the database primary key. */
     @Column(name = "daily_sequence", nullable = false) private Integer dailySequence;
     @Column(name = "created_by") private Long createdBy;
+    /** Immutable display name of the administrator who started this task. */
+    @Column(name = "created_by_username", length = 80) private String createdByUsername;
     @Column(name = "created_at", nullable = false) private Instant createdAt;
 
     @PrePersist void created() { createdAt = Instant.now(); }

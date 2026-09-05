@@ -123,7 +123,7 @@ public final class RedemptionDtos {
                                 String remotePublishTaskId, String remotePublishError, String remotePublishMode,
                                 java.time.LocalDateTime remoteScheduledPublishAt, String remotePublishNote,
                                 Instant remotePublishCancelledAt, RemoteCreationOptionsResponse remoteOptions,
-                                Long taskId, String taskNumber) {
+                                Long taskId, String taskNumber, String operatorUsername) {
         /** Historical expectedCodeCount/importedCount count configurations, not individual codes. */
         @com.fasterxml.jackson.annotation.JsonProperty
         public int plannedCodeCount() { return expectedCodeCount * codesPerGroup(); }

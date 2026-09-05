@@ -211,6 +211,7 @@ const paginatedCodeGroupTasks = computed(() => {
 })
 const codeGroupTaskColumns: Columns<CodeGroupTask> = [
   { key: 'taskId', dataKey: 'taskId', title: '任务编号', width: 142, align: 'center', fixed: TableV2FixedDir.LEFT },
+  { key: 'operator', dataKey: 'id', title: '操作人', width: 120 },
   { key: 'name', dataKey: 'id', title: '兑换码组', width: 210 },
   { key: 'claimDate', dataKey: 'id', title: '开始兑换日期', width: 175 },
   { key: 'account', dataKey: 'id', title: '远端账号', width: 135 },
@@ -586,6 +587,9 @@ function taskMarkets(task: CodeGroupTask) {
 function taskAccounts(task: CodeGroupTask) {
   return task.members.map((member) => member.detail.batch.remoteConnectionName || '—')
     .filter((value, index, values) => values.indexOf(value) === index).join('、')
+}
+function taskOperator(task: CodeGroupTask) {
+  return taskPrimary(task)?.detail.batch.operatorUsername || '—'
 }
 function taskLabels(task: CodeGroupTask) {
   if (!isMultiMarketTask(task)) return labelsFor(taskPrimary(task))
@@ -1475,6 +1479,7 @@ onUnmounted(() => {
             >
               <template #cell="{ column, rowData: row }">
                 <span v-if="column.key === 'taskId'">{{ taskDisplayId(row) }}</span>
+                <span v-else-if="column.key === 'operator'" class="virtual-cell">{{ taskOperator(row) }}</span>
                 <div v-else-if="column.key === 'name'" class="group-name">
                   <strong>{{ taskName(row) }}</strong>
                   <span>{{ taskSummary(row) }}</span>
@@ -1671,6 +1676,7 @@ onUnmounted(() => {
         <p v-if="selectedTaskMembers.length > 1" class="field-note task-detail-note">各盘口保留独立的远端创建、发布与下载进度；系统会按盘口顺序完成创建，所有盘口完成后可在任务列表下载同一份多 Sheet Excel。</p>
         <el-descriptions :column="2" border class="group-detail-summary">
           <el-descriptions-item label="任务编号">{{ selectedTaskDisplayId }}</el-descriptions-item>
+          <el-descriptions-item label="操作人">{{ selectedGroup.detail.batch.operatorUsername || '—' }}</el-descriptions-item>
           <el-descriptions-item label="执行批次">#{{ selectedGroup.detail.batch.id }}</el-descriptions-item>
           <el-descriptions-item label="开始兑换日期">{{ formatDate(selectedGroup.detail.batch.claimDateFrom) }} 至 {{ formatDate(selectedGroup.detail.batch.claimDateTo) }}</el-descriptions-item>
           <el-descriptions-item label="任务状态"><el-tag :type="groupStatus(selectedGroup).type">{{ groupStatus(selectedGroup).text }}</el-tag></el-descriptions-item>

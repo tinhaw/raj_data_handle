@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rajads.erp.identity.CurrentUser;
+import com.rajads.erp.identity.AuthUser;
 import com.rajads.erp.shared.ApiException;
 import com.rajads.erp.shared.DecimalUtils;
 import lombok.RequiredArgsConstructor;
@@ -439,6 +440,7 @@ public class RedemptionService {
                 : connection == null ? "已删除的远端连接" : connection.username();
         String marketCode = connection == null ? null : connection.marketCode();
         String marketName = connection == null ? null : connection.marketName();
+        RedemptionCodeTask task = batch.getTaskId() == null ? null : taskRepository.findById(batch.getTaskId()).orElse(null);
         return new RedemptionDtos.BatchResponse(batch.getId(), batch.getCampaignId(), batch.getClaimDateFrom(), batch.getClaimDateTo(),
                 batch.getValidFromDayOffset(), batch.getValidToDayOffset(),
                 batch.getLookbackDays(), batch.getRedemptionType(), batch.getExpectedCodeCount(), batch.getStatus(),
@@ -450,7 +452,7 @@ public class RedemptionService {
                 batch.getExportGroupKey(),
                 batch.getRemotePublishTaskId(), batch.getRemotePublishError(), batch.getRemotePublishMode(),
                 batch.getRemoteScheduledPublishAt(), batch.getRemotePublishNote(), batch.getRemotePublishCancelledAt(), remoteOptionsResponse(batch),
-                batch.getTaskId(), taskRepository.findById(batch.getTaskId()).map(RedemptionCodeTask::taskNumber).orElse(null));
+                batch.getTaskId(), task == null ? null : task.taskNumber(), task == null ? null : task.getCreatedByUsername());
     }
 
     private RedemptionCodeTask resolveTask(String exportGroupKey) {
@@ -488,7 +490,9 @@ public class RedemptionService {
             task.setGroupingKey(groupingKey);
             task.setTaskDate(taskDate);
             task.setDailySequence(nextSequence);
-            task.setCreatedBy(currentUser.require().id());
+            AuthUser actor = currentUser.require();
+            task.setCreatedBy(actor.id());
+            task.setCreatedByUsername(actor.username());
             return taskRepository.save(task);
         } finally {
             if (!unlockAfterTransaction) lock.unlock();
