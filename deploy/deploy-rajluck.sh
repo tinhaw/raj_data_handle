@@ -29,8 +29,8 @@ Options:
   -h, --help     Show this help.
 
 Normal application rollout never runs schema migrations automatically. For a
-schema-changing release, deploy application code first, then run --schema-only
-once only after the approved RDS backup/fallback plan is confirmed.
+schema-changing release, stage source without starting services, stop affected
+writers and verify the approved backup, then run --schema-only before rollout.
 EOF
 }
 

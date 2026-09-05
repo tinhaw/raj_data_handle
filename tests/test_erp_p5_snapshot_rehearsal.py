@@ -21,6 +21,7 @@ from deploy.prepare_erp_p5_directory_mapping import (
 from deploy.rehearse_erp_snapshot import (
     CONFIRMATION,
     PRODUCTION_CONFIRMATION,
+    REQUIRED_TARGET_ALEMBIC_VERSION,
     TABLE_RULES,
     TARGET_MODE_PRODUCTION,
     RehearsalError,
@@ -52,7 +53,8 @@ def test_p5_digest_normalizes_timezone_aware_datetimes_to_utc() -> None:
 def _upgrade_target(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RAJ_DATABASE_URL", f"sqlite+aiosqlite:///{path}")
     get_settings.cache_clear()
-    command.upgrade(Config("alembic.ini"), "head")
+    # The archived P5 importer deliberately accepts only its pinned schema.
+    command.upgrade(Config("alembic.ini"), REQUIRED_TARGET_ALEMBIC_VERSION)
     get_settings.cache_clear()
 
 

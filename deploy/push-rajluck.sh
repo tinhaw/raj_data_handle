@@ -22,6 +22,7 @@ GIT_PUSH=false
 INIT=false
 SCHEMA_ONLY=false
 UPLOAD_SOURCE=false
+STAGE_ONLY=false
 SOURCE_ARCHIVE=""
 
 usage() {
@@ -43,6 +44,7 @@ Options:
   --branch NAME              Git branch for deployment (default: main).
   --git-push                 Push origin/<branch> before the remote operation.
   --upload-source            Upload a sanitized snapshot of the current local source tree.
+  --stage-only               With --upload-source, stage source/env without starting services.
   --init                     Initialize /opt/raj_data_handle by clone or uploaded source.
   --remote-deploy            Upload .env and run the remote application rollout.
   --schema-only              Run the separately-gated Alembic migration only.
@@ -70,6 +72,7 @@ while [[ "$#" -gt 0 ]]; do
         --branch) require_value "$1" "${2:-}"; BRANCH="$2"; shift 2 ;;
         --git-push) GIT_PUSH=true; shift ;;
         --upload-source) UPLOAD_SOURCE=true; shift ;;
+        --stage-only) STAGE_ONLY=true; shift ;;
         --init) INIT=true; shift ;;
         --remote-deploy) REMOTE_DEPLOY=true; shift ;;
         --schema-only) SCHEMA_ONLY=true; shift ;;
@@ -85,6 +88,10 @@ done
 [[ "$SCHEMA_ONLY" == false || "$INIT" == false ]] || { printf '%s\n' '--schema-only cannot be combined with --init' >&2; exit 2; }
 [[ "$SCHEMA_ONLY" == false || "$UPLOAD_SOURCE" == false ]] || { printf '%s\n' '--schema-only cannot be combined with --upload-source' >&2; exit 2; }
 [[ "$GIT_PUSH" == false || "$UPLOAD_SOURCE" == false ]] || { printf '%s\n' '--git-push cannot be combined with --upload-source' >&2; exit 2; }
+[[ "$STAGE_ONLY" == false || ( "$UPLOAD_SOURCE" == true && "$SCHEMA_ONLY" == false && "$INIT" == false ) ]] || {
+    printf '%s\n' '--stage-only requires --upload-source and cannot use --schema-only or --init' >&2
+    exit 2
+}
 
 DEPLOYMENT_SSH_USER=""
 DEPLOYMENT_SSH_HOST=""
@@ -182,6 +189,7 @@ REMOTE_ARGS=()
 if [[ "$INIT" == true ]]; then REMOTE_ARGS+=(--init); fi
 if [[ "$SCHEMA_ONLY" == true ]]; then REMOTE_ARGS+=(--schema-only); fi
 if [[ "$UPLOAD_SOURCE" == true ]]; then REMOTE_ARGS+=(--upload-source); fi
+if [[ "$STAGE_ONLY" == true ]]; then REMOTE_ARGS+=(--stage-only); fi
 REMOTE_ARG_TEXT="${REMOTE_ARGS[*]:-}"
 
 printf 'Target: raj-data-handle\n'
@@ -257,6 +265,11 @@ fi
 
 scp "${SCP_OPTIONS[@]}" "$RENDERED_ENV" "$SSH_TARGET:$REMOTE_DIR/.env"
 ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" "chmod 600 $(quote_remote "$REMOTE_DIR/.env")"
+
+if [[ "$STAGE_ONLY" == true ]]; then
+    printf '%s\n' 'Source and environment staged. No services started and no migration executed.'
+    exit 0
+fi
 
 REMOTE_COMMAND="cd $(quote_remote "$REMOTE_DIR") && BRANCH=$(quote_remote "$BRANCH") bash deploy/deploy-rajluck.sh"
 if [[ "$SCHEMA_ONLY" == true ]]; then

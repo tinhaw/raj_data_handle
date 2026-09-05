@@ -78,7 +78,7 @@ def test_legacy_erp_entry_cutover_redirects_only_safe_reads() -> None:
     assert "return 302 https://analysis.ailuckdg.com$request_uri;" in nginx
     assert "if ($request_method !~ ^(GET|HEAD)$)" in nginx
     assert "return 405;" in nginx
-    assert "Cache-Control \"no-store\"" in nginx
+    assert 'Cache-Control "no-store"' in nginx
 
 
 def test_release_wrapper_reuses_one_strict_ssh_connection() -> None:
@@ -86,6 +86,16 @@ def test_release_wrapper_reuses_one_strict_ssh_connection() -> None:
 
     assert "ControlMaster=auto" in push_script
     assert "ControlPersist=60" in push_script
-    assert 'ControlPath=$SSH_CONTROL_PATH' in push_script
+    assert "ControlPath=$SSH_CONTROL_PATH" in push_script
     assert "StrictHostKeyChecking=yes" in push_script
     assert "PreferredAuthentications=publickey" in push_script
+
+
+def test_stage_only_exits_before_application_or_schema_execution() -> None:
+    push_script = (ROOT / "deploy" / "push-rajluck.sh").read_text(encoding="utf-8")
+    guard = 'if [[ "$STAGE_ONLY" == true ]]; then\n'
+    stage = push_script.index(guard)
+    assert push_script.index('"$RENDERED_ENV" "$SSH_TARGET:$REMOTE_DIR/.env"') < stage
+    assert stage < push_script.index('REMOTE_COMMAND="cd ')
+    assert "exit 0" in push_script[stage : push_script.index('REMOTE_COMMAND="cd ')]
+    assert "--stage-only requires --upload-source" in push_script
