@@ -28,7 +28,7 @@ def _redemption_type_checks() -> list[str]:
         bind.execute(
             sa.text(
                 """
-                SELECT constraint_name
+                SELECT checks.constraint_name
                 FROM information_schema.check_constraints checks
                 JOIN information_schema.table_constraints constraints
                   ON constraints.constraint_catalog = checks.constraint_catalog
