@@ -86,6 +86,7 @@ const exportingGroupKey = ref<string>()
 const remoteConnectionsLoading = ref(false)
 const remoteTagsLoading = ref(false)
 const remoteTagsLoaded = ref(false)
+const marketConfigurationError = ref('')
 const rewardTierPresetLoading = ref(false)
 const rewardTierPresetSaving = ref(false)
 const codeGroupDialogVisible = ref(false)
@@ -425,7 +426,13 @@ async function activateMarket(marketId?: string | number) {
   if (String(form.value.remoteMarketId) !== String(marketId)) saveActiveMarketDraft()
   form.value.remoteMarketId = marketId
   activeMarketTab.value = marketKey(marketId)
-  if (restoreMarketDraft(marketId)) return
+  marketConfigurationError.value = ''
+  if (restoreMarketDraft(marketId)) {
+    remoteTagsLoading.value = false
+    rewardTierPresetLoading.value = false
+    if (!remoteTagsLoaded.value || !rewardTierPreset.value) await loadMarketTierConfiguration()
+    return
+  }
   form.value.tiers = []
   remoteTags.value = []
   remoteTagsLoaded.value = false
@@ -771,25 +778,32 @@ async function loadMarketTierConfiguration() {
   }
   remoteTagsLoading.value = true
   rewardTierPresetLoading.value = true
+  marketConfigurationError.value = ''
   try {
-    const [tags, preset] = await Promise.all([
+    const [tags, preset] = await Promise.allSettled([
       api.redemptionRemoteConnections.tags(connection.id!),
       api.redemptionRemoteConnections.rewardTierPreset(connection.id!, form.value.redemptionType),
     ])
     if (request !== marketConfigurationRequest) return
-    remoteTags.value = tags
-    remoteTagsLoaded.value = true
-    rewardTierPreset.value = preset
-    applyMarketTierDefaults()
+    const errors: string[] = []
+    if (tags.status === 'fulfilled') {
+      remoteTags.value = tags.value
+      remoteTagsLoaded.value = true
+    } else {
+      errors.push('标签读取失败')
+    }
+    if (preset.status === 'fulfilled') {
+      rewardTierPreset.value = preset.value
+    } else {
+      errors.push('组合预设读取失败')
+    }
+    marketConfigurationError.value = errors.join('；')
+    // A retry or a late response must not overwrite tiers entered by the user.
+    if (!form.value.tiers.length && tags.status === 'fulfilled' && preset.status === 'fulfilled') applyMarketTierDefaults()
     saveActiveMarketDraft()
   } catch (error) {
     if (request !== marketConfigurationRequest) return
-    remoteTags.value = []
-    remoteTagsLoaded.value = false
-    rewardTierPreset.value = undefined
-    applyMarketTierDefaults()
-    saveActiveMarketDraft()
-    ElMessage.error(error instanceof Error ? error.message : '读取当前盘口标签或奖励分档预设失败')
+    marketConfigurationError.value = error instanceof Error ? error.message : '读取当前盘口配置失败'
   } finally {
     if (request === marketConfigurationRequest) {
       remoteTagsLoading.value = false
@@ -997,26 +1011,10 @@ function minimumDepositFromTag(name?: string) {
 }
 
 function addTier() {
-  const usedLabelIds = new Set(form.value.tiers.flatMap((tier) => tier.labelIds.map(String)))
-  const options = isPreviousDayDeposit() ? previousDayTagOptions.value : tagOptions.value
-  const availableTag = options.find((tag) => !usedLabelIds.has(String(tag.id)))
-  if (!availableTag) {
-    ElMessage.warning('所有可用标签都已添加为奖励档位')
-    return
-  }
-  if (isPreviousDayDeposit()) {
-    const tier: CodeGroupTierDraft = {
-      userType: 'LABEL_USERS',
-      displayName: availableTag.name.replace(/^\(\d+\)/, '').trim(),
-      minDepositAmount: minimumDepositFromTag(availableTag.name) ?? 0,
-      bonusAmount: 1,
-      bonusMaxAmount: 3,
-      labelIds: [availableTag.id],
-    }
-    form.value.tiers.push(tier)
-  } else {
-    form.value.tiers.push(draftTier(availableTag.id))
-  }
+  form.value.tiers.push({
+    userType: 'LABEL_USERS', displayName: '', minDepositAmount: 0,
+    bonusAmount: 1, bonusMaxAmount: 3, labelIds: [],
+  })
 }
 
 function isLabelUsedByOtherTier(labelId: string | number, currentTier: CodeGroupTierDraft) {
@@ -1615,10 +1613,12 @@ onUnmounted(() => {
           <div class="tier-panel__heading">
           <div><strong>{{ marketLabel(form.remoteMarketId) }} · 用户类型与兑换金额</strong><p>每个档位先选择用户类型。“标签用户”必须选择标签 ID；“全部用户”不会向远端发送标签数组。预设按当前账号和兑换码类型独立保存，三种兑换码类型互不覆盖。</p>
             <p v-if="rewardTierPresetLoading" class="field-note">正在读取已保存标签和组合预设…</p>
+            <p v-else-if="marketConfigurationError" class="field-note field-note--danger">{{ marketConfigurationError }}，请重新加载；已填写档位和金额会保留。</p>
             <p v-else-if="rewardTierPreset?.exists" class="field-note"><el-tag size="small" :type="rewardTierPreset.stale ? 'warning' : 'success'">{{ rewardTierPreset.stale ? '预设待确认' : '已保存预设' }}</el-tag> 保存于 {{ formatDateTime(rewardTierPreset.savedAt) }}</p>
             <p v-else class="field-note">当前类型尚未保存预设，已加载默认档位。修改后可另存当前预设。</p>
           </div>
             <div class="tier-panel__actions">
+              <el-button plain :loading="remoteTagsLoading || rewardTierPresetLoading" @click="loadMarketTierConfiguration">重新加载</el-button>
               <el-button plain :icon="Refresh" :loading="remoteTagsLoading" @click="loadRemoteTags">同步当前盘口标签</el-button>
               <el-button plain :disabled="!rewardTierPreset?.exists || rewardTierPreset.stale || rewardTierPresetLoading" @click="applyRewardTierPreset">重新应用预设</el-button>
               <el-button plain type="primary" :disabled="remoteTagsLoading || !remoteTagsLoaded" :loading="rewardTierPresetSaving" @click="saveRewardTierPreset">另存当前预设</el-button>
@@ -1627,6 +1627,8 @@ onUnmounted(() => {
             </div>
           </div>
           <div class="tier-editor">
+            <p v-if="!remoteTagsLoading && !remoteTagsLoaded" class="field-note field-note--danger">标签尚未加载成功。可先新增档位，重新加载后再选择标签。</p>
+            <p v-else-if="!remoteTagsLoading && !remoteTags.length" class="field-note">当前盘口尚无已保存标签，请同步当前盘口标签。</p>
             <div class="tier-editor__header"><span>用户类型</span><span>标签 ID 数组</span><span>兑换金额下限</span><span>兑换金额上限</span><span></span></div>
             <div v-for="(tier, index) in form.tiers" :key="index" class="tier-editor__row">
               <el-select :model-value="tier.userType" :clearable="false" @update:model-value="(value) => changeTierUserType(tier, value as CodeGroupUserType)">
