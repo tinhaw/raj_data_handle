@@ -21,6 +21,7 @@ class CompatibilityRemoteAccountClientTest {
 
     @Test
     void readsAndSavesOnlyTheUnifiedAccountMetadata() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger typedRequests = new java.util.concurrent.atomic.AtomicInteger();
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/accounts/account-uuid/tags", exchange -> {
             assertThat(exchange.getRequestHeaders().getFirst("Cookie")).isEqualTo("raj_session=test-session");
@@ -38,6 +39,10 @@ class CompatibilityRemoteAccountClientTest {
                     """);
         });
         server.createContext("/accounts/account-uuid/reward-tier-preset", exchange -> {
+            if (exchange.getRequestURI().getQuery() != null) {
+                assertThat(exchange.getRequestURI().getQuery()).isEqualTo("redemption_type=PREVIOUS_DAY_DEPOSIT");
+                typedRequests.incrementAndGet();
+            }
             assertThat(exchange.getRequestHeaders().getFirst("Cookie")).isEqualTo("raj_session=test-session");
             if ("PUT".equals(exchange.getRequestMethod())) {
                 String requestBody = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
@@ -78,6 +83,15 @@ class CompatibilityRemoteAccountClientTest {
                                 java.math.BigDecimal.valueOf(100), java.math.BigDecimal.ONE, java.math.BigDecimal.valueOf(3))),
                         java.util.List.of(new RedemptionDtos.RemoteTagResponse(901091L, "(901091)近7天充值总金额100-499"))));
         assertThat(saved.savedAt()).isNotNull();
+        client.rewardTierPreset("account-uuid", "raj_session", "test-session", RedemptionCodeType.PREVIOUS_DAY_DEPOSIT);
+        client.saveRewardTierPreset("account-uuid", "raj_session", "test-session",
+                new RedemptionDtos.RewardTierPresetSaveRequest(
+                        java.util.List.of(new RedemptionDtos.RewardTierPresetTierRequest(
+                                "LABEL_USERS", java.util.List.of(901091L), "近7天充值总金额100-499",
+                                java.math.BigDecimal.valueOf(100), java.math.BigDecimal.ONE, java.math.BigDecimal.valueOf(3))),
+                        java.util.List.of(new RedemptionDtos.RemoteTagResponse(901091L, "(901091)近7天充值总金额100-499"))),
+                RedemptionCodeType.PREVIOUS_DAY_DEPOSIT);
+        assertThat(typedRequests.get()).isEqualTo(2);
     }
 
     private void respond(com.sun.net.httpserver.HttpExchange exchange, String body) throws java.io.IOException {

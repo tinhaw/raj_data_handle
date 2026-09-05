@@ -8,6 +8,22 @@ PAGE = (
 )
 
 
+def test_daily_loads_persisted_tags_and_uses_type_scoped_presets() -> None:
+    source = PAGE.read_text(encoding="utf-8")
+    activate = source.split("async function activateMarket(", 1)[1].split(
+        "async function ensureSelectedMarketDrafts", 1
+    )[0]
+    change = source.split("function changeRedemptionType()", 1)[1].split(
+        "function resetPreviousDayTiers", 1
+    )[0]
+    assert "loadMarketTierConfiguration()" in activate
+    assert "isPreviousDayDeposit()" not in activate
+    assert "loadMarketTierConfiguration()" in change
+    assert "isPreviousDayDeposit()" not in change
+    assert "rewardTierPreset(connection.id!, form.value.redemptionType)" in source
+    assert '<template v-if="!isPreviousDayDeposit()">' not in source
+
+
 def test_code_group_dialog_defaults_existing_label_tiers_to_label_users() -> None:
     source = PAGE.read_text(encoding="utf-8")
 

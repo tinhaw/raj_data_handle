@@ -166,7 +166,10 @@ async def test_deleting_legacy_account_migrates_local_configuration_to_managed_d
         session.add(legacy)
         await session.commit()
 
-        tags = [RemoteTag(id=901091, name="Seven-day deposit 100-499")]
+        tags = [
+            RemoteTag(id=901091, name="Seven-day deposit 100-499"),
+            RemoteTag(id=901027, name="日充值200+"),
+        ]
         await save_remote_tag_snapshot(
             session,
             account_id=legacy.id,
@@ -191,6 +194,44 @@ async def test_deleting_legacy_account_migrates_local_configuration_to_managed_d
             actor_user_id=1,
         )
 
+        await save_reward_tier_preset(
+            session,
+            account_id=legacy.id,
+            redemption_type="PREVIOUS_DAY_DEPOSIT",
+            request=RewardTierPresetWrite(
+                tiers=[
+                    RewardTierPresetTier(
+                        user_type="ALL_USERS",
+                        label_ids=[],
+                        display_name="全部用户",
+                        min_deposit_amount="0",
+                        bonus_amount="10",
+                        bonus_max_amount="10",
+                    ),
+                    RewardTierPresetTier(
+                        user_type="LABEL_USERS",
+                        label_ids=[901027],
+                        display_name="日充值200+",
+                        min_deposit_amount="200",
+                        bonus_amount="30",
+                        bonus_max_amount="30",
+                    ),
+                ],
+                tag_snapshot=tags,
+            ),
+            actor_user_id=1,
+        )
+        async with factory() as reopened:
+            snapshot = await reopened.get(RemoteAccountTagSnapshot, legacy.id)
+            assert 901027 in [tag["id"] for tag in snapshot.tags_json]
+            daily = await get_reward_tier_preset(
+                reopened, account_id=legacy.id, redemption_type="PREVIOUS_DAY_DEPOSIT"
+            )
+            seven = await get_reward_tier_preset(reopened, account_id=legacy.id)
+            assert daily.tiers[0].user_type == "ALL_USERS"
+            assert daily.tiers[1].label_ids == [901027]
+            assert seven.tiers[0].label_ids == [901091]
+
         await delete_legacy_remote_account(
             session,
             account_id=legacy.id,
@@ -199,7 +240,18 @@ async def test_deleting_legacy_account_migrates_local_configuration_to_managed_d
 
         assert await session.get(RemoteAccount, legacy.id) is None
         assert await session.get(RemoteAccountTagSnapshot, managed.account.id) is not None
-        assert await session.get(RemoteAccountRewardTierPreset, managed.account.id) is not None
+        assert (
+            await session.get(
+                RemoteAccountRewardTierPreset, (managed.account.id, "SEVEN_DAY_DEPOSIT")
+            )
+            is not None
+        )
+        assert (
+            await session.get(
+                RemoteAccountRewardTierPreset, (managed.account.id, "PREVIOUS_DAY_DEPOSIT")
+            )
+            is not None
+        )
         remaining = list(await session.scalars(select(RemoteAccount)))
         assert [account.id for account in remaining] == [managed.account.id]
 

@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -80,10 +81,11 @@ public class CompatibilityRemoteRegistryController {
 
     @GetMapping("/redemption-remote-connections/{id}/reward-tier-preset")
     @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
-    public RedemptionDtos.RewardTierPresetResponse rewardTierPreset(@PathVariable Long id, HttpServletRequest request) {
+    public RedemptionDtos.RewardTierPresetResponse rewardTierPreset(@PathVariable Long id,
+            @RequestParam(defaultValue = "SEVEN_DAY_DEPOSIT") RedemptionCodeType redemptionType, HttpServletRequest request) {
         CompatibilityRemoteRegistry.Connection connection = connection(id, request);
         CompatibilityRemoteAccountClient.RewardTierPreset preset = remoteAccountClient.rewardTierPreset(
-                connection.canonicalId(), sessionCookieName, session(request));
+                connection.canonicalId(), sessionCookieName, session(request), redemptionType);
         return response(preset);
     }
 
@@ -93,10 +95,11 @@ public class CompatibilityRemoteRegistryController {
     public RedemptionDtos.RewardTierPresetResponse saveRewardTierPreset(
             @PathVariable Long id,
             @Valid @RequestBody RedemptionDtos.RewardTierPresetSaveRequest request,
+            @RequestParam(defaultValue = "SEVEN_DAY_DEPOSIT") RedemptionCodeType redemptionType,
             HttpServletRequest servletRequest) {
         CompatibilityRemoteRegistry.Connection connection = connection(id, servletRequest);
         CompatibilityRemoteAccountClient.RewardTierPreset preset = remoteAccountClient.saveRewardTierPreset(
-                connection.canonicalId(), sessionCookieName, session(servletRequest), request);
+                connection.canonicalId(), sessionCookieName, session(servletRequest), request, redemptionType);
         return response(preset);
     }
 

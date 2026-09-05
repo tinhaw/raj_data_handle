@@ -57,6 +57,17 @@ public class CompatibilityRemoteAccountClient {
         return request(accountId, cookieName, cookieValue, "GET", null, RewardTierPreset.class, "/reward-tier-preset");
     }
 
+    public RewardTierPreset rewardTierPreset(String accountId, String cookieName, String cookieValue, RedemptionCodeType type) {
+        return request(accountId, cookieName, cookieValue, "GET", null, RewardTierPreset.class,
+                "/reward-tier-preset?redemption_type=" + type.name());
+    }
+
+    public RewardTierPreset saveRewardTierPreset(String accountId, String cookieName, String cookieValue,
+            RedemptionDtos.RewardTierPresetSaveRequest payload, RedemptionCodeType type) {
+        return request(accountId, cookieName, cookieValue, "PUT", payload, RewardTierPreset.class,
+                "/reward-tier-preset?redemption_type=" + type.name());
+    }
+
     public RewardTierPreset saveRewardTierPreset(
             String accountId,
             String cookieName,

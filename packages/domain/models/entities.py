@@ -792,6 +792,12 @@ class RemoteAccountRewardTierPreset(Base):
     account_id: Mapped[str] = mapped_column(
         ForeignKey("remote_accounts.id", ondelete="CASCADE"), primary_key=True
     )
+    redemption_type: Mapped[str] = mapped_column(
+        String(32),
+        primary_key=True,
+        default="SEVEN_DAY_DEPOSIT",
+        server_default="SEVEN_DAY_DEPOSIT",
+    )
     tiers_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
     tag_snapshot_json: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, nullable=False, default=list

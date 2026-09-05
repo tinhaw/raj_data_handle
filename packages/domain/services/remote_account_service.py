@@ -90,10 +90,7 @@ class RemoteAccountView:
 
 
 def capability_definitions() -> list[dict[str, str]]:
-    return [
-        {"code": code, "label": label}
-        for code, label in REMOTE_ACCOUNT_CAPABILITIES.items()
-    ]
+    return [{"code": code, "label": label} for code, label in REMOTE_ACCOUNT_CAPABILITIES.items()]
 
 
 def _normalize_display_name(value: str) -> str:
@@ -173,9 +170,7 @@ async def _ensure_all_capabilities(
     rows = {
         row.capability: row
         for row in await session.scalars(
-            select(RemoteAccountCapability).where(
-                RemoteAccountCapability.account_id == account_id
-            )
+            select(RemoteAccountCapability).where(RemoteAccountCapability.account_id == account_id)
         )
     }
     changed = False
@@ -423,10 +418,14 @@ async def update_remote_account(
         )
         if not configured:
             raise RemoteAccountValidationError("凭据未完整配置的账号不能启用。")
-        if not account.is_default and await _default_account(
-            session,
-            source_id=account.source_id,
-        ) is None:
+        if (
+            not account.is_default
+            and await _default_account(
+                session,
+                source_id=account.source_id,
+            )
+            is None
+        ):
             await _make_default(session, account=account)
             changed_fields.append("is_default")
 
@@ -592,18 +591,23 @@ async def delete_legacy_remote_account(
             )
             migrated_snapshot = True
         elif replacement_snapshot.tags_json != legacy_snapshot.tags_json:
-            raise RemoteAccountConflictError(
-                "当前账号与历史账号的标签快照不一致，请先核对并迁移。"
-            )
+            raise RemoteAccountConflictError("当前账号与历史账号的标签快照不一致，请先核对并迁移。")
 
-    legacy_preset = await session.get(RemoteAccountRewardTierPreset, account.id)
-    replacement_preset = await session.get(RemoteAccountRewardTierPreset, replacement.id)
     migrated_preset = False
-    if legacy_preset is not None:
+    for redemption_type in ("SEVEN_DAY_DEPOSIT", "PREVIOUS_DAY_DEPOSIT"):
+        legacy_preset = await session.get(
+            RemoteAccountRewardTierPreset, (account.id, redemption_type)
+        )
+        replacement_preset = await session.get(
+            RemoteAccountRewardTierPreset, (replacement.id, redemption_type)
+        )
+        if legacy_preset is None:
+            continue
         if replacement_preset is None:
             session.add(
                 RemoteAccountRewardTierPreset(
                     account_id=replacement.id,
+                    redemption_type=redemption_type,
                     tiers_json=list(legacy_preset.tiers_json),
                     tag_snapshot_json=list(legacy_preset.tag_snapshot_json),
                     saved_by=actor_user_id,
@@ -707,9 +711,12 @@ async def save_remote_tag_snapshot(
         row.stale = False
         if changed:
             row.row_version += 1
-            preset = await session.get(RemoteAccountRewardTierPreset, account_id)
-            if preset is not None and preset.tag_snapshot_json != tags_json:
-                row.stale = True
+            for redemption_type in ("SEVEN_DAY_DEPOSIT", "PREVIOUS_DAY_DEPOSIT"):
+                preset = await session.get(
+                    RemoteAccountRewardTierPreset, (account_id, redemption_type)
+                )
+                if preset is not None and preset.tag_snapshot_json != tags_json:
+                    row.stale = True
     await write_audit(
         session,
         action="remote_account.tags_snapshot_save",
@@ -723,10 +730,12 @@ async def save_remote_tag_snapshot(
 
 
 async def get_reward_tier_preset(
-    session: AsyncSession, *, account_id: str
+    session: AsyncSession, *, account_id: str, redemption_type: str = "SEVEN_DAY_DEPOSIT"
 ) -> RewardTierPresetResponse:
     await _get_account(session, account_id)
-    row = await session.get(RemoteAccountRewardTierPreset, account_id)
+    if redemption_type not in ("SEVEN_DAY_DEPOSIT", "PREVIOUS_DAY_DEPOSIT"):
+        raise RemoteAccountValidationError("不支持的兑换码类型。")
+    row = await session.get(RemoteAccountRewardTierPreset, (account_id, redemption_type))
     current = await session.get(RemoteAccountTagSnapshot, account_id)
     if row is None:
         return RewardTierPresetResponse(
@@ -749,19 +758,23 @@ async def save_reward_tier_preset(
     account_id: str,
     request: RewardTierPresetWrite,
     actor_user_id: int,
+    redemption_type: str = "SEVEN_DAY_DEPOSIT",
 ) -> RewardTierPresetResponse:
     await _get_account(session, account_id)
     allowed_labels = {tag.id for tag in request.tag_snapshot}
     used_labels = {label for tier in request.tiers for label in tier.label_ids}
     if not used_labels.issubset(allowed_labels):
         raise RemoteAccountValidationError("档位引用了标签快照中不存在的标签 ID。")
-    row = await session.get(RemoteAccountRewardTierPreset, account_id)
+    if redemption_type not in ("SEVEN_DAY_DEPOSIT", "PREVIOUS_DAY_DEPOSIT"):
+        raise RemoteAccountValidationError("不支持的兑换码类型。")
+    row = await session.get(RemoteAccountRewardTierPreset, (account_id, redemption_type))
     tiers_json = [tier.model_dump(mode="json") for tier in request.tiers]
     tags_json = [tag.model_dump(mode="json") for tag in request.tag_snapshot]
     if row is None:
         row = RemoteAccountRewardTierPreset(
             account_id=account_id,
             tiers_json=tiers_json,
+            redemption_type=redemption_type,
             tag_snapshot_json=tags_json,
             saved_by=actor_user_id,
         )
@@ -781,7 +794,9 @@ async def save_reward_tier_preset(
         metadata={"tier_count": len(tiers_json), "tag_count": len(tags_json)},
     )
     await session.commit()
-    return await get_reward_tier_preset(session, account_id=account_id)
+    return await get_reward_tier_preset(
+        session, account_id=account_id, redemption_type=redemption_type
+    )
 
 
 async def remote_account_has_capability(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -439,11 +441,14 @@ async def put_account_tag_snapshot(
 @router.get("/{account_id}/reward-tier-preset", response_model=RewardTierPresetResponse)
 async def get_account_reward_tier_preset(
     account_id: str,
+    redemption_type: Literal["SEVEN_DAY_DEPOSIT", "PREVIOUS_DAY_DEPOSIT"] = "SEVEN_DAY_DEPOSIT",
     _: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REDEMPTION_VIEW)),
     session: AsyncSession = Depends(get_db_session),
 ) -> RewardTierPresetResponse:
     try:
-        return await get_reward_tier_preset(session, account_id=account_id)
+        return await get_reward_tier_preset(
+            session, account_id=account_id, redemption_type=redemption_type
+        )
     except RemoteAccountNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -452,12 +457,17 @@ async def get_account_reward_tier_preset(
 async def put_account_reward_tier_preset(
     account_id: str,
     payload: RewardTierPresetWrite,
+    redemption_type: Literal["SEVEN_DAY_DEPOSIT", "PREVIOUS_DAY_DEPOSIT"] = "SEVEN_DAY_DEPOSIT",
     auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REMOTE_ACCOUNT_MANAGE)),
     session: AsyncSession = Depends(get_db_session),
 ) -> RewardTierPresetResponse:
     try:
         return await save_reward_tier_preset(
-            session, account_id=account_id, request=payload, actor_user_id=auth.user.id
+            session,
+            account_id=account_id,
+            request=payload,
+            actor_user_id=auth.user.id,
+            redemption_type=redemption_type,
         )
     except RemoteAccountNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

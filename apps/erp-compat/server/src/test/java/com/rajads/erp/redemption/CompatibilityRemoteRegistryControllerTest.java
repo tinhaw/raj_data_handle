@@ -27,7 +27,7 @@ class CompatibilityRemoteRegistryControllerTest {
                 new CompatibilityRemoteAccountClient.TagSnapshot(true,
                         List.of(new CompatibilityRemoteAccountClient.RemoteTag(901091L, "(901091)近7天充值总金额100-499")),
                         "MIGRATED", false, Instant.parse("2026-08-31T00:00:00Z"), Instant.now(), 1L));
-        when(accountClient.rewardTierPreset("account-uuid", "raj_session", "signed-session")).thenReturn(preset());
+        when(accountClient.rewardTierPreset("account-uuid", "raj_session", "signed-session", RedemptionCodeType.PREVIOUS_DAY_DEPOSIT)).thenReturn(preset());
         when(accountClient.syncTags("account-uuid", "raj_session", "signed-session")).thenReturn(
                 new CompatibilityRemoteAccountClient.TagSnapshot(true,
                         List.of(new CompatibilityRemoteAccountClient.RemoteTag(901990L, "(901990)日充值100-199")),
@@ -37,7 +37,7 @@ class CompatibilityRemoteRegistryControllerTest {
             assertThat(tag.id()).isEqualTo(901091L);
             assertThat(tag.name()).contains("100-499");
         });
-        RedemptionDtos.RewardTierPresetResponse preset = controller.rewardTierPreset(23L, request);
+        RedemptionDtos.RewardTierPresetResponse preset = controller.rewardTierPreset(23L, RedemptionCodeType.PREVIOUS_DAY_DEPOSIT, request);
         assertThat(preset.exists()).isTrue();
         assertThat(preset.tiers()).singleElement().satisfies(tier -> assertThat(tier.labelIds()).containsExactly(901091L));
         RedemptionDtos.RemoteTagSyncResponse synced = controller.syncTags(23L, request);

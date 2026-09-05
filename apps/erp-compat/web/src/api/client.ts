@@ -870,12 +870,12 @@ export const api = {
         syncedAt: value.syncedAt ? String(value.syncedAt) : undefined,
       }
     },
-    rewardTierPreset: async (id: string | number) => {
-      const value = asRecord(await request<unknown>(() => apiClient.get(`/redemption-remote-connections/${id}/reward-tier-preset`)))
+    rewardTierPreset: async (id: string | number, redemptionType = 'SEVEN_DAY_DEPOSIT') => {
+      const value = asRecord(await request<unknown>(() => apiClient.get(`/redemption-remote-connections/${id}/reward-tier-preset`, { params: { redemptionType } })))
       return normalizeRewardTierPreset(value)
     },
-    saveRewardTierPreset: async (id: string | number, preset: Pick<RedemptionRewardTierPreset, 'tiers' | 'tagSnapshot'>) => {
-      const value = asRecord(await request<unknown>(() => apiClient.put(`/redemption-remote-connections/${id}/reward-tier-preset`, preset)))
+    saveRewardTierPreset: async (id: string | number, preset: Pick<RedemptionRewardTierPreset, 'tiers' | 'tagSnapshot'>, redemptionType = 'SEVEN_DAY_DEPOSIT') => {
+      const value = asRecord(await request<unknown>(() => apiClient.put(`/redemption-remote-connections/${id}/reward-tier-preset`, preset, { params: { redemptionType } })))
       return normalizeRewardTierPreset(value)
     },
   },

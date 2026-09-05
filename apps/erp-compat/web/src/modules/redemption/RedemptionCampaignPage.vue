@@ -381,6 +381,7 @@ function restoreMarketDraft(marketId: string | number) {
 async function activateMarket(marketId?: string | number) {
   if (marketId === undefined || marketId === null) return
   if (String(form.value.remoteMarketId) === String(marketId)) return
+  ++marketConfigurationRequest
   if (String(form.value.remoteMarketId) !== String(marketId)) saveActiveMarketDraft()
   form.value.remoteMarketId = marketId
   activeMarketTab.value = marketKey(marketId)
@@ -389,12 +390,7 @@ async function activateMarket(marketId?: string | number) {
   remoteTags.value = []
   remoteTagsLoaded.value = false
   rewardTierPreset.value = undefined
-  if (isPreviousDayDeposit()) {
-    resetPreviousDayTiers()
-    saveActiveMarketDraft()
-  } else {
-    await loadMarketTierConfiguration()
-  }
+  await loadMarketTierConfiguration()
 }
 
 async function ensureSelectedMarketDrafts() {
@@ -675,24 +671,28 @@ async function loadRemoteConnections() {
 async function loadRemoteTags() {
   const connection = selectedRemoteConnection.value
   if (!connection) { ElMessage.warning('请先选择盘口，再同步标签'); return }
+  const type = form.value.redemptionType
+  const request = ++marketConfigurationRequest
   remoteTagsLoading.value = true
   try {
     const result = await api.redemptionRemoteConnections.syncTags(connection.id!)
+    if (request !== marketConfigurationRequest || form.value.redemptionType !== type) return
     remoteTags.value = result.tags
     remoteTagsLoaded.value = true
-    if (rewardTierPreset.value?.exists && result.presetStale) {
-      rewardTierPreset.value = { ...rewardTierPreset.value, stale: true, lastSyncedAt: result.syncedAt }
+    const preset = await api.redemptionRemoteConnections.rewardTierPreset(connection.id!, type)
+    if (request !== marketConfigurationRequest) return
+    rewardTierPreset.value = preset
+    if (preset.exists && preset.stale) {
       ElMessage.warning(`已同步 ${result.tags.length} 个标签；奖励分档预设已过期，请确认后重新保存`)
     } else {
       ElMessage.success(`已同步 ${result.tags.length} 个标签`)
     }
     saveActiveMarketDraft()
   } catch (error) {
-    remoteTags.value = []
-    remoteTagsLoaded.value = false
+    if (request !== marketConfigurationRequest) return
     ElMessage.error(error instanceof Error ? error.message : '读取标签 ID 数组失败')
   } finally {
-    remoteTagsLoading.value = false
+    if (request === marketConfigurationRequest) remoteTagsLoading.value = false
   }
 }
 
@@ -718,20 +718,20 @@ async function loadMarketTierConfiguration() {
   try {
     const [tags, preset] = await Promise.all([
       api.redemptionRemoteConnections.tags(connection.id!),
-      api.redemptionRemoteConnections.rewardTierPreset(connection.id!),
+      api.redemptionRemoteConnections.rewardTierPreset(connection.id!, form.value.redemptionType),
     ])
     if (request !== marketConfigurationRequest) return
     remoteTags.value = tags
     remoteTagsLoaded.value = true
     rewardTierPreset.value = preset
-    if (!isPreviousDayDeposit()) applyMarketTierDefaults()
+    applyMarketTierDefaults()
     saveActiveMarketDraft()
   } catch (error) {
     if (request !== marketConfigurationRequest) return
     remoteTags.value = []
     remoteTagsLoaded.value = false
     rewardTierPreset.value = undefined
-    if (!isPreviousDayDeposit()) applyMarketTierDefaults()
+    applyMarketTierDefaults()
     saveActiveMarketDraft()
     ElMessage.error(error instanceof Error ? error.message : '读取当前盘口标签或奖励分档预设失败')
   } finally {
@@ -802,10 +802,7 @@ function changeRedemptionType() {
   remoteTagsLoaded.value = false
   rewardTierPreset.value = undefined
   if (!form.value.remoteMarketId) return
-  if (isPreviousDayDeposit()) {
-    resetPreviousDayTiers()
-    saveActiveMarketDraft()
-  } else void loadMarketTierConfiguration()
+  void loadMarketTierConfiguration()
 }
 
 function resetPreviousDayTiers() {
@@ -861,6 +858,10 @@ function applyMarketTierDefaults() {
   const preset = rewardTierPreset.value
   if (preset?.exists && !preset.stale && savedPresetMatchesCurrentMarket(preset)) {
     form.value.tiers = tiersFromRewardPreset(preset)
+    return
+  }
+  if (isPreviousDayDeposit()) {
+    resetPreviousDayTiers()
     return
   }
   const standard = standardSevenDayTiers()
@@ -968,11 +969,13 @@ function applyRewardTierPreset() {
 async function saveRewardTierPreset() {
   const connection = selectedRemoteConnection.value
   if (!connection) { ElMessage.warning('请先选择盘口'); return }
+  const type = form.value.redemptionType
+  const marketId = form.value.remoteMarketId
   if (form.value.tiers.some((tier) => tier.userType === 'LABEL_USERS' && !tier.labelIds.length)) { ElMessage.warning('标签用户档位必须选择标签 ID'); return }
   if (form.value.tiers.some((tier) => tier.bonusMaxAmount < tier.bonusAmount)) { ElMessage.warning('兑换金额上下限不正确'); return }
   rewardTierPresetSaving.value = true
   try {
-    rewardTierPreset.value = await api.redemptionRemoteConnections.saveRewardTierPreset(connection.id!, {
+    const savedPreset = await api.redemptionRemoteConnections.saveRewardTierPreset(connection.id!, {
       tiers: form.value.tiers.map((tier) => ({
         userType: tier.userType,
         labelIds: tier.userType === 'ALL_USERS' ? [] : [...tier.labelIds],
@@ -982,7 +985,9 @@ async function saveRewardTierPreset() {
         bonusMaxAmount: String(tier.bonusMaxAmount),
       })),
       tagSnapshot: tagOptions.value.map((tag) => ({ id: tag.id, name: tag.name })),
-    })
+    }, type)
+    if (form.value.redemptionType !== type || form.value.remoteMarketId !== marketId) return
+    rewardTierPreset.value = savedPreset
     saveActiveMarketDraft()
     ElMessage.success('当前奖励分档已保存为预设')
   } catch (error) {
@@ -1513,8 +1518,18 @@ onUnmounted(() => {
         </el-tabs>
         <section class="tier-panel">
           <div class="tier-panel__heading">
-          <div><strong>{{ marketLabel(form.remoteMarketId) }} · 用户类型与兑换金额</strong><p>每个档位先选择用户类型。“标签用户”必须选择标签 ID；“全部用户”不会向远端发送标签数组。切换顶部盘口标签页可独立编辑各盘口。</p><p v-if="isPreviousDayDeposit()" class="field-note">日充值默认保留充值 0 档为全部用户，其余档位为标签用户；远端描述和备注会命名为“{{ 'NEW-818存款200' }}”格式。</p><template v-else><p v-if="rewardTierPresetLoading" class="field-note">正在读取 {{ marketLabel(form.remoteMarketId) }} 的用户类型、标签与奖励分档预设…</p><p v-else-if="rewardTierPreset?.exists" class="field-note"><el-tag size="small" :type="rewardTierPreset.stale ? 'warning' : 'success'">{{ rewardTierPreset.stale ? '预设待重新保存' : '已保存预设' }}</el-tag><span class="tier-panel__preset-copy">{{ rewardTierPreset.stale ? '标签已同步，请确认当前奖励分档后重新保存。' : `保存于 ${formatDateTime(rewardTierPreset.savedAt)}` }}</span></p><p v-else class="field-note">当前盘口尚未另存预设，已按现有标签加载标准五档。</p></template></div>
-            <div class="tier-panel__actions"><el-button plain :icon="Refresh" :loading="remoteTagsLoading" @click="loadRemoteTags">同步当前盘口标签</el-button><template v-if="!isPreviousDayDeposit()"><el-button plain :disabled="!rewardTierPreset?.exists || rewardTierPreset.stale" @click="applyRewardTierPreset">重新应用预设</el-button><el-button plain type="primary" :loading="rewardTierPresetSaving" @click="saveRewardTierPreset">另存当前预设</el-button><el-button plain @click="restoreStandardTiers">恢复该盘口标准五档</el-button></template><el-button plain :icon="Plus" @click="addTier">添加档位</el-button></div>
+          <div><strong>{{ marketLabel(form.remoteMarketId) }} · 用户类型与兑换金额</strong><p>每个档位先选择用户类型。“标签用户”必须选择标签 ID；“全部用户”不会向远端发送标签数组。预设按当前账号和兑换码类型独立保存，日充值与近 7 天充值互不覆盖。</p>
+            <p v-if="rewardTierPresetLoading" class="field-note">正在读取已保存标签和组合预设…</p>
+            <p v-else-if="rewardTierPreset?.exists" class="field-note"><el-tag size="small" :type="rewardTierPreset.stale ? 'warning' : 'success'">{{ rewardTierPreset.stale ? '预设待确认' : '已保存预设' }}</el-tag> 保存于 {{ formatDateTime(rewardTierPreset.savedAt) }}</p>
+            <p v-else class="field-note">当前类型尚未保存预设，已加载默认档位。修改后可另存当前预设。</p>
+          </div>
+            <div class="tier-panel__actions">
+              <el-button plain :icon="Refresh" :loading="remoteTagsLoading" @click="loadRemoteTags">同步当前盘口标签</el-button>
+              <el-button plain :disabled="!rewardTierPreset?.exists || rewardTierPreset.stale || rewardTierPresetLoading" @click="applyRewardTierPreset">重新应用预设</el-button>
+              <el-button plain type="primary" :disabled="remoteTagsLoading || !remoteTagsLoaded" :loading="rewardTierPresetSaving" @click="saveRewardTierPreset">另存当前预设</el-button>
+              <el-button plain @click="isPreviousDayDeposit() ? resetPreviousDayTiers() : restoreStandardTiers()">恢复默认档位</el-button>
+              <el-button plain :icon="Plus" @click="addTier">添加档位</el-button>
+            </div>
           </div>
           <div class="tier-editor">
             <div class="tier-editor__header"><span>用户类型</span><span>标签 ID 数组</span><span>兑换金额下限</span><span>兑换金额上限</span><span></span></div>
