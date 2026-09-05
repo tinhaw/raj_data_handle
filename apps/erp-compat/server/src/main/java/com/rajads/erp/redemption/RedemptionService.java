@@ -10,17 +10,24 @@ import com.rajads.erp.shared.DecimalUtils;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 @Service
 @RequiredArgsConstructor
 public class RedemptionService {
     private static final Set<String> CAMPAIGN_STATUSES = Set.of("DRAFT", "ACTIVE", "ARCHIVED");
+    private static final ZoneId TASK_NUMBER_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final Map<LocalDate, ReentrantLock> TASK_NUMBER_LOCKS = new ConcurrentHashMap<>();
     private final RedemptionCampaignRepository campaignRepository;
     private final RedemptionCampaignTierRepository tierRepository;
     private final RedemptionCodeBatchRepository batchRepository;
@@ -443,7 +450,7 @@ public class RedemptionService {
                 batch.getExportGroupKey(),
                 batch.getRemotePublishTaskId(), batch.getRemotePublishError(), batch.getRemotePublishMode(),
                 batch.getRemoteScheduledPublishAt(), batch.getRemotePublishNote(), batch.getRemotePublishCancelledAt(), remoteOptionsResponse(batch),
-                batch.getTaskId());
+                batch.getTaskId(), taskRepository.findById(batch.getTaskId()).map(RedemptionCodeTask::taskNumber).orElse(null));
     }
 
     private RedemptionCodeTask resolveTask(String exportGroupKey) {
@@ -457,10 +464,35 @@ public class RedemptionService {
     }
 
     private RedemptionCodeTask createTask(String groupingKey) {
-        RedemptionCodeTask task = new RedemptionCodeTask();
-        task.setGroupingKey(groupingKey);
-        task.setCreatedBy(currentUser.require().id());
-        return taskRepository.save(task);
+        LocalDate taskDate = LocalDate.now(TASK_NUMBER_ZONE);
+        ReentrantLock lock = TASK_NUMBER_LOCKS.computeIfAbsent(taskDate, ignored -> new ReentrantLock());
+        lock.lock();
+        boolean unlockAfterTransaction = false;
+        try {
+            // The sequence query must stay protected until commit: a second
+            // request cannot observe this transaction's newly saved task yet.
+            if (TransactionSynchronizationManager.isSynchronizationActive()
+                    && TransactionSynchronizationManager.isActualTransactionActive()) {
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override public void afterCompletion(int status) { lock.unlock(); }
+                });
+                unlockAfterTransaction = true;
+            }
+            int nextSequence = taskRepository.findFirstByTaskDateOrderByDailySequenceDesc(taskDate)
+                    .map(task -> task.getDailySequence() + 1)
+                    .orElse(1);
+            if (nextSequence > 9999) {
+                throw ApiException.conflict("TASK_DAILY_SEQUENCE_EXHAUSTED", "当天兑换码生成任务已达到 9999 次，请联系管理员处理");
+            }
+            RedemptionCodeTask task = new RedemptionCodeTask();
+            task.setGroupingKey(groupingKey);
+            task.setTaskDate(taskDate);
+            task.setDailySequence(nextSequence);
+            task.setCreatedBy(currentUser.require().id());
+            return taskRepository.save(task);
+        } finally {
+            if (!unlockAfterTransaction) lock.unlock();
+        }
     }
 
     private void applyRemoteOptions(RedemptionCodeBatch batch, RedemptionDtos.RemoteCreationOptionsRequest request) {

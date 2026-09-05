@@ -24,6 +24,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.matchesPattern;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -99,6 +100,7 @@ class RedemptionCampaignHttpTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.batch.status").value("CREATING"))
                 .andExpect(jsonPath("$.data.batch.taskId").isNumber())
+                .andExpect(jsonPath("$.data.batch.taskNumber").value(matchesPattern("\\d{12}")))
                 .andExpect(jsonPath("$.data.batch.expectedCodeCount").value(4))
                 .andExpect(jsonPath("$.data.batch.validFromDayOffset").value(1))
                 .andExpect(jsonPath("$.data.batch.validToDayOffset").value(2))

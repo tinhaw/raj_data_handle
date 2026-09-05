@@ -106,7 +106,7 @@ const marketTierDrafts = ref<Record<string, MarketTierDraft>>({})
 const activeMarketTab = ref('')
 const selectedGroup = ref<CodeGroupRow>()
 const selectedTaskId = computed(() => selectedTaskMembers.value[0]?.detail.batch.taskId ?? selectedTaskMembers.value[0]?.detail.batch.id)
-const selectedTaskDisplayId = computed(() => formatTaskNumber(selectedTaskId.value, selectedTaskMembers.value[0]?.detail.batch.createdAt))
+const selectedTaskDisplayId = computed(() => selectedTaskMembers.value[0]?.detail.batch.taskNumber || String(selectedTaskId.value ?? '—'))
 const publishTarget = ref<CodeGroupRow | CodeGroupTask>()
 const publishing = ref(false)
 const cancellingPublishId = ref<string | number>()
@@ -218,6 +218,7 @@ const codeGroupTaskColumns: Columns<CodeGroupTask> = [
   { key: 'status', dataKey: 'id', title: '状态', width: 112, align: 'center' },
   { key: 'labels', dataKey: 'id', title: '用户类型 / 标签 ID', width: 240 },
   { key: 'redemptionType', dataKey: 'id', title: '兑换码类型', width: 128 },
+  { key: 'singleKeyLimit', dataKey: 'id', title: '单兑换码领取次数', width: 160, align: 'center' },
   { key: 'tiers', dataKey: 'id', title: '充值档位 · 兑换金额', width: 250 },
   { key: 'progress', dataKey: 'id', title: '生成进度', width: 180 },
   { key: 'publishedAt', dataKey: 'id', title: '发布时间', width: 205 },
@@ -470,19 +471,6 @@ function issueValidityLabel(batch: RedemptionBatchDetail['batch'], claimDate: st
 }
 
 function formatDate(value?: string) { return value ? value.replaceAll('-', '/') : '—' }
-function formatTaskNumber(taskId?: string | number, createdAt?: string) {
-  const sequence = String(taskId ?? '').padStart(4, '0')
-  if (!createdAt) return sequence
-  const timestamp = new Date(createdAt)
-  if (Number.isNaN(timestamp.getTime())) return `${createdAt.slice(0, 10).replaceAll('-', '')}-${sequence}`
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
-  }).formatToParts(timestamp).reduce<Record<string, string>>((result, part) => {
-    if (part.type !== 'literal') result[part.type] = part.value
-    return result
-  }, {})
-  return `${parts.year}${parts.month}${parts.day}-${sequence}`
-}
 function formatDateTime(value?: string) {
   if (!value) return '—'
   const date = new Date(value)
@@ -607,6 +595,14 @@ function taskTiers(task: CodeGroupTask) {
   if (!isMultiMarketTask(task)) return tiersFor(taskPrimary(task))
   return task.members.map((member) => `${remoteMarketLabel(member)}：${tiersFor(member)}`).join('；')
 }
+function singleKeyLimitLabel(row: CodeGroupRow) {
+  const limit = row.detail.batch.remoteOptions?.singleKeyLimit
+  return typeof limit === 'number' && Number.isFinite(limit) ? `${formatAmount(limit)} 次` : '—'
+}
+function taskSingleKeyLimit(task: CodeGroupTask) {
+  if (!isMultiMarketTask(task)) return singleKeyLimitLabel(taskPrimary(task))
+  return task.members.map((member) => `${remoteMarketLabel(member)}：${singleKeyLimitLabel(member)}`).join('；')
+}
 function taskStatus(task: CodeGroupTask) {
   if (!isMultiMarketTask(task)) return groupStatus(taskPrimary(task))
   if (task.members.some(groupFailureMessage)) return { text: '部分生成失败', type: 'danger' as const }
@@ -642,7 +638,7 @@ function taskRemark(task: CodeGroupTask) {
   return task.members.map(groupRemark).filter((value) => value !== '—').join('；') || '—'
 }
 function taskCreatedAt(task: CodeGroupTask) { return taskPrimary(task)?.detail.batch.createdAt }
-function taskDisplayId(task: CodeGroupTask) { return formatTaskNumber(task.taskId, taskCreatedAt(task)) }
+function taskDisplayId(task: CodeGroupTask) { return taskPrimary(task)?.detail.batch.taskNumber || String(task.taskId) }
 function canExportMultiMarketTask(task: CodeGroupTask) {
   return Boolean(task.exportGroupKey) && isMultiMarketTask(task) && task.members.every(isSuccess)
 }
@@ -1489,6 +1485,7 @@ onUnmounted(() => {
                 <el-tag v-else-if="column.key === 'status'" :type="taskStatus(row).type" effect="light">{{ taskStatus(row).text }}</el-tag>
                 <span v-else-if="column.key === 'labels'" class="virtual-cell" :title="taskLabels(row)">{{ taskLabels(row) }}</span>
                 <span v-else-if="column.key === 'redemptionType'" class="virtual-cell">{{ redemptionTypeLabel(taskPrimary(row).detail.batch.redemptionType) }}</span>
+                <span v-else-if="column.key === 'singleKeyLimit'" class="virtual-cell" :title="taskSingleKeyLimit(row)">{{ taskSingleKeyLimit(row) }}</span>
                 <span v-else-if="column.key === 'tiers'" class="virtual-cell" :title="taskTiers(row)">{{ taskTiers(row) }}</span>
                 <span v-else-if="column.key === 'progress'" class="group-progress">{{ taskProgress(row) }}</span>
                 <span v-else-if="column.key === 'publishedAt'" class="virtual-cell" :title="taskPublishTime(row)">{{ taskPublishTime(row) }}</span>
@@ -1681,6 +1678,7 @@ onUnmounted(() => {
           <el-descriptions-item label="盘口">{{ remoteMarketLabel(selectedGroup) }}</el-descriptions-item>
           <el-descriptions-item label="兑换码类型">{{ redemptionTypeLabel(selectedGroup.detail.batch.redemptionType) }}</el-descriptions-item>
           <el-descriptions-item label="用户类型 / 标签 ID">{{ labelsFor(selectedGroup) }}</el-descriptions-item>
+          <el-descriptions-item label="单兑换码领取次数">{{ singleKeyLimitLabel(selectedGroup) }}</el-descriptions-item>
           <el-descriptions-item label="远端生效规则" :span="2">{{ batchValidityRuleLabel(selectedGroup.detail.batch) }}</el-descriptions-item>
           <el-descriptions-item label="发布时间" :span="2">{{ publishTime(selectedGroup) }}</el-descriptions-item>
           <el-descriptions-item v-if="groupRemark(selectedGroup) !== '—'" label="备注" :span="2">{{ groupRemark(selectedGroup) }}</el-descriptions-item>
@@ -1696,6 +1694,7 @@ onUnmounted(() => {
           <el-table-column label="远端生效日期" min-width="220"><template #default="{ row }">{{ issueValidityLabel(selectedGroup.detail.batch, row.claimDate) }}</template></el-table-column>
           <el-table-column label="充值档位" min-width="150"><template #default="{ row }">{{ row.tierName || `充值 ≥ ${formatAmount(row.minDepositAmount)}` }}</template></el-table-column>
           <el-table-column label="兑换金额" width="128"><template #default="{ row }">{{ formatAmount(row.bonusAmount) }}–{{ formatAmount(row.bonusMaxAmount || row.bonusAmount) }}</template></el-table-column>
+          <el-table-column label="单兑换码领取次数" width="154"><template #default>{{ singleKeyLimitLabel(selectedGroup) }}</template></el-table-column>
           <el-table-column label="状态" width="116"><template #default="{ row }"><el-tag :type="issueStatus(row).type" size="small">{{ issueStatus(row).text }}</el-tag></template></el-table-column>
           <el-table-column label="兑换码 / 备注" min-width="180"><template #default="{ row }"><span style="white-space: pre-line">{{ row.redemptionCode || row.remoteError || '—' }}</span></template></el-table-column>
           <el-table-column label="操作" width="96"><template #default="{ row }"><el-button v-if="canRetryRemoteCreation(row)" link type="primary" :loading="retryingIssueId === row.id" :disabled="retryingSelectedFailedTasks" @click="retryRemoteCreation(row)">{{ row.workflowStatus === 'CREATING_REMOTE' ? '恢复重试' : '重试创建' }}</el-button></template></el-table-column>

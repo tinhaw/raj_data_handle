@@ -326,6 +326,8 @@ export interface RedemptionCodeBatch {
   id: string | number
   /** Operator-facing task ID shared by every market in one multi-market request. */
   taskId?: string | number
+  /** Stable human-facing number: Shanghai date plus that day's four-digit task sequence. */
+  taskNumber?: string
   campaignId: string | number
   claimDateFrom: string
   claimDateTo: string
