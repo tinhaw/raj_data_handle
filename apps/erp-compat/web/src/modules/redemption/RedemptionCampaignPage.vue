@@ -886,7 +886,11 @@ function tiersFromRewardPreset(preset: RedemptionRewardTierPreset) {
   return preset.tiers.map((tier) => ({
     userType: tier.userType || (tier.labelIds.length ? 'LABEL_USERS' : 'ALL_USERS'),
     displayName: tier.displayName,
-    minDepositAmount: Number(tier.minDepositAmount),
+    minDepositAmount: (tier.userType === 'ALL_USERS' || !tier.labelIds.length)
+      ? 0
+      : minimumDepositFromTag(tagOptions.value.find((tag) => String(tag.id) === String(tier.labelIds[0]))?.name)
+        ?? minimumDepositFromTag(tier.displayName)
+        ?? Number(tier.minDepositAmount),
     bonusAmount: Number(tier.bonusAmount),
     bonusMaxAmount: Number(tier.bonusMaxAmount),
     labelIds: [...tier.labelIds],
@@ -969,6 +973,7 @@ function changeTierUserType(tier: CodeGroupTierDraft, userType: CodeGroupUserTyp
   tier.userType = userType
   if (userType === 'ALL_USERS') {
     tier.labelIds = []
+    tier.minDepositAmount = 0
     tier.displayName = tier.displayName.replace(/（所有用户）$/, '').trim() || '全部用户'
     return
   }
@@ -982,7 +987,10 @@ function changeTierUserType(tier: CodeGroupTierDraft, userType: CodeGroupUserTyp
 
 function minimumDepositFromTag(name?: string) {
   if (!name) return undefined
-  const matched = name.match(/(?:充值总金额|充值|deposit\s*>=?)\s*(\d[\d,]*)/i)
+  const normalized = name.replace(/^\s*\(\d+\)\s*/, '').replace(/[，,]/g, '')
+  // Remote labels also use mixed names such as 日充值recharge today–200+.
+  // Start after the deposit keyword so label IDs and “近7天” are not amounts.
+  const matched = normalized.match(/(?:充值总金额|充值|recharge|deposit|存款)[^\d]*(\d+)/i)
   if (!matched) return undefined
   const amount = Number(matched[1].replaceAll(',', ''))
   return Number.isFinite(amount) ? amount : undefined
