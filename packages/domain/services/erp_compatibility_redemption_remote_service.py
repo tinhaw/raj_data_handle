@@ -179,6 +179,9 @@ async def execute_compatibility_remote_create(
             "issue_id": payload.issue_id,
             "operation": "CREATE",
             "remote_configuration_recorded": True,
+            # Durable response receipt for reconciliation if Java registration fails.
+            "remote_configuration_id": result.remote_configuration_id,
+            "source_id": account.source_id,
         },
     )
     await session.commit()

@@ -8,10 +8,11 @@ from io import BytesIO
 import httpx
 import pytest
 from openpyxl import Workbook
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from packages.common.settings import Settings
-from packages.domain.models import Base
+from packages.domain.models import Base, SecurityAuditLog
 from packages.domain.schemas.remote_account import (
     ErpCompatibilityRemoteCreateOptions,
     ErpCompatibilityRemoteCreateRequest,
@@ -165,6 +166,15 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
         )
 
         assert result.remote_configuration_id == "cfg-1"
+        receipt = await session.scalar(
+            select(SecurityAuditLog).where(
+                SecurityAuditLog.action == "erp_compatibility_redemption.remote_create",
+                SecurityAuditLog.result == "success",
+            )
+        )
+        assert receipt.metadata_json["remote_configuration_id"] == "cfg-1"
+        assert receipt.metadata_json["source_id"] == "rajwin"
+        assert receipt.metadata_json["issue_id"] == 42
         assert captured["valid_time"] == [
             "2026-09-09 00:00:00",
             "2026-09-10 23:59:59",

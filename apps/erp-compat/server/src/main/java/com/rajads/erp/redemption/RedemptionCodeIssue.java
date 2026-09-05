@@ -30,6 +30,9 @@ public class RedemptionCodeIssue {
     @Column(name = "batch_id") private Long batchId;
     @Column(name = "workflow_status", nullable = false, length = 30) private String workflowStatus = "PENDING_CREATION";
     @Column(name = "remote_configuration_id", length = 255) private String remoteConfigurationId;
+    // Immutable market snapshot; 0 is reserved for legacy manual tasks without a remote account.
+    @Column(name = "remote_market_id", nullable = false) private Long remoteMarketId = 0L;
+    @Column(name = "remote_create_receipt_id", length = 255) private String remoteCreateReceiptId;
     @Column(name = "remote_group_key", length = 255) private String remoteGroupKey;
     @Column(name = "remote_label_ids_json", columnDefinition = "text") private String remoteLabelIdsJson;
     @Column(name = "redemption_code", unique = true, length = 255) private String redemptionCode;

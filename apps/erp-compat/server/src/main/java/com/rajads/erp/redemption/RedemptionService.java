@@ -203,6 +203,7 @@ public class RedemptionService {
             for (RedemptionCampaignTier tier : tiers) {
                 RedemptionCodeIssue issue = newIssue(campaign, tier, date);
                 issue.setBatchId(batch.getId());
+                if (remoteConnection != null) issue.setRemoteMarketId(remoteConnection.marketId());
                 issue.setWorkflowStatus("PENDING_CREATION");
                 if (remoteConnection != null) issue.setRemoteLabelIdsJson(serializeLabelIds(tierLabelIds.get(tier.getId())));
                 tasks.add(issue);
@@ -225,9 +226,16 @@ public class RedemptionService {
             throw ApiException.conflict("REMOTE_CONFIGURATION_LOCKED", "该任务已经发布或已导入兑换码，不能修改远端配置 ID");
         }
         String remoteConfigurationId = requiredText(request.remoteConfigurationId(), "远端兑换码配置 ID");
-        issueRepository.findByRemoteConfigurationId(remoteConfigurationId).ifPresent(other -> {
+        if (batch.getRemoteConnectionId() != null) {
+            RedemptionRemoteDirectory.Account account = remoteDirectory.requireEnabled(batch.getRemoteConnectionId());
+            if (issue.getRemoteMarketId() != 0 && !Objects.equals(issue.getRemoteMarketId(), account.marketId())) {
+                throw ApiException.conflict("REMOTE_MARKET_CHANGED", "远端账号的盘口与任务不一致，请核对后再操作");
+            }
+            issue.setRemoteMarketId(account.marketId());
+        }
+        issueRepository.findByRemoteMarketIdAndRemoteConfigurationId(issue.getRemoteMarketId(), remoteConfigurationId).ifPresent(other -> {
             if (!Objects.equals(other.getId(), issue.getId())) {
-                throw ApiException.conflict("REMOTE_CONFIGURATION_ID_EXISTS", "该远端兑换码配置 ID 已登记到其他任务");
+                throw ApiException.conflict("REMOTE_CONFIGURATION_ID_EXISTS", "该盘口的远端兑换码配置 ID 已登记到其他任务");
             }
         });
         issue.setRemoteConfigurationId(remoteConfigurationId);

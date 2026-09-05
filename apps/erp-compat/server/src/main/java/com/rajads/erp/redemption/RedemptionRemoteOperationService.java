@@ -48,6 +48,10 @@ public class RedemptionRemoteOperationService {
     private final RedemptionCodeStorage codeStorage;
 
     public Long createConfiguration(Long issueId, boolean retryFailed) {
+        // A successful remote response must never be followed by another create POST
+        // merely because our registration transaction failed.
+        Long recovered = tx().execute(status -> retryRegistration(issueId, retryFailed));
+        if (recovered != null) return recovered;
         UnifiedRedemptionRemoteExecutorClient executor = unifiedRemoteExecutorClient.getIfAvailable();
         if (executor != null) return createThroughUnifiedExecutor(issueId, retryFailed, executor);
         return createThroughStandaloneClient(issueId, retryFailed);
@@ -60,15 +64,19 @@ public class RedemptionRemoteOperationService {
      */
     private Long createThroughUnifiedExecutor(Long issueId, boolean retryFailed, UnifiedRedemptionRemoteExecutorClient executor) {
         RemoteTaskContext context = required(tx().execute(status -> reserveCreate(issueId, retryFailed)));
+        String receivedId = null;
+        String receivedGroupKey = null;
         try {
             UnifiedRedemptionRemoteExecutorClient.CreatedConfiguration created = executor.create(
                     context.account().id(), issueId, context.description(), context.claimDate(), context.validFrom(), context.validTo(), context.labelIds(),
                     context.bonusMin(), context.bonusMax(), context.options());
+            receivedId = created.configurationId();
+            receivedGroupKey = created.groupKey();
             return required(tx().execute(status -> completeCreate(
                     issueId, created.configurationId(), created.groupKey(), null)));
         } catch (RuntimeException exception) {
             String error = limit(exception.getMessage());
-            tx().executeWithoutResult(status -> failCreate(issueId, error));
+            recordCreateFailure(issueId, error, receivedId, receivedGroupKey);
             if (exception instanceof ApiException apiException) throw apiException;
             throw ApiException.badRequest("REMOTE_CREATE_FAILED", error);
         }
@@ -88,10 +96,13 @@ public class RedemptionRemoteOperationService {
             throw exception;
         }
         RemoteTaskContext context = required(tx().execute(status -> reserveCreate(issueId, retryFailed)));
+        String receivedId = null;
+        String receivedGroupKey = null;
         try {
             RemoteGiftCodeBackendClient.CreatedConfiguration created = remoteClient.create(requireEnabledConnection(requireBatch(context.batchId())),
                     new RemoteGiftCodeBackendClient.CreateConfigurationRequest(context.description(), context.labelIds(), context.allUsers(),
                             context.bonusMin(), context.bonusMax(), context.claimDate(), context.validFrom(), context.validTo(), context.options()));
+            receivedId = created.configurationId();
             String groupKey = null;
             String lookupError = null;
             try {
@@ -101,11 +112,12 @@ public class RedemptionRemoteOperationService {
                 lookupError = "远端配置已创建，但暂未查询到兑换组 group_key：" + limit(exception.getMessage());
             }
             final String finalGroupKey = groupKey;
+            receivedGroupKey = groupKey;
             final String finalLookupError = lookupError;
             return required(tx().execute(status -> completeCreate(issueId, created.configurationId(), finalGroupKey, finalLookupError)));
         } catch (RuntimeException exception) {
             String error = limit(exception.getMessage());
-            tx().executeWithoutResult(status -> failCreate(issueId, error));
+            recordCreateFailure(issueId, error, receivedId, receivedGroupKey);
             if (exception instanceof ApiException apiException) throw apiException;
             throw ApiException.badRequest("REMOTE_CREATE_FAILED", error);
         }
@@ -234,6 +246,10 @@ public class RedemptionRemoteOperationService {
     private RemoteTaskContext reserveCreate(Long issueId, boolean retryFailed) {
         RedemptionCodeIssue issue = requireIssue(issueId);
         RedemptionCodeBatch batch = requireRemoteBatch(issue);
+        if (issue.getRemoteCreateReceiptId() != null || issue.getRemoteConfigurationId() != null
+                || isUnreconciledLegacyCreate(issue)) {
+            throw ApiException.conflict("REMOTE_CREATE_RECONCILIATION_REQUIRED", "远端配置可能已创建，禁止重复创建；请先核对并恢复本地登记");
+        }
         boolean staleCreating = retryFailed && "CREATING_REMOTE".equals(issue.getWorkflowStatus())
                 && issue.getRemoteConfigurationId() == null && issue.getUpdatedAt().isBefore(Instant.now().minus(Duration.ofMinutes(2)));
         boolean retryable = retryFailed && ("FAILED".equals(issue.getWorkflowStatus()) || staleCreating);
@@ -241,6 +257,8 @@ public class RedemptionRemoteOperationService {
             throw ApiException.conflict("REMOTE_CREATE_NOT_ALLOWED", "该任务当前不能创建远端兑换码配置");
         }
         RedemptionRemoteDirectory.Account account = remoteDirectory.requireEnabled(batch.getRemoteConnectionId());
+        requireMatchingMarket(issue, account);
+        issue.setRemoteMarketId(account.marketId());
         List<Long> labels = labelIds(issue);
         boolean allUsers = labels.isEmpty();
         issue.setWorkflowStatus("CREATING_REMOTE");
@@ -258,6 +276,11 @@ public class RedemptionRemoteOperationService {
         RedemptionCodeIssue issue = requireIssue(issueId);
         if (!"CREATING_REMOTE".equals(issue.getWorkflowStatus())) throw ApiException.conflict("REMOTE_CREATE_STATE_CHANGED", "兑换码任务状态已变化，请刷新后查看");
         RedemptionCodeBatch batch = requireRemoteBatch(issue);
+        issueRepository.findByRemoteMarketIdAndRemoteConfigurationId(issue.getRemoteMarketId(), configurationId).ifPresent(other -> {
+            if (!Objects.equals(other.getId(), issueId)) {
+                throw ApiException.conflict("REMOTE_CONFIGURATION_ID_EXISTS", "该盘口的远端配置 ID 已登记到其他任务，请核对远端记录");
+            }
+        });
         issue.setRemoteConfigurationId(configurationId);
         issue.setRemoteReferenceId(configurationId);
         issue.setRemoteGroupKey(groupKey);
@@ -271,18 +294,56 @@ public class RedemptionRemoteOperationService {
         return batch.getId();
     }
 
-    private void failCreate(Long issueId, String error) {
+    private void recordCreateFailure(Long issueId, String error, String configurationId, String groupKey) {
+        tx().executeWithoutResult(status -> failCreate(issueId, error, configurationId, groupKey));
+    }
+
+    private void failCreate(Long issueId, String error, String configurationId, String groupKey) {
         RedemptionCodeIssue issue = requireIssue(issueId);
         RedemptionCodeBatch batch = requireRemoteBatch(issue);
         if ("CREATING_REMOTE".equals(issue.getWorkflowStatus())) {
             issue.setWorkflowStatus("FAILED");
             issue.setState("FAILED");
-            issue.setRemoteError(error);
+            if (configurationId != null) {
+                // This receipt has no uniqueness constraint: even a conflicting ID
+                // must survive so an operator can reconcile it without recreating it.
+                issue.setRemoteReferenceId(configurationId);
+                issue.setRemoteCreateReceiptId(configurationId);
+                issue.setRemoteGroupKey(groupKey);
+                issue.setRemoteError(limit("远端配置已创建（ID " + configurationId
+                        + "），本地登记失败；重试仅恢复登记，不会再次创建。" + error));
+            } else {
+                issue.setRemoteError(error);
+            }
             issueRepository.save(issue);
         }
         refreshBatchAfterCreation(batch);
         auditService.record("REDEMPTION_REMOTE_CONFIGURATION_FAILED", "REDEMPTION_CODE_ISSUE", issueId.toString(), null, null,
                 Map.of("batchId", batch.getId(), "message", error));
+    }
+
+    private Long retryRegistration(Long issueId, boolean retryFailed) {
+        RedemptionCodeIssue issue = requireIssue(issueId);
+        if (!retryFailed || !"FAILED".equals(issue.getWorkflowStatus())
+                || issue.getRemoteCreateReceiptId() == null || issue.getRemoteConfigurationId() != null) return null;
+        RedemptionCodeBatch batch = requireRemoteBatch(issue);
+        requireMatchingMarket(issue, remoteDirectory.requireEnabled(batch.getRemoteConnectionId()));
+        issue.setWorkflowStatus("CREATING_REMOTE");
+        return completeCreate(issueId, issue.getRemoteCreateReceiptId(), issue.getRemoteGroupKey(), null);
+    }
+
+    private void requireMatchingMarket(RedemptionCodeIssue issue, RedemptionRemoteDirectory.Account account) {
+        if (account.marketId() == null || account.marketId() <= 0
+                || (issue.getRemoteMarketId() != 0 && !Objects.equals(issue.getRemoteMarketId(), account.marketId()))) {
+            throw ApiException.conflict("REMOTE_MARKET_CHANGED", "远端账号的盘口与任务不一致，请核对后再操作");
+        }
+    }
+
+    private boolean isUnreconciledLegacyCreate(RedemptionCodeIssue issue) {
+        // Old releases lost the response receipt after a local SQL collision.
+        // Never infer an association from SQL text or automatically create again.
+        String error = issue.getRemoteError() == null ? "" : issue.getRemoteError().toLowerCase(java.util.Locale.ROOT);
+        return error.contains("remote_configuration") && (error.contains("duplicate key") || error.contains("unique constraint"));
     }
 
     /**
@@ -315,6 +376,9 @@ public class RedemptionRemoteOperationService {
             throw ApiException.badRequest("INVALID_SCHEDULED_TIME", "定时发布时间必须晚于当前印度时间");
         }
         RedemptionRemoteDirectory.Account account = remoteDirectory.requireEnabled(batch.getRemoteConnectionId());
+        for (RedemptionCodeIssue issue : issueRepository.findByBatchIdOrderByClaimDateAscCampaignTierIdAsc(batchId)) {
+            requireMatchingMarket(issue, account);
+        }
         batch.setRemotePublishTaskId("PENDING:" + UUID.randomUUID());
         batch.setRemotePublishError(null);
         batch.setRemotePublishMode(null);
@@ -490,7 +554,7 @@ public class RedemptionRemoteOperationService {
             throw ApiException.conflict("REMOTE_DOWNLOAD_NOT_ALLOWED", "请先发布该远端兑换码配置");
         }
         if (issue.getRemoteConfigurationId() == null) throw ApiException.conflict("REMOTE_CONFIGURATION_ID_REQUIRED", "该任务没有远端配置 ID");
-        remoteDirectory.requireEnabled(batch.getRemoteConnectionId());
+        requireMatchingMarket(issue, remoteDirectory.requireEnabled(batch.getRemoteConnectionId()));
         return new DownloadContext(batch.getId(), unifiedRemoteExecutorClient.getIfAvailable() == null ? requireEnabledConnection(batch) : null,
                 issue.getRemoteConfigurationId(), issue.getRemoteGroupKey(), remoteDescription(batch, issue),
                 batch.getRemoteConnectionId(), batch.getRemoteKeyNumber() == null ? 1 : batch.getRemoteKeyNumber());
