@@ -58,6 +58,35 @@ class RedemptionMultiMarketExcelExporterTest {
     }
 
     @Test
+    void writesDailyRechargeMarketsHorizontallyOnTheAllSheet() throws Exception {
+        LocalDate date = LocalDate.of(2026, 8, 18);
+        RedemptionDtos.TierResponse tier = new RedemptionDtos.TierResponse(7L, "所有用户", BigDecimal.ZERO,
+                new BigDecimal("1"), new BigDecimal("3"), 1, 0L);
+        RedemptionDtos.CampaignResponse campaign = new RedemptionDtos.CampaignResponse(1L, "DAILY", "日充值",
+                "ACTIVE", 1, null, List.of(tier), 1, 0, 0L, null, null);
+        RedemptionDtos.CodeIssueResponse issue = new RedemptionDtos.CodeIssueResponse(9L, 1L, 7L, "所有用户",
+                BigDecimal.ZERO, new BigDecimal("1"), date, date.minusDays(1), date.minusDays(1), "ABC123", "GENERATED",
+                null, null, null, 0L, new BigDecimal("3"), 1L, "CODE_IMPORTED", "1555", null, List.of());
+
+        byte[] file = exporter.exportMultiMarket(List.of(
+                new RedemptionCodeExcelExporter.MarketSheet("RajWin", campaign, RedemptionCodeType.PREVIOUS_DAY_DEPOSIT,
+                        List.of(issue), date, date),
+                new RedemptionCodeExcelExporter.MarketSheet("RajLuck", campaign, RedemptionCodeType.PREVIOUS_DAY_DEPOSIT,
+                        List.of(issue), date, date)));
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(file))) {
+            var all = workbook.getSheet("All");
+            assertThat(all.getRow(0).getCell(0).getStringCellValue()).isEqualTo("win");
+            assertThat(all.getRow(0).getCell(3).getStringCellValue()).isEqualTo("luck");
+            assertThat(all.getRow(2).getCell(0).getStringCellValue()).isEqualTo("日期");
+            assertThat(all.getRow(2).getCell(3).getStringCellValue()).isEqualTo("日期");
+            assertThat(all.getRow(3).getCell(1).getStringCellValue()).isEqualTo("ABC123");
+            assertThat(all.getRow(3).getCell(4).getStringCellValue()).isEqualTo("ABC123");
+            assertThat(all.getRow(6) == null).isTrue();
+        }
+    }
+
+    @Test
     void writesAgentTemplateWithCombinedAndPerMarketSheets() throws Exception {
         LocalDate claimDate = LocalDate.of(2026, 9, 1);
         RedemptionDtos.TierResponse allUsers = new RedemptionDtos.TierResponse(7L, "全部用户", BigDecimal.ZERO,

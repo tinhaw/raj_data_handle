@@ -123,12 +123,16 @@ public class RedemptionCodeExcelExporter {
             Sheet all = workbook.createSheet("All");
             usedSheetNames.add("All");
             int allRowIndex = 0;
+            int allColumnIndex = 0;
 
             for (MarketSheet marketSheet : marketSheets) {
                 Sheet sheet = workbook.createSheet(uniqueSheetName(marketSheet.sheetName(), usedSheetNames));
                 if (isDailyRecharge(marketSheet)) {
                     writeDailyRechargeSheet(sheet, marketSheet, 0, dailyTitle, dailyHeader, dailyDate, dailyCode, dailyFailed);
-                    allRowIndex = writeDailyRechargeSheet(all, marketSheet, allRowIndex, dailyTitle, dailyHeader, dailyDate, dailyCode, dailyFailed) + 3;
+                    // The compact daily report is naturally column-oriented: keep every
+                    // market in its own horizontal block on All, like the source template.
+                    writeDailyRechargeSheet(all, marketSheet, 0, allColumnIndex, dailyTitle, dailyHeader, dailyDate, dailyCode, dailyFailed);
+                    allColumnIndex += marketSheet.campaign().tiers().size() + 2;
                 } else {
                     writeMarketSheet(sheet, marketSheet, 0, title, tierHeader, dateHeader, claimTime, depositTime, code, failed);
                     allRowIndex = writeMarketSheet(all, marketSheet, allRowIndex, title, tierHeader, dateHeader, claimTime, depositTime, code, failed) + 3;
@@ -224,26 +228,32 @@ public class RedemptionCodeExcelExporter {
     /** Matches the compact daily recharge report template: market title, one header row, then one row per claim date. */
     private int writeDailyRechargeSheet(Sheet sheet, MarketSheet marketSheet, int startRow, CellStyle title,
                                         CellStyle header, CellStyle date, CellStyle code, CellStyle failed) {
+        return writeDailyRechargeSheet(sheet, marketSheet, startRow, 0, title, header, date, code, failed);
+    }
+
+    /** Writes a compact daily-recharge report at a horizontal offset for the combined All worksheet. */
+    private int writeDailyRechargeSheet(Sheet sheet, MarketSheet marketSheet, int startRow, int startColumn, CellStyle title,
+                                        CellStyle header, CellStyle date, CellStyle code, CellStyle failed) {
         RedemptionDtos.CampaignResponse campaign = marketSheet.campaign();
-        int lastColumn = campaign.tiers().size();
-        Row titleRow = sheet.createRow(startRow);
-        Row mergedTitleRow = sheet.createRow(startRow + 1);
+        int lastColumn = startColumn + campaign.tiers().size();
+        Row titleRow = row(sheet, startRow);
+        Row mergedTitleRow = row(sheet, startRow + 1);
         titleRow.setHeightInPoints(22);
         mergedTitleRow.setHeightInPoints(22);
-        for (int column = 0; column <= lastColumn; column++) {
+        for (int column = startColumn; column <= lastColumn; column++) {
             titleRow.createCell(column).setCellStyle(title);
             mergedTitleRow.createCell(column).setCellStyle(title);
         }
-        titleRow.getCell(0).setCellValue(safeText(dailyMarketTitle(marketSheet.sheetName())));
-        sheet.addMergedRegion(new CellRangeAddress(startRow, startRow + 1, 0, lastColumn));
+        titleRow.getCell(startColumn).setCellValue(safeText(dailyMarketTitle(marketSheet.sheetName())));
+        sheet.addMergedRegion(new CellRangeAddress(startRow, startRow + 1, startColumn, lastColumn));
 
-        Row headerRow = sheet.createRow(startRow + 2);
-        Cell dateHeader = headerRow.createCell(0);
+        Row headerRow = row(sheet, startRow + 2);
+        Cell dateHeader = headerRow.createCell(startColumn);
         dateHeader.setCellValue("日期");
         dateHeader.setCellStyle(header);
         for (int index = 0; index < campaign.tiers().size(); index++) {
             RedemptionDtos.TierResponse tier = campaign.tiers().get(index);
-            Cell headerCell = headerRow.createCell(index + 1);
+            Cell headerCell = headerRow.createCell(startColumn + index + 1);
             headerCell.setCellValue("deposit" + plainAmount(tier.minDepositAmount()));
             headerCell.setCellStyle(header);
         }
@@ -254,22 +264,22 @@ public class RedemptionCodeExcelExporter {
         for (LocalDate claimDate = marketSheet.from(); !claimDate.isAfter(marketSheet.to()); claimDate = claimDate.plusDays(1)) {
             int codeCount = codesOnDate(marketSheet.issues(), importedCodes, claimDate);
             for (int codeIndex = 0; codeIndex < codeCount; codeIndex++) {
-                Row dataRow = sheet.createRow(rowIndex++);
-                Cell dateCell = dataRow.createCell(0);
+                Row dataRow = row(sheet, rowIndex++);
+                Cell dateCell = dataRow.createCell(startColumn);
                 dateCell.setCellValue(java.sql.Date.valueOf(claimDate));
                 dateCell.setCellStyle(date);
                 for (int index = 0; index < campaign.tiers().size(); index++) {
                     RedemptionDtos.TierResponse tier = campaign.tiers().get(index);
                     RedemptionDtos.CodeIssueResponse issue = codes.get(claimDate + ":" + tier.id());
-                    Cell codeCell = dataRow.createCell(index + 1);
+                    Cell codeCell = dataRow.createCell(startColumn + index + 1);
                     codeCell.setCellValue(safeText(codeValue(issue, importedCodes, codeIndex)));
                     codeCell.setCellStyle(issueStyle(issue, code, failed));
                 }
             }
         }
-        if (startRow == 0) sheet.createFreezePane(1, startRow + 3);
-        sheet.setColumnWidth(0, 25 * 256);
-        for (int column = 1; column <= lastColumn; column++) sheet.setColumnWidth(column, 13 * 256);
+        if (startRow == 0 && startColumn == 0) sheet.createFreezePane(1, startRow + 3);
+        sheet.setColumnWidth(startColumn, 25 * 256);
+        for (int column = startColumn + 1; column <= lastColumn; column++) sheet.setColumnWidth(column, 13 * 256);
         return rowIndex;
     }
 
