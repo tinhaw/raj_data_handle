@@ -17,6 +17,8 @@ from packages.domain.schemas.withdraw_order import (
     WithdrawOrderQueryResponse,
     WithdrawOrderRefreshRequest,
     WithdrawOrderRefreshResponse,
+    WithdrawPendingMonitorQueryRequest,
+    WithdrawPendingMonitorResponse,
     WithdrawScoringImportResponse,
     WithdrawScoringSummaryRequest,
     WithdrawScoringSummaryResponse,
@@ -45,6 +47,10 @@ from packages.domain.services.withdraw_order_service import (
     query_withdraw_channel_summary,
     query_withdraw_operator_summary,
     query_withdraw_orders,
+)
+from packages.domain.services.withdraw_pending_monitor_service import (
+    WithdrawPendingMonitorValidationError,
+    query_withdraw_pending_monitor,
 )
 from packages.domain.services.withdraw_scoring_import_service import (
     WithdrawScoringCacheSchemaPendingError,
@@ -111,6 +117,40 @@ async def withdraw_order_query(
         status_dictionary=result.status_dictionary,
         channel_dictionary=result.channel_dictionary,
         summary=result.summary,
+    )
+
+
+@router.post("/pending-monitor", response_model=WithdrawPendingMonitorResponse)
+async def withdraw_pending_monitor_query(
+    payload: WithdrawPendingMonitorQueryRequest,
+    _: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_db_session),
+) -> WithdrawPendingMonitorResponse:
+    """Read only pending-withdrawal counts from every selected remote market."""
+
+    try:
+        result = await query_withdraw_pending_monitor(
+            session,
+            source_ids=payload.source_ids,
+        )
+    except WithdrawPendingMonitorValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except SystemSettingsSchemaPendingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    return WithdrawPendingMonitorResponse(
+        query_range=result.query_range,
+        refresh_interval_hours=result.refresh_interval_hours,
+        generated_at=result.generated_at,
+        source_count=len(result.sources),
+        successful_source_count=result.successful_source_count,
+        pending_audit_total=result.pending_audit_total,
+        pending_review_total=result.pending_review_total,
+        pending_total=result.pending_audit_total + result.pending_review_total,
+        partial=result.successful_source_count != len(result.sources),
+        sources=result.sources,
     )
 
 

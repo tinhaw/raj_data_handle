@@ -1151,6 +1151,35 @@ export interface WithdrawOrderQueryResponse {
   summary: WithdrawOrderSummary
 }
 
+export type WithdrawPendingMonitorSourceStatus = 'succeeded' | 'failed' | 'unavailable'
+
+/** Live aggregate result from the remote withdrawal-order summary endpoint. */
+export interface WithdrawPendingMonitorSource {
+  sourceId: string
+  sourceDisplayName: string
+  businessTimezone: string
+  createTimeStart: string
+  createTimeEnd: string
+  status: WithdrawPendingMonitorSourceStatus
+  message: string | null
+  pendingAuditCount: number
+  pendingReviewCount: number
+  queriedAt: string
+}
+
+export interface WithdrawPendingMonitorResponse {
+  queryRange: WithdrawOrderQueryRange
+  refreshIntervalHours: number
+  generatedAt: string
+  sourceCount: number
+  successfulSourceCount: number
+  pendingAuditTotal: number
+  pendingReviewTotal: number
+  pendingTotal: number
+  partial: boolean
+  sources: WithdrawPendingMonitorSource[]
+}
+
 export interface WithdrawChannelSummaryItem {
   date: string
   payChannel: string

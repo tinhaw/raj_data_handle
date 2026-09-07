@@ -2,6 +2,7 @@ import { api } from './client'
 import type {
   WithdrawChannelSummaryResponse,
   WithdrawOperatorSummaryResponse,
+  WithdrawPendingMonitorResponse,
   WithdrawOrderQueryResponse,
   WithdrawOrderRefreshResult,
   WithdrawOrderRefreshRange,
@@ -27,6 +28,16 @@ export async function queryWithdrawOrders(
   payload: WithdrawOrderQuery,
 ): Promise<WithdrawOrderQueryResponse> {
   return (await api.post<WithdrawOrderQueryResponse>('/withdraw-orders/query', payload)).data
+}
+
+export async function queryWithdrawPendingMonitor(
+  sourceIds?: string[],
+): Promise<WithdrawPendingMonitorResponse> {
+  return (
+    await api.post<WithdrawPendingMonitorResponse>('/withdraw-orders/pending-monitor', {
+      sourceIds,
+    })
+  ).data
 }
 
 export interface WithdrawOperatorSummaryQuery {

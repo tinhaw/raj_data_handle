@@ -14,6 +14,7 @@ from packages.domain.services.remote_account_session_service import response_req
 from packages.domain.services.remote_charge_service import (
     EXPORT_TASK_SAVE_PATH,
     WITHDRAW_ORDER_INDEX_PATH,
+    WITHDRAW_ORDER_SUMMARY_PATH,
     WITHDRAW_STATUS_DICTIONARY_PATH,
     RajAdminChargeClient,
     RemoteResponseError,
@@ -23,6 +24,12 @@ from packages.domain.services.remote_charge_service import (
 MAX_WITHDRAW_PAGES = 200
 MAX_WITHDRAW_EXPORT_BYTES = 128 * 1024 * 1024
 WITHDRAW_ORDER_EXPORT_PATH = "/api/operate/withdrawOrder/export"
+
+# These remote status values are the stable status keys maintained in the
+# withdrawal-status dictionary.  The monitoring endpoint deliberately reads
+# only their aggregate counts and never returns order-level data.
+WITHDRAW_PENDING_AUDIT_STATUS = "0"
+WITHDRAW_PENDING_REVIEW_STATUS = "4"
 
 # The remote export contains additional operational and banking columns.  This
 # whitelist intentionally names only columns approved for the local analysis
@@ -221,6 +228,70 @@ def normalize_withdraw_order(item: dict[str, Any]) -> dict[str, Any]:
 
 
 class RajAdminWithdrawClient(RajAdminChargeClient):
+    @staticmethod
+    def _withdraw_summary_body(
+        *,
+        create_start: str,
+        create_end: str,
+        status: str,
+    ) -> dict[str, Any]:
+        """Build the observed read-only summary request without user filters."""
+
+        return {
+            "page": 1,
+            "pageSize": 10,
+            "create_time": [create_start, create_end],
+            "uid": "",
+            "channel": [],
+            "pay_channel_name": "",
+            "pay_channel": "",
+            "order_num": "",
+            "out_trade_no": "",
+            "is_first": "",
+            "update_time": [],
+            "status": status,
+            "not_to_back_cash": "",
+            "recent": 0,
+        }
+
+    async def fetch_withdraw_status_summary(
+        self,
+        *,
+        create_start: str,
+        create_end: str,
+        status: str,
+    ) -> int:
+        """Return one remote status count without receiving order details.
+
+        ``withdrawOrder/summary`` is a POST query in the upstream admin API.
+        It is explicitly allowlisted as a read operation and its response is
+        projected immediately to the count needed by the monitoring page.
+        """
+
+        if status not in {WITHDRAW_PENDING_AUDIT_STATUS, WITHDRAW_PENDING_REVIEW_STATUS}:
+            raise RemoteResponseError("提现待处理监控状态不受支持。")
+        payload = await self._post_json(
+            WITHDRAW_ORDER_SUMMARY_PATH,
+            body=self._withdraw_summary_body(
+                create_start=create_start,
+                create_end=create_end,
+                status=status,
+            ),
+        )
+        data = _response_data(payload)
+        if not isinstance(data, dict):
+            raise RemoteResponseError("远端提现订单汇总结构无效。")
+        value = data.get("order_num")
+        if isinstance(value, bool):
+            raise RemoteResponseError("远端提现订单汇总数量无效。")
+        try:
+            count = int(value)
+        except (TypeError, ValueError) as exc:
+            raise RemoteResponseError("远端提现订单汇总数量无效。") from exc
+        if count < 0:
+            raise RemoteResponseError("远端提现订单汇总数量无效。")
+        return count
+
     async def _post_withdraw_export_bytes(
         self,
         *,

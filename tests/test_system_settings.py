@@ -205,6 +205,8 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
                 resultRetentionDays=45,
                 remoteCacheRetentionDays=60,
                 syncLogRetentionDays=90,
+                withdrawOrderRefreshIntervalHours=4,
+                withdrawOrderQueryRange="last_3_hours",
                 withdrawOrderExportDateMode="specific_date",
                 withdrawOrderExportSpecificDate="2026-07-29",
                 withdrawOrderExportTime="02:03:04",
@@ -230,6 +232,8 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
     assert updated.result_retention_days == 45
     assert updated.remote_cache_retention_days == 60
     assert updated.sync_log_retention_days == 90
+    assert updated.withdraw_order_refresh_interval_hours == 4
+    assert updated.withdraw_order_query_range == "last_3_hours"
     assert updated.withdraw_order_export_date_mode == "specific_date"
     assert updated.withdraw_order_export_specific_date == date(2026, 7, 29)
     assert updated.withdraw_order_export_time == time(2, 3, 4)
@@ -247,6 +251,10 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
     assert audit.metadata_json["previous"]["withdrawOrderExportDateMode"] == "previous_day"
     assert audit.metadata_json["previous"]["syncLogRetentionDays"] == 30
     assert audit.metadata_json["current"]["syncLogRetentionDays"] == 90
+    assert audit.metadata_json["previous"]["withdrawOrderRefreshIntervalHours"] == 1
+    assert audit.metadata_json["current"]["withdrawOrderRefreshIntervalHours"] == 4
+    assert audit.metadata_json["previous"]["withdrawOrderQueryRange"] == "today"
+    assert audit.metadata_json["current"]["withdrawOrderQueryRange"] == "last_3_hours"
     assert audit.metadata_json["previous"]["withdrawOrderExportSpecificDate"] is None
     assert audit.metadata_json["previous"]["withdrawOrderExportTime"] == "00:05:01"
     assert audit.metadata_json["previous"]["automaticSyncRetryLimit"] == 3

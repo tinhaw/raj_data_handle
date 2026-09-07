@@ -16,6 +16,7 @@ import type {
   SpinOrderRefreshIntervalHours,
   SpinOrderRefreshPageSize,
   WithdrawOrderExportDateMode,
+  WithdrawOrderQueryRange,
 } from '../types'
 import { formatDateTime } from '../ui'
 
@@ -27,6 +28,8 @@ const form = reactive({
   resultRetentionDays: 30,
   remoteCacheRetentionDays: 30,
   syncLogRetentionDays: 30,
+  withdrawOrderRefreshIntervalHours: 1,
+  withdrawOrderQueryRange: 'today' as WithdrawOrderQueryRange,
   withdrawOrderExportDateMode: 'previous_day' as WithdrawOrderExportDateMode,
   withdrawOrderExportSpecificDate: null as string | null,
   withdrawOrderExportTime: '00:05:01',
@@ -48,6 +51,8 @@ function applySettings(settings: RetentionSettings): void {
   form.resultRetentionDays = settings.resultRetentionDays
   form.remoteCacheRetentionDays = settings.remoteCacheRetentionDays
   form.syncLogRetentionDays = settings.syncLogRetentionDays
+  form.withdrawOrderRefreshIntervalHours = settings.withdrawOrderRefreshIntervalHours
+  form.withdrawOrderQueryRange = settings.withdrawOrderQueryRange
   form.withdrawOrderExportDateMode = settings.withdrawOrderExportDateMode
   form.withdrawOrderExportSpecificDate = settings.withdrawOrderExportSpecificDate
   form.withdrawOrderExportTime = settings.withdrawOrderExportTime
@@ -303,6 +308,41 @@ onMounted(load)
                 style="width: 100%"
               />
               <span class="field-help">仅导出该自然日的充值订单，需填写后才可保存。</span>
+            </el-form-item>
+          </div>
+        </el-form>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-heading">
+          <h2>待处理提现监控</h2>
+          <p>监控页打开期间按设置直接读取各盘口的汇总接口；不写入订单缓存，也不保留远端响应。</p>
+        </div>
+        <el-form label-position="top">
+          <div class="form-grid">
+            <el-form-item label="自动刷新间隔（小时）">
+              <el-select v-model="form.withdrawOrderRefreshIntervalHours" :disabled="!isAdmin">
+                <el-option
+                  v-for="hours in [1, 2, 3, 4, 6, 8, 12, 24]"
+                  :key="hours"
+                  :label="`每 ${hours} 小时`"
+                  :value="hours"
+                />
+              </el-select>
+              <span class="field-help">首次打开会立即查询；手动刷新不受此间隔限制。</span>
+            </el-form-item>
+            <el-form-item label="查询时间范围">
+              <el-select v-model="form.withdrawOrderQueryRange" :disabled="!isAdmin">
+                <el-option label="当天 00:00 至当前时刻" value="today" />
+                <el-option label="最近 1 小时" value="last_1_hour" />
+                <el-option label="最近 2 小时" value="last_2_hours" />
+                <el-option label="最近 3 小时" value="last_3_hours" />
+                <el-option label="最近 6 小时" value="last_6_hours" />
+                <el-option label="最近 12 小时" value="last_12_hours" />
+                <el-option label="最近 24 小时" value="last_24_hours" />
+                <el-option label="最近 48 小时" value="last_48_hours" />
+              </el-select>
+              <span class="field-help">按每个盘口的业务时区分别计算，再查询待审核与待审查订单数量。</span>
             </el-form-item>
           </div>
         </el-form>

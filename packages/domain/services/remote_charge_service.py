@@ -23,6 +23,7 @@ CHARGE_CHANNEL_PATH = "/api/operate/chargeOrder/payChannel"
 CHARGE_ORDER_EXPORT_PATH = "/api/operate/chargeOrder/export"
 EXPORT_TASK_SAVE_PATH = "/api/operate/exportTask/save"
 WITHDRAW_ORDER_INDEX_PATH = "/api/operate/withdrawOrder/index"
+WITHDRAW_ORDER_SUMMARY_PATH = "/api/operate/withdrawOrder/summary"
 DATA_DICTIONARY_PATH = "/api/system/dataDict/list"
 SPIN_ORDER_INDEX_PATH = "/api/operate/spinOrder/index"
 PLAYER_INFO_LIST_PATH = "/api/operate/playerInfoList/index"
@@ -39,6 +40,7 @@ REMOTE_GET_PATHS = {
 }
 REMOTE_POST_PATHS = {
     WITHDRAW_ORDER_INDEX_PATH,
+    WITHDRAW_ORDER_SUMMARY_PATH,
     CHARGE_ORDER_EXPORT_PATH,
     EXPORT_TASK_SAVE_PATH,
 }

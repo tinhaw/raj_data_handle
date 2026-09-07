@@ -110,7 +110,7 @@ Connector 需要同时识别 HTTP 状态、JSON 业务失败和登录页响应�
 |---|---|---|---|
 | `withdraw_order_export` | POST | `/api/operate/withdrawOrder/export` | 当前提现订单缓存的完整自然日 Excel 导出 |
 | `withdraw_order_list` | POST | `/api/operate/withdrawOrder/index` | Token 探测、后续精确复查或接口联调；不作为当前提现明细页刷新通道 |
-| `withdraw_order_summary` | POST | `/api/operate/withdrawOrder/summary` | 提现汇总 |
+| `withdraw_order_summary` | POST | `/api/operate/withdrawOrder/summary` | 提现汇总；待处理提现监控仅读取 `status=0`（待审核）与 `status=4`（待审查）的 `data.order_num` |
 | `charge_order_list` | GET | `/api/operate/chargeOrder/index` | 充值订单 |
 | `charge_order_summary` | GET | `/api/operate/chargeOrder/summary` | 充值汇总 |
 | `player_info` | GET | `/api/operate/playerInfoList/index` | 用户信息 |
@@ -124,6 +124,12 @@ Connector 需要同时识别 HTTP 状态、JSON 业务失败和登录页响应�
 审核人，原文件仅在内存解析后丢弃；不得保存完整 `info` 对象或任一未批准的导出列。
 按盘口业务时区每日在系统配置的提现导出时间导出前一天的完整自然日（默认 `00:05:01`），手动刷新可选前天、昨天、今天。
 具体字段和指标口径见[提现订单字段对照表](提现订单字段对照表.md)。
+
+“待处理提现监控”是独立的实时只读页面，不使用上述 Excel 缓存。页面打开时及其配置的
+刷新周期到达时，按各盘口业务时区计算系统配置的滚动查询范围，并对每个已启用盘口依次请求
+两次 `withdraw_order_summary`。只投影并返回两个状态的计数、查询时间和盘口级成功/失败状态；
+不保留订单明细、请求正文或远端响应。某一盘口失败时，合计只包含成功盘口，页面必须明确标记
+部分结果。
 
 ## 5. P1/P2 行为与游戏接口
 

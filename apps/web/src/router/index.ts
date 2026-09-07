@@ -187,6 +187,11 @@ const router = createRouter({
       meta: { navKey: '/withdraw-orders' },
     },
     {
+      path: '/withdraw-pending-monitor',
+      component: () => import('../views/WithdrawPendingMonitorView.vue'),
+      meta: { navKey: '/withdraw-pending-monitor' },
+    },
+    {
       path: '/spin-orders',
       component: () => import('../views/SpinOrdersView.vue'),
       meta: { navKey: '/spin-orders' },

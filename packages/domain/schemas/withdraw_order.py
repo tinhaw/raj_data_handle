@@ -72,6 +72,38 @@ class WithdrawOrderQueryRequest(WithdrawOrderLocalQueryRequest):
         return normalized or None
 
 
+class WithdrawPendingMonitorQueryRequest(ApiSchema):
+    """Read the aggregate pending-withdrawal monitor for selected markets.
+
+    Omitting ``source_ids`` reads every enabled market.  The date window and
+    automatic refresh cadence are administrator-owned system settings.
+    """
+
+    source_ids: list[str] | None = Field(default=None, min_length=1, max_length=100)
+
+    @field_validator("source_ids", mode="before")
+    @classmethod
+    def normalize_source_ids(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, (list, tuple)):
+            return value
+        normalized: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                return value
+            source_id = item.strip()
+            if not source_id:
+                raise ValueError("盘口 ID 不能为空。")
+            if len(source_id) > 64:
+                raise ValueError("盘口 ID 长度不能超过 64 个字符。")
+            if source_id not in normalized:
+                normalized.append(source_id)
+        if not normalized:
+            raise ValueError("至少选择一个盘口。")
+        return normalized
+
+
 class WithdrawChannelSummaryRequest(WithdrawOrderLocalQueryRequest):
     """Aggregate approved local snapshots by business day and payment channel."""
 
@@ -251,6 +283,32 @@ class WithdrawOrderQueryResponse(ApiSchema):
     status_dictionary: list[WithdrawStatusDictionaryEntry]
     channel_dictionary: list[WithdrawChannelDictionaryEntry]
     summary: WithdrawOrderSummary
+
+
+class WithdrawPendingMonitorSourceResponse(ApiSchema):
+    source_id: str
+    source_display_name: str
+    business_timezone: str
+    create_time_start: str
+    create_time_end: str
+    status: str
+    message: str | None = None
+    pending_audit_count: int = 0
+    pending_review_count: int = 0
+    queried_at: datetime
+
+
+class WithdrawPendingMonitorResponse(ApiSchema):
+    query_range: str
+    refresh_interval_hours: int
+    generated_at: datetime
+    source_count: int
+    successful_source_count: int
+    pending_audit_total: int
+    pending_review_total: int
+    pending_total: int
+    partial: bool
+    sources: list[WithdrawPendingMonitorSourceResponse]
 
 
 class WithdrawChannelSummaryItem(ApiSchema):

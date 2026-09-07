@@ -6,6 +6,8 @@ export type RetentionSettingsUpdate = Pick<
   | 'uploadedFileRetentionDays'
   | 'resultRetentionDays'
   | 'remoteCacheRetentionDays'
+  | 'withdrawOrderRefreshIntervalHours'
+  | 'withdrawOrderQueryRange'
   | 'withdrawOrderExportDateMode'
   | 'withdrawOrderExportSpecificDate'
   | 'withdrawOrderExportTime'
