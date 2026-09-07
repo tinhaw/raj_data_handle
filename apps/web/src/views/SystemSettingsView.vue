@@ -16,7 +16,8 @@ import type {
   SpinOrderRefreshIntervalHours,
   SpinOrderRefreshPageSize,
   WithdrawOrderExportDateMode,
-  WithdrawOrderQueryRange,
+  WithdrawPendingMonitorQueryRange,
+  WithdrawPendingMonitorRefreshIntervalSeconds,
 } from '../types'
 import { formatDateTime } from '../ui'
 
@@ -28,8 +29,8 @@ const form = reactive({
   resultRetentionDays: 30,
   remoteCacheRetentionDays: 30,
   syncLogRetentionDays: 30,
-  withdrawOrderRefreshIntervalHours: 1,
-  withdrawOrderQueryRange: 'today' as WithdrawOrderQueryRange,
+  withdrawPendingMonitorRefreshIntervalSeconds: 60 as WithdrawPendingMonitorRefreshIntervalSeconds,
+  withdrawPendingMonitorQueryRange: 'india_today' as WithdrawPendingMonitorQueryRange,
   withdrawOrderExportDateMode: 'previous_day' as WithdrawOrderExportDateMode,
   withdrawOrderExportSpecificDate: null as string | null,
   withdrawOrderExportTime: '00:05:01',
@@ -51,8 +52,9 @@ function applySettings(settings: RetentionSettings): void {
   form.resultRetentionDays = settings.resultRetentionDays
   form.remoteCacheRetentionDays = settings.remoteCacheRetentionDays
   form.syncLogRetentionDays = settings.syncLogRetentionDays
-  form.withdrawOrderRefreshIntervalHours = settings.withdrawOrderRefreshIntervalHours
-  form.withdrawOrderQueryRange = settings.withdrawOrderQueryRange
+  form.withdrawPendingMonitorRefreshIntervalSeconds =
+    settings.withdrawPendingMonitorRefreshIntervalSeconds
+  form.withdrawPendingMonitorQueryRange = settings.withdrawPendingMonitorQueryRange
   form.withdrawOrderExportDateMode = settings.withdrawOrderExportDateMode
   form.withdrawOrderExportSpecificDate = settings.withdrawOrderExportSpecificDate
   form.withdrawOrderExportTime = settings.withdrawOrderExportTime
@@ -83,7 +85,7 @@ async function save(): Promise<void> {
   saving.value = true
   try {
     applySettings(await updateRetentionSettings({ ...form }))
-    ElMessage.success('系统配置已更新；订单同步会在下一个周期使用新的规则。')
+    ElMessage.success('系统配置已更新；后续登录、同步与监控刷新会使用新的规则。')
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '保留策略保存失败。'))
   } finally {
@@ -320,29 +322,29 @@ onMounted(load)
         </div>
         <el-form label-position="top">
           <div class="form-grid">
-            <el-form-item label="自动刷新间隔（小时）">
-              <el-select v-model="form.withdrawOrderRefreshIntervalHours" :disabled="!isAdmin">
+            <el-form-item label="自动刷新间隔（秒）">
+              <el-select
+                v-model="form.withdrawPendingMonitorRefreshIntervalSeconds"
+                :disabled="!isAdmin"
+              >
                 <el-option
-                  v-for="hours in [1, 2, 3, 4, 6, 8, 12, 24]"
-                  :key="hours"
-                  :label="`每 ${hours} 小时`"
-                  :value="hours"
+                  v-for="seconds in [10, 30, 60, 120, 300]"
+                  :key="seconds"
+                  :label="`每 ${seconds} 秒`"
+                  :value="seconds"
                 />
               </el-select>
               <span class="field-help">首次打开会立即查询；手动刷新不受此间隔限制。</span>
             </el-form-item>
             <el-form-item label="查询时间范围">
-              <el-select v-model="form.withdrawOrderQueryRange" :disabled="!isAdmin">
-                <el-option label="当天 00:00 至当前时刻" value="today" />
-                <el-option label="最近 1 小时" value="last_1_hour" />
-                <el-option label="最近 2 小时" value="last_2_hours" />
-                <el-option label="最近 3 小时" value="last_3_hours" />
-                <el-option label="最近 6 小时" value="last_6_hours" />
-                <el-option label="最近 12 小时" value="last_12_hours" />
-                <el-option label="最近 24 小时" value="last_24_hours" />
-                <el-option label="最近 48 小时" value="last_48_hours" />
+              <el-select v-model="form.withdrawPendingMonitorQueryRange" :disabled="!isAdmin">
+                <el-option label="印度时间今天全天" value="india_today" />
+                <el-option
+                  label="印度时间昨天全天＋今天全天"
+                  value="india_yesterday_today"
+                />
               </el-select>
-              <span class="field-help">按每个盘口的业务时区分别计算，再查询待审核与待审查订单数量。</span>
+              <span class="field-help">统一按 Asia/Kolkata 的自然日计算，再查询待审核与待审查订单数量。</span>
             </el-form-item>
           </div>
         </el-form>

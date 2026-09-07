@@ -16,7 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.common.settings import Settings, get_settings
 from packages.domain.models import SourceConfig
-from packages.domain.schemas.system_setting import WithdrawOrderQueryRange
+from packages.domain.schemas.system_setting import (
+    WithdrawPendingMonitorQueryRange,
+    normalize_withdraw_pending_monitor_query_range,
+    normalize_withdraw_pending_monitor_refresh_interval,
+)
 from packages.domain.schemas.withdraw_order import WithdrawPendingMonitorSourceResponse
 from packages.domain.services.remote_account_credentials import (
     RemoteAccountCredentialsError,
@@ -33,15 +37,8 @@ from packages.domain.services.remote_withdraw_service import (
 from packages.domain.services.system_setting_service import get_retention_settings
 
 WALL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
-_ROLLING_HOURS: dict[str, int] = {
-    "last_1_hour": 1,
-    "last_2_hours": 2,
-    "last_3_hours": 3,
-    "last_6_hours": 6,
-    "last_12_hours": 12,
-    "last_24_hours": 24,
-    "last_48_hours": 48,
-}
+INDIA_TIMEZONE_NAME = "Asia/Kolkata"
+INDIA_TIMEZONE = ZoneInfo(INDIA_TIMEZONE_NAME)
 
 
 class WithdrawPendingMonitorValidationError(ValueError):
@@ -50,8 +47,8 @@ class WithdrawPendingMonitorValidationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class WithdrawPendingMonitorResult:
-    query_range: WithdrawOrderQueryRange
-    refresh_interval_hours: int
+    query_range: WithdrawPendingMonitorQueryRange
+    refresh_interval_seconds: int
     generated_at: datetime
     successful_source_count: int
     pending_audit_total: int
@@ -66,21 +63,23 @@ def _as_utc(value: datetime | None = None) -> datetime:
 
 def _query_window(
     *,
-    query_range: WithdrawOrderQueryRange,
-    timezone_name: str,
+    query_range: WithdrawPendingMonitorQueryRange,
     now: datetime,
 ) -> tuple[datetime, datetime]:
-    """Resolve the configured rolling range in one market's business timezone."""
+    """Resolve full India calendar days, including the remainder of today."""
 
-    local_now = now.astimezone(ZoneInfo(timezone_name)).replace(microsecond=0)
-    if query_range == "today":
-        local_start = local_now.replace(hour=0, minute=0, second=0)
-    else:
-        try:
-            local_start = local_now - timedelta(hours=_ROLLING_HOURS[query_range])
-        except KeyError as exc:  # Defensive compatibility for a historical DB row.
-            raise WithdrawPendingMonitorValidationError("提现待处理监控时间范围无效。") from exc
-    return local_start, local_now
+    india_today_start = now.astimezone(INDIA_TIMEZONE).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    india_today_end = india_today_start + timedelta(days=1) - timedelta(seconds=1)
+    if query_range == "india_today":
+        return india_today_start, india_today_end
+    if query_range == "india_yesterday_today":
+        return india_today_start - timedelta(days=1), india_today_end
+    raise WithdrawPendingMonitorValidationError("提现待处理监控时间范围无效。")
 
 
 def _remote_timestamp(value: datetime) -> str:
@@ -121,20 +120,19 @@ async def _query_source(
     session: AsyncSession,
     *,
     source: SourceConfig,
-    query_range: WithdrawOrderQueryRange,
+    query_range: WithdrawPendingMonitorQueryRange,
     timeout_seconds: int,
     now: datetime,
     settings: Settings,
 ) -> WithdrawPendingMonitorSourceResponse:
     local_start, local_end = _query_window(
         query_range=query_range,
-        timezone_name=source.business_timezone,
         now=now,
     )
     response_kwargs = {
         "source_id": source.source_id,
         "source_display_name": source.display_name,
-        "business_timezone": source.business_timezone,
+        "business_timezone": INDIA_TIMEZONE_NAME,
         "create_time_start": local_start.strftime(WALL_TIME_FORMAT),
         "create_time_end": local_end.strftime(WALL_TIME_FORMAT),
         "queried_at": now,
@@ -208,9 +206,12 @@ async def query_withdraw_pending_monitor(
     current_settings = settings or get_settings()
     query_at = _as_utc(now)
     retention = await get_retention_settings(session, defaults=current_settings)
-    query_range = retention.withdraw_order_query_range or "today"
-    if query_range not in {"today", *_ROLLING_HOURS}:
-        raise WithdrawPendingMonitorValidationError("提现待处理监控时间范围无效。")
+    query_range = normalize_withdraw_pending_monitor_query_range(
+        retention.withdraw_order_query_range
+    )
+    refresh_interval_seconds = normalize_withdraw_pending_monitor_refresh_interval(
+        retention.withdraw_order_refresh_interval_hours
+    )
     sources = await _selected_sources(session, source_ids=source_ids)
     results: list[WithdrawPendingMonitorSourceResponse] = []
     for source in sources:
@@ -227,7 +228,7 @@ async def query_withdraw_pending_monitor(
     successful = [row for row in results if row.status == "succeeded"]
     return WithdrawPendingMonitorResult(
         query_range=query_range,
-        refresh_interval_hours=retention.withdraw_order_refresh_interval_hours or 1,
+        refresh_interval_seconds=refresh_interval_seconds,
         generated_at=query_at,
         successful_source_count=len(successful),
         pending_audit_total=sum(row.pending_audit_count for row in successful),

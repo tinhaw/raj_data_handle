@@ -98,8 +98,8 @@ async def test_pending_monitor_combines_only_successful_markets_and_projects_cou
                     uploaded_file_retention_days=3,
                     result_retention_days=30,
                     remote_cache_retention_days=30,
-                    withdraw_order_refresh_interval_hours=2,
-                    withdraw_order_query_range="last_3_hours",
+                    withdraw_order_refresh_interval_hours=30,
+                    withdraw_order_query_range="india_yesterday_today",
                     remote_order_sync_timeout_seconds=90,
                 ),
             ]
@@ -112,8 +112,8 @@ async def test_pending_monitor_combines_only_successful_markets_and_projects_cou
             now=datetime(2026, 9, 8, 10, 30, 45, tzinfo=UTC),
         )
 
-    assert result.query_range == "last_3_hours"
-    assert result.refresh_interval_hours == 2
+    assert result.query_range == "india_yesterday_today"
+    assert result.refresh_interval_seconds == 30
     assert result.successful_source_count == 1
     assert result.pending_audit_total == 7
     assert result.pending_review_total == 3
@@ -121,28 +121,29 @@ async def test_pending_monitor_combines_only_successful_markets_and_projects_cou
         ("rajwin", "succeeded"),
         ("rajluck", "failed"),
     ]
-    assert result.sources[0].create_time_start == "2026-09-08 15:30:45"
-    assert result.sources[0].create_time_end == "2026-09-08 18:30:45"
+    assert result.sources[0].business_timezone == "Asia/Kolkata"
+    assert result.sources[0].create_time_start == "2026-09-07 00:00:00"
+    assert result.sources[0].create_time_end == "2026-09-08 23:59:59"
     assert result.sources[1].pending_audit_count == 0
     assert result.sources[1].pending_review_count == 0
     assert result.sources[1].message == "远端提现汇总查询失败，请稍后刷新或检查盘口连接。"
     assert FakeWithdrawClient.calls == [
         {
             "base_url": "https://rajwin.example.test",
-            "create_start": "2026-09-08T07:30:45.000Z",
-            "create_end": "2026-09-08T10:30:45.000Z",
+            "create_start": "2026-09-06T18:30:00.000Z",
+            "create_end": "2026-09-08T18:29:59.000Z",
             "status": "0",
         },
         {
             "base_url": "https://rajwin.example.test",
-            "create_start": "2026-09-08T07:30:45.000Z",
-            "create_end": "2026-09-08T10:30:45.000Z",
+            "create_start": "2026-09-06T18:30:00.000Z",
+            "create_end": "2026-09-08T18:29:59.000Z",
             "status": "4",
         },
         {
             "base_url": "https://rajluck.example.test",
-            "create_start": "2026-09-08T07:30:45.000Z",
-            "create_end": "2026-09-08T10:30:45.000Z",
+            "create_start": "2026-09-06T18:30:00.000Z",
+            "create_end": "2026-09-08T18:29:59.000Z",
             "status": "0",
         },
     ]
@@ -173,7 +174,19 @@ async def test_pending_monitor_marks_market_without_analysis_account_as_unavaila
     )
 
     async with factory() as session:
-        session.add(source)
+        session.add_all(
+            [
+                source,
+                SystemRetentionSetting(
+                    id=1,
+                    uploaded_file_retention_days=3,
+                    result_retention_days=30,
+                    remote_cache_retention_days=30,
+                    withdraw_order_refresh_interval_hours=1,
+                    withdraw_order_query_range="today",
+                ),
+            ]
+        )
         await session.commit()
         result = await query_withdraw_pending_monitor(
             session,
@@ -182,8 +195,13 @@ async def test_pending_monitor_marks_market_without_analysis_account_as_unavaila
         )
 
     assert result.successful_source_count == 0
+    assert result.query_range == "india_today"
+    assert result.refresh_interval_seconds == 60
     assert result.pending_audit_total == 0
     assert result.pending_review_total == 0
+    assert result.sources[0].business_timezone == "Asia/Kolkata"
+    assert result.sources[0].create_time_start == "2026-09-08 00:00:00"
+    assert result.sources[0].create_time_end == "2026-09-08 23:59:59"
     assert result.sources[0].status == "unavailable"
     assert result.sources[0].message == "未配置可用于数据分析读取的默认远端账号。"
     assert FakeWithdrawClient.calls == []

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -15,6 +15,34 @@ WithdrawOrderQueryRange = Literal[
     "last_24_hours",
     "last_48_hours",
 ]
+WithdrawPendingMonitorRefreshIntervalSeconds = Literal[10, 30, 60, 120, 300]
+WithdrawPendingMonitorQueryRange = Literal[
+    "india_today",
+    "india_yesterday_today",
+]
+WITHDRAW_PENDING_MONITOR_REFRESH_INTERVAL_SECONDS = (10, 30, 60, 120, 300)
+WITHDRAW_PENDING_MONITOR_QUERY_RANGES = (
+    "india_today",
+    "india_yesterday_today",
+)
+
+
+def normalize_withdraw_pending_monitor_refresh_interval(
+    value: int | None,
+) -> WithdrawPendingMonitorRefreshIntervalSeconds:
+    if value in WITHDRAW_PENDING_MONITOR_REFRESH_INTERVAL_SECONDS:
+        return cast(WithdrawPendingMonitorRefreshIntervalSeconds, value)
+    return 60
+
+
+def normalize_withdraw_pending_monitor_query_range(
+    value: str | None,
+) -> WithdrawPendingMonitorQueryRange:
+    if value in WITHDRAW_PENDING_MONITOR_QUERY_RANGES:
+        return cast(WithdrawPendingMonitorQueryRange, value)
+    return "india_today"
+
+
 WithdrawOrderRefreshPageSize = Literal[10, 20, 30, 50, 100]
 WithdrawOrderRefreshRange = Literal["day_before_yesterday", "yesterday", "today"]
 WithdrawOrderExportDateMode = Literal["previous_day", "specific_date"]
@@ -42,13 +70,23 @@ class RetentionSettingsResponse(BaseModel):
     result_retention_days: int = Field(alias="resultRetentionDays")
     remote_cache_retention_days: int = Field(alias="remoteCacheRetentionDays")
     sync_log_retention_days: int = Field(alias="syncLogRetentionDays")
+    withdraw_pending_monitor_refresh_interval_seconds: (
+        WithdrawPendingMonitorRefreshIntervalSeconds
+    ) = Field(
+        alias="withdrawPendingMonitorRefreshIntervalSeconds",
+    )
+    withdraw_order_refresh_page_size: WithdrawOrderRefreshPageSize = Field(
+        alias="withdrawOrderRefreshPageSize",
+    )
+    withdraw_pending_monitor_query_range: WithdrawPendingMonitorQueryRange = Field(
+        alias="withdrawPendingMonitorQueryRange",
+    )
+    # Compatibility projection for an already-open pre-upgrade web client.
+    # New clients use the monitor-specific second/day fields above.
     withdraw_order_refresh_interval_hours: int = Field(
         ge=1,
         le=24,
         alias="withdrawOrderRefreshIntervalHours",
-    )
-    withdraw_order_refresh_page_size: WithdrawOrderRefreshPageSize = Field(
-        alias="withdrawOrderRefreshPageSize",
     )
     withdraw_order_query_range: WithdrawOrderQueryRange = Field(
         alias="withdrawOrderQueryRange",
@@ -116,13 +154,13 @@ class RetentionSettingsUpdateRequest(BaseModel):
         le=3650,
         alias="syncLogRetentionDays",
     )
-    # Kept optional for a compatible API rollout: legacy clients can still
-    # save other system settings without resetting this newly introduced value.
-    withdraw_order_refresh_interval_hours: int | None = Field(
+    # Optional so older clients can save other settings without resetting the
+    # independently managed live-monitor policy.
+    withdraw_pending_monitor_refresh_interval_seconds: (
+        WithdrawPendingMonitorRefreshIntervalSeconds | None
+    ) = Field(
         default=None,
-        ge=1,
-        le=24,
-        alias="withdrawOrderRefreshIntervalHours",
+        alias="withdrawPendingMonitorRefreshIntervalSeconds",
     )
     # Optional so older clients can save other settings during a staged
     # rollout; any explicitly supplied value is one of the remote choices.
@@ -130,11 +168,9 @@ class RetentionSettingsUpdateRequest(BaseModel):
         default=None,
         alias="withdrawOrderRefreshPageSize",
     )
-    # Optional so older clients can save other settings during a staged
-    # rollout; any explicitly supplied value is constrained to these presets.
-    withdraw_order_query_range: WithdrawOrderQueryRange | None = Field(
+    withdraw_pending_monitor_query_range: WithdrawPendingMonitorQueryRange | None = Field(
         default=None,
-        alias="withdrawOrderQueryRange",
+        alias="withdrawPendingMonitorQueryRange",
     )
     withdraw_order_export_date_mode: WithdrawOrderExportDateMode | None = Field(
         default=None,

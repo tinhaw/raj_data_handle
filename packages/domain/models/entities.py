@@ -134,10 +134,13 @@ class SystemRetentionSetting(Base):
     # cached source data.  They are small, append-only audit projections and
     # should remain available even after an older order snapshot is purged.
     sync_log_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    # Legacy column names are retained to avoid a production schema change.
+    # The live pending-withdrawal monitor now stores seconds and an India-day
+    # range in these otherwise-unused refresh-policy columns.
     withdraw_order_refresh_interval_hours: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
-        default=1,
+        default=60,
     )
     withdraw_order_refresh_page_size: Mapped[int] = mapped_column(
         Integer,
@@ -147,7 +150,7 @@ class SystemRetentionSetting(Base):
     withdraw_order_query_range: Mapped[str] = mapped_column(
         String(24),
         nullable=False,
-        default="today",
+        default="india_today",
     )
     withdraw_order_export_date_mode: Mapped[str] = mapped_column(
         String(24),

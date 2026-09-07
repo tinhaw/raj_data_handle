@@ -659,6 +659,10 @@ export type WithdrawOrderQueryRange =
   | 'last_48_hours'
 
 export type WithdrawOrderRefreshPageSize = 10 | 20 | 30 | 50 | 100
+export type WithdrawPendingMonitorRefreshIntervalSeconds = 10 | 30 | 60 | 120 | 300
+export type WithdrawPendingMonitorQueryRange =
+  | 'india_today'
+  | 'india_yesterday_today'
 export type WithdrawOrderRefreshRange = 'day_before_yesterday' | 'yesterday' | 'today'
 export type ChargeOrderQueryRange = WithdrawOrderQueryRange
 export type ChargeOrderRefreshPageSize = WithdrawOrderRefreshPageSize
@@ -682,9 +686,9 @@ export interface RetentionSettings {
   resultRetentionDays: number
   remoteCacheRetentionDays: number
   syncLogRetentionDays: number
-  withdrawOrderRefreshIntervalHours: number
+  withdrawPendingMonitorRefreshIntervalSeconds: WithdrawPendingMonitorRefreshIntervalSeconds
   withdrawOrderRefreshPageSize: WithdrawOrderRefreshPageSize
-  withdrawOrderQueryRange: WithdrawOrderQueryRange
+  withdrawPendingMonitorQueryRange: WithdrawPendingMonitorQueryRange
   withdrawOrderExportDateMode: WithdrawOrderExportDateMode
   withdrawOrderExportSpecificDate: string | null
   withdrawOrderExportTime: string
@@ -1168,8 +1172,8 @@ export interface WithdrawPendingMonitorSource {
 }
 
 export interface WithdrawPendingMonitorResponse {
-  queryRange: WithdrawOrderQueryRange
-  refreshIntervalHours: number
+  queryRange: WithdrawPendingMonitorQueryRange
+  refreshIntervalSeconds: WithdrawPendingMonitorRefreshIntervalSeconds
   generatedAt: string
   sourceCount: number
   successfulSourceCount: number

@@ -8,7 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.common.settings import Settings, get_settings
 from packages.domain.models import SecurityAuditLog, SystemRetentionSetting, SystemSessionSetting
-from packages.domain.schemas.system_setting import RetentionSettingsUpdateRequest
+from packages.domain.schemas.system_setting import (
+    RetentionSettingsUpdateRequest,
+    normalize_withdraw_pending_monitor_query_range,
+    normalize_withdraw_pending_monitor_refresh_interval,
+)
 from packages.domain.services.session_setting_service import get_session_settings
 
 RETENTION_SETTINGS_ID = 1
@@ -318,7 +322,9 @@ async def _load_retention_settings(
                     int(legacy["withdraw_order_refresh_page_size"]) if has_page_size else 100
                 ),
                 withdraw_order_query_range=(
-                    str(legacy["withdraw_order_query_range"]) if has_query_range else "today"
+                    str(legacy["withdraw_order_query_range"])
+                    if has_query_range
+                    else "india_today"
                 ),
                 withdraw_order_export_date_mode=(
                     str(legacy["withdraw_order_export_date_mode"])
@@ -411,11 +417,12 @@ async def _load_retention_settings(
         result_retention_days=current_defaults.result_retention_days,
         remote_cache_retention_days=current_defaults.remote_cache_retention_days,
         sync_log_retention_days=30,
-        # Legacy pagination-policy columns remain in the schema for a safe
-        # rollout but are no longer used by withdrawal export refreshes.
-        withdraw_order_refresh_interval_hours=1,
+        # Legacy database column names remain for a migration-free rollout;
+        # interval/range now hold the live pending-monitor policy. Page size is
+        # retained only for schema compatibility.
+        withdraw_order_refresh_interval_hours=60,
         withdraw_order_refresh_page_size=100,
-        withdraw_order_query_range="today",
+        withdraw_order_query_range="india_today",
         withdraw_order_export_date_mode=current_defaults.withdraw_order_export_date_mode,
         withdraw_order_export_specific_date=current_defaults.withdraw_order_export_specific_date,
         withdraw_order_export_time=current_defaults.withdraw_order_export_time,
@@ -467,9 +474,15 @@ async def update_retention_settings(
         "resultRetentionDays": row.result_retention_days,
         "remoteCacheRetentionDays": row.remote_cache_retention_days,
         "syncLogRetentionDays": row.sync_log_retention_days,
-        "withdrawOrderRefreshIntervalHours": row.withdraw_order_refresh_interval_hours,
+        "withdrawPendingMonitorRefreshIntervalSeconds": (
+            normalize_withdraw_pending_monitor_refresh_interval(
+                row.withdraw_order_refresh_interval_hours
+            )
+        ),
         "withdrawOrderRefreshPageSize": row.withdraw_order_refresh_page_size,
-        "withdrawOrderQueryRange": row.withdraw_order_query_range,
+        "withdrawPendingMonitorQueryRange": normalize_withdraw_pending_monitor_query_range(
+            row.withdraw_order_query_range
+        ),
         "withdrawOrderExportDateMode": row.withdraw_order_export_date_mode,
         "withdrawOrderExportSpecificDate": (
             row.withdraw_order_export_specific_date.isoformat()
@@ -500,12 +513,14 @@ async def update_retention_settings(
     row.remote_cache_retention_days = payload.remote_cache_retention_days
     if payload.sync_log_retention_days is not None:
         row.sync_log_retention_days = payload.sync_log_retention_days
-    if payload.withdraw_order_refresh_interval_hours is not None:
-        row.withdraw_order_refresh_interval_hours = payload.withdraw_order_refresh_interval_hours
+    if payload.withdraw_pending_monitor_refresh_interval_seconds is not None:
+        row.withdraw_order_refresh_interval_hours = (
+            payload.withdraw_pending_monitor_refresh_interval_seconds
+        )
     if payload.withdraw_order_refresh_page_size is not None:
         row.withdraw_order_refresh_page_size = payload.withdraw_order_refresh_page_size
-    if payload.withdraw_order_query_range is not None:
-        row.withdraw_order_query_range = payload.withdraw_order_query_range
+    if payload.withdraw_pending_monitor_query_range is not None:
+        row.withdraw_order_query_range = payload.withdraw_pending_monitor_query_range
     if payload.withdraw_order_export_date_mode is not None:
         row.withdraw_order_export_date_mode = payload.withdraw_order_export_date_mode
         row.withdraw_order_export_specific_date = (
@@ -562,11 +577,17 @@ async def update_retention_settings(
                     "resultRetentionDays": row.result_retention_days,
                     "remoteCacheRetentionDays": row.remote_cache_retention_days,
                     "syncLogRetentionDays": row.sync_log_retention_days,
-                    "withdrawOrderRefreshIntervalHours": (
-                        row.withdraw_order_refresh_interval_hours
+                    "withdrawPendingMonitorRefreshIntervalSeconds": (
+                        normalize_withdraw_pending_monitor_refresh_interval(
+                            row.withdraw_order_refresh_interval_hours
+                        )
                     ),
                     "withdrawOrderRefreshPageSize": row.withdraw_order_refresh_page_size,
-                    "withdrawOrderQueryRange": row.withdraw_order_query_range,
+                    "withdrawPendingMonitorQueryRange": (
+                        normalize_withdraw_pending_monitor_query_range(
+                            row.withdraw_order_query_range
+                        )
+                    ),
                     "withdrawOrderExportDateMode": row.withdraw_order_export_date_mode,
                     "withdrawOrderExportSpecificDate": (
                         row.withdraw_order_export_specific_date.isoformat()

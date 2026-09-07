@@ -12,6 +12,8 @@ from packages.domain.models import SystemRetentionSetting
 from packages.domain.schemas.system_setting import (
     RetentionSettingsResponse,
     RetentionSettingsUpdateRequest,
+    normalize_withdraw_pending_monitor_query_range,
+    normalize_withdraw_pending_monitor_refresh_interval,
 )
 from packages.domain.services.auth_service import AuthContext
 from packages.domain.services.session_setting_service import get_session_settings
@@ -29,14 +31,22 @@ def _response(
     *,
     session_ttl_days: int,
 ) -> RetentionSettingsResponse:
+    monitor_interval = normalize_withdraw_pending_monitor_refresh_interval(
+        retention.withdraw_order_refresh_interval_hours
+    )
+    monitor_range = normalize_withdraw_pending_monitor_query_range(
+        retention.withdraw_order_query_range
+    )
     return RetentionSettingsResponse(
         uploadedFileRetentionDays=retention.uploaded_file_retention_days,
         resultRetentionDays=retention.result_retention_days,
         remoteCacheRetentionDays=retention.remote_cache_retention_days,
         syncLogRetentionDays=retention.sync_log_retention_days or 30,
-        withdrawOrderRefreshIntervalHours=retention.withdraw_order_refresh_interval_hours or 1,
+        withdrawPendingMonitorRefreshIntervalSeconds=monitor_interval,
         withdrawOrderRefreshPageSize=retention.withdraw_order_refresh_page_size or 100,
-        withdrawOrderQueryRange=retention.withdraw_order_query_range or "today",
+        withdrawPendingMonitorQueryRange=monitor_range,
+        withdrawOrderRefreshIntervalHours=1,
+        withdrawOrderQueryRange="today",
         withdrawOrderExportDateMode=retention.withdraw_order_export_date_mode or "previous_day",
         withdrawOrderExportSpecificDate=retention.withdraw_order_export_specific_date,
         withdrawOrderExportTime=retention.withdraw_order_export_time or time(0, 5, 1),

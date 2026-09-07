@@ -300,7 +300,10 @@ class WithdrawPendingMonitorSourceResponse(ApiSchema):
 
 class WithdrawPendingMonitorResponse(ApiSchema):
     query_range: str
-    refresh_interval_hours: int
+    refresh_interval_seconds: int
+    # Keeps an already-open pre-upgrade page from creating a zero-delay timer
+    # during the short rolling-deployment window.
+    refresh_interval_hours: int = 1
     generated_at: datetime
     source_count: int
     successful_source_count: int

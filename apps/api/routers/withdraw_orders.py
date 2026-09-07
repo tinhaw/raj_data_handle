@@ -142,7 +142,8 @@ async def withdraw_pending_monitor_query(
         ) from exc
     return WithdrawPendingMonitorResponse(
         query_range=result.query_range,
-        refresh_interval_hours=result.refresh_interval_hours,
+        refresh_interval_seconds=result.refresh_interval_seconds,
+        refresh_interval_hours=1,
         generated_at=result.generated_at,
         source_count=len(result.sources),
         successful_source_count=result.successful_source_count,

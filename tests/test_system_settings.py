@@ -131,6 +131,37 @@ def test_remote_order_sync_timeout_setting_is_bounded() -> None:
             )
 
 
+def test_pending_monitor_settings_use_seconds_and_india_day_presets() -> None:
+    payload = RetentionSettingsUpdateRequest(
+        uploadedFileRetentionDays=3,
+        resultRetentionDays=30,
+        remoteCacheRetentionDays=30,
+        withdrawPendingMonitorRefreshIntervalSeconds=30,
+        withdrawPendingMonitorQueryRange="india_yesterday_today",
+        sessionTtlDays=30,
+    )
+
+    assert payload.withdraw_pending_monitor_refresh_interval_seconds == 30
+    assert payload.withdraw_pending_monitor_query_range == "india_yesterday_today"
+
+    with pytest.raises(ValidationError):
+        RetentionSettingsUpdateRequest(
+            uploadedFileRetentionDays=3,
+            resultRetentionDays=30,
+            remoteCacheRetentionDays=30,
+            withdrawPendingMonitorRefreshIntervalSeconds=5,
+            sessionTtlDays=30,
+        )
+    with pytest.raises(ValidationError):
+        RetentionSettingsUpdateRequest(
+            uploadedFileRetentionDays=3,
+            resultRetentionDays=30,
+            remoteCacheRetentionDays=30,
+            withdrawPendingMonitorQueryRange="today",
+            sessionTtlDays=30,
+        )
+
+
 def test_spin_refresh_settings_use_safe_backfill_defaults() -> None:
     settings = _settings()
 
@@ -205,8 +236,8 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
                 resultRetentionDays=45,
                 remoteCacheRetentionDays=60,
                 syncLogRetentionDays=90,
-                withdrawOrderRefreshIntervalHours=4,
-                withdrawOrderQueryRange="last_3_hours",
+                withdrawPendingMonitorRefreshIntervalSeconds=30,
+                withdrawPendingMonitorQueryRange="india_yesterday_today",
                 withdrawOrderExportDateMode="specific_date",
                 withdrawOrderExportSpecificDate="2026-07-29",
                 withdrawOrderExportTime="02:03:04",
@@ -232,8 +263,8 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
     assert updated.result_retention_days == 45
     assert updated.remote_cache_retention_days == 60
     assert updated.sync_log_retention_days == 90
-    assert updated.withdraw_order_refresh_interval_hours == 4
-    assert updated.withdraw_order_query_range == "last_3_hours"
+    assert updated.withdraw_order_refresh_interval_hours == 30
+    assert updated.withdraw_order_query_range == "india_yesterday_today"
     assert updated.withdraw_order_export_date_mode == "specific_date"
     assert updated.withdraw_order_export_specific_date == date(2026, 7, 29)
     assert updated.withdraw_order_export_time == time(2, 3, 4)
@@ -251,10 +282,18 @@ async def test_retention_update_persists_withdraw_export_policy_and_audits_it() 
     assert audit.metadata_json["previous"]["withdrawOrderExportDateMode"] == "previous_day"
     assert audit.metadata_json["previous"]["syncLogRetentionDays"] == 30
     assert audit.metadata_json["current"]["syncLogRetentionDays"] == 90
-    assert audit.metadata_json["previous"]["withdrawOrderRefreshIntervalHours"] == 1
-    assert audit.metadata_json["current"]["withdrawOrderRefreshIntervalHours"] == 4
-    assert audit.metadata_json["previous"]["withdrawOrderQueryRange"] == "today"
-    assert audit.metadata_json["current"]["withdrawOrderQueryRange"] == "last_3_hours"
+    assert (
+        audit.metadata_json["previous"]["withdrawPendingMonitorRefreshIntervalSeconds"]
+        == 60
+    )
+    assert (
+        audit.metadata_json["current"]["withdrawPendingMonitorRefreshIntervalSeconds"] == 30
+    )
+    assert audit.metadata_json["previous"]["withdrawPendingMonitorQueryRange"] == "india_today"
+    assert (
+        audit.metadata_json["current"]["withdrawPendingMonitorQueryRange"]
+        == "india_yesterday_today"
+    )
     assert audit.metadata_json["previous"]["withdrawOrderExportSpecificDate"] is None
     assert audit.metadata_json["previous"]["withdrawOrderExportTime"] == "00:05:01"
     assert audit.metadata_json["previous"]["automaticSyncRetryLimit"] == 3
@@ -318,6 +357,10 @@ def test_system_settings_response_exposes_withdraw_export_policy_in_camel_case()
 
     payload = response.model_dump(by_alias=True)
     assert payload["syncLogRetentionDays"] == 30
+    assert payload["withdrawPendingMonitorRefreshIntervalSeconds"] == 60
+    assert payload["withdrawPendingMonitorQueryRange"] == "india_today"
+    assert payload["withdrawOrderRefreshIntervalHours"] == 1
+    assert payload["withdrawOrderQueryRange"] == "today"
     assert payload["withdrawOrderExportDateMode"] == "specific_date"
     assert payload["withdrawOrderExportSpecificDate"] == date(2026, 7, 29)
     assert payload["withdrawOrderExportTime"] == time(2, 3, 4)
