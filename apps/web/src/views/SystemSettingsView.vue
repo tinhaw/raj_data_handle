@@ -328,7 +328,7 @@ onMounted(load)
                 :disabled="!isAdmin"
               >
                 <el-option
-                  v-for="seconds in [10, 30, 60, 120, 300]"
+                  v-for="seconds in [5, 10, 15, 20, 25, 30, 60, 120, 300]"
                   :key="seconds"
                   :label="`每 ${seconds} 秒`"
                   :value="seconds"

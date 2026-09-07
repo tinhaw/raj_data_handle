@@ -659,7 +659,16 @@ export type WithdrawOrderQueryRange =
   | 'last_48_hours'
 
 export type WithdrawOrderRefreshPageSize = 10 | 20 | 30 | 50 | 100
-export type WithdrawPendingMonitorRefreshIntervalSeconds = 10 | 30 | 60 | 120 | 300
+export type WithdrawPendingMonitorRefreshIntervalSeconds =
+  | 5
+  | 10
+  | 15
+  | 20
+  | 25
+  | 30
+  | 60
+  | 120
+  | 300
 export type WithdrawPendingMonitorQueryRange =
   | 'india_today'
   | 'india_yesterday_today'

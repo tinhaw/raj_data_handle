@@ -6,22 +6,28 @@ export type RetentionSettingsUpdate = Pick<
   | 'uploadedFileRetentionDays'
   | 'resultRetentionDays'
   | 'remoteCacheRetentionDays'
-  | 'withdrawPendingMonitorRefreshIntervalSeconds'
-  | 'withdrawPendingMonitorQueryRange'
-  | 'withdrawOrderExportDateMode'
-  | 'withdrawOrderExportSpecificDate'
-  | 'withdrawOrderExportTime'
-  | 'automaticSyncRetryLimit'
-  | 'automaticSyncRetryIntervalMinutes'
-  | 'remoteOrderSyncTimeoutSeconds'
-  | 'chargeOrderExportDateMode'
-  | 'chargeOrderExportSpecificDate'
-  | 'chargeOrderExportTime'
-  | 'spinOrderRefreshIntervalHours'
-  | 'spinOrderRefreshPageSize'
-  | 'spinOrderQueryRange'
   | 'sessionTtlDays'
->
+> &
+  Partial<
+    Pick<
+      RetentionSettings,
+      | 'syncLogRetentionDays'
+      | 'withdrawPendingMonitorRefreshIntervalSeconds'
+      | 'withdrawPendingMonitorQueryRange'
+      | 'withdrawOrderExportDateMode'
+      | 'withdrawOrderExportSpecificDate'
+      | 'withdrawOrderExportTime'
+      | 'automaticSyncRetryLimit'
+      | 'automaticSyncRetryIntervalMinutes'
+      | 'remoteOrderSyncTimeoutSeconds'
+      | 'chargeOrderExportDateMode'
+      | 'chargeOrderExportSpecificDate'
+      | 'chargeOrderExportTime'
+      | 'spinOrderRefreshIntervalHours'
+      | 'spinOrderRefreshPageSize'
+      | 'spinOrderQueryRange'
+    >
+  >
 
 export async function fetchRetentionSettings(): Promise<RetentionSettings> {
   const response = await api.get<RetentionSettings>('/system-settings/retention')

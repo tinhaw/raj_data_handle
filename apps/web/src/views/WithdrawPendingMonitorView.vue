@@ -1,24 +1,39 @@
 <script setup lang="ts">
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { apiErrorMessage } from '../api/client'
+import {
+  fetchRetentionSettings,
+  updateRetentionSettings,
+} from '../api/systemSettings'
 import { queryWithdrawPendingMonitor } from '../api/withdrawOrders'
+import { isAdmin } from '../stores/auth'
 import type {
   WithdrawPendingMonitorQueryRange,
+  WithdrawPendingMonitorRefreshIntervalSeconds,
   WithdrawPendingMonitorResponse,
 } from '../types'
 import { formatDateTime } from '../ui'
 
 const loading = ref(false)
+const savingSettings = ref(false)
 const monitor = ref<WithdrawPendingMonitorResponse | null>(null)
+const selectedInterval = ref<WithdrawPendingMonitorRefreshIntervalSeconds>(60)
+const selectedRange = ref<WithdrawPendingMonitorQueryRange>('india_today')
 let refreshTimer: number | undefined
 
-const rangeLabels: Record<WithdrawPendingMonitorQueryRange, string> = {
-  india_today: '印度时间今天全天',
-  india_yesterday_today: '印度时间昨天全天＋今天全天',
-}
+const intervalOptions: WithdrawPendingMonitorRefreshIntervalSeconds[] = [
+  5, 10, 15, 20, 25, 30, 60, 120, 300,
+]
+
+const settingsDirty = computed(
+  () =>
+    !!monitor.value &&
+    (selectedInterval.value !== monitor.value.refreshIntervalSeconds ||
+      selectedRange.value !== monitor.value.queryRange),
+)
 
 function clearAutoRefresh(): void {
   if (refreshTimer) window.clearInterval(refreshTimer)
@@ -48,13 +63,43 @@ async function load(): Promise<void> {
   if (loading.value) return
   loading.value = true
   try {
+    const hadUnsavedSettings = settingsDirty.value
     const nextMonitor = await queryWithdrawPendingMonitor()
     monitor.value = nextMonitor
+    if (!hadUnsavedSettings) {
+      selectedInterval.value = nextMonitor.refreshIntervalSeconds
+      selectedRange.value = nextMonitor.queryRange
+    }
     scheduleAutoRefresh(nextMonitor.refreshIntervalSeconds)
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '待处理提现监控加载失败。'))
   } finally {
     loading.value = false
+  }
+}
+
+async function applyMonitorSettings(): Promise<void> {
+  if (!isAdmin.value || !settingsDirty.value) return
+  savingSettings.value = true
+  try {
+    const current = await fetchRetentionSettings()
+    const updated = await updateRetentionSettings({
+      uploadedFileRetentionDays: current.uploadedFileRetentionDays,
+      resultRetentionDays: current.resultRetentionDays,
+      remoteCacheRetentionDays: current.remoteCacheRetentionDays,
+      sessionTtlDays: current.sessionTtlDays,
+      withdrawPendingMonitorRefreshIntervalSeconds: selectedInterval.value,
+      withdrawPendingMonitorQueryRange: selectedRange.value,
+    })
+    selectedInterval.value = updated.withdrawPendingMonitorRefreshIntervalSeconds
+    selectedRange.value = updated.withdrawPendingMonitorQueryRange
+    scheduleAutoRefresh(updated.withdrawPendingMonitorRefreshIntervalSeconds)
+    await load()
+    ElMessage.success('监控参数已更新并生效。')
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '监控参数保存失败。'))
+  } finally {
+    savingSettings.value = false
   }
 }
 
@@ -71,61 +116,69 @@ onBeforeUnmount(clearAutoRefresh)
       <div>
         <span class="page-eyebrow">Withdrawal monitor</span>
         <h1>待处理提现监控</h1>
-        <p>同页汇总所有已启用盘口中待审核与待审查的提现申请数量。</p>
+        <p>分别查看各已启用盘口中待审核与待审查的提现申请数量。</p>
       </div>
       <el-button :icon="Refresh" :loading="loading" @click="load">立即刷新</el-button>
     </header>
 
     <el-alert
-      title="远端只读汇总"
-      description="本页仅向各盘口请求两个状态的汇总数量：待审核（0）和待审查（4）。不会下载、缓存或显示订单明细。"
+      title="远端只读查询"
+      description="本页仅向各盘口分别请求两个状态的数量：待审核（0）和待审查（4）。不会下载、缓存或显示订单明细。"
       type="info"
       show-icon
       :closable="false"
     />
 
     <section v-if="monitor" class="surface-card monitor-policy">
-      <div>
-        <span>自动刷新</span>
-        <strong>每 {{ monitor.refreshIntervalSeconds }} 秒</strong>
+      <div class="policy-control">
+        <span>刷新时间间隔</span>
+        <el-select
+          v-model="selectedInterval"
+          aria-label="刷新时间间隔"
+          :disabled="!isAdmin || savingSettings"
+        >
+          <el-option
+            v-for="seconds in intervalOptions"
+            :key="seconds"
+            :label="`每 ${seconds} 秒`"
+            :value="seconds"
+          />
+        </el-select>
       </div>
-      <div>
+      <div class="policy-control">
         <span>查询范围</span>
-        <strong>{{ rangeLabels[monitor.queryRange] }}</strong>
+        <el-select
+          v-model="selectedRange"
+          aria-label="查询时间范围"
+          :disabled="!isAdmin || savingSettings"
+        >
+          <el-option label="印度时间今天全天" value="india_today" />
+          <el-option label="印度时间昨天全天＋今天全天" value="india_yesterday_today" />
+        </el-select>
       </div>
       <div>
         <span>查询时区</span>
         <strong>印度时间（Asia/Kolkata）</strong>
       </div>
       <div>
-        <span>上次汇总</span>
+        <span>上次查询</span>
         <strong>{{ formatDateTime(monitor?.generatedAt) }}</strong>
       </div>
-      <router-link class="policy-link" to="/settings/system">调整监控设置</router-link>
-    </section>
-
-    <section v-if="monitor" class="monitor-metrics">
-      <article class="surface-card monitor-metric monitor-metric--warning">
-        <span>待审核</span>
-        <strong>{{ monitor.pendingAuditTotal }}</strong>
-        <small>状态值 0</small>
-      </article>
-      <article class="surface-card monitor-metric monitor-metric--primary">
-        <span>待审查</span>
-        <strong>{{ monitor.pendingReviewTotal }}</strong>
-        <small>状态值 4</small>
-      </article>
-      <article class="surface-card monitor-metric">
-        <span>待处理合计</span>
-        <strong>{{ monitor.pendingTotal }}</strong>
-        <small>成功查询 {{ monitor.successfulSourceCount }} / {{ monitor.sourceCount }} 个盘口</small>
-      </article>
+      <el-button
+        v-if="isAdmin"
+        type="primary"
+        :disabled="!settingsDirty"
+        :loading="savingSettings"
+        @click="applyMonitorSettings"
+      >
+        应用参数
+      </el-button>
     </section>
 
     <el-alert
       v-if="monitor?.partial"
       title="部分盘口未完成查询"
-      description="合计只包含查询成功的盘口；请查看下方卡片中的状态说明。"
+      description="请查看下方对应盘口卡片中的状态说明，其他盘口不受影响。"
       type="warning"
       show-icon
       :closable="false"
@@ -134,7 +187,7 @@ onBeforeUnmount(clearAutoRefresh)
     <section class="surface-card monitor-sources-card" v-loading="loading">
       <div class="section-heading">
         <div>
-          <h2>盘口汇总卡片</h2>
+          <h2>盘口数据</h2>
           <p>每个盘口独立展示待审核、待审查与合计，异常不会影响其他盘口。</p>
         </div>
         <el-tag v-if="monitor" type="info">{{ monitor.sources.length }} 个盘口</el-tag>
@@ -200,27 +253,21 @@ onBeforeUnmount(clearAutoRefresh)
 </template>
 
 <style scoped>
-.monitor-policy,
-.monitor-metrics {
+.monitor-policy {
   display: grid;
   gap: 16px;
-}
-
-.monitor-policy {
-  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
-  align-items: center;
+  grid-template-columns:
+    minmax(180px, 0.8fr) minmax(260px, 1.3fr) repeat(2, minmax(0, 1fr)) auto;
+  align-items: end;
   padding: 18px 22px;
 }
 
-.monitor-policy > div,
-.monitor-metric {
+.monitor-policy > div {
   display: grid;
   gap: 5px;
 }
 
 .monitor-policy span,
-.monitor-metric span,
-.monitor-metric small,
 .section-heading p,
 .source-card__header span,
 .source-card__footer,
@@ -231,8 +278,6 @@ onBeforeUnmount(clearAutoRefresh)
 }
 
 .monitor-policy span,
-.monitor-metric span,
-.monitor-metric small,
 .section-heading p,
 .source-card__header span,
 .source-card__footer,
@@ -242,33 +287,8 @@ onBeforeUnmount(clearAutoRefresh)
   font-size: 13px;
 }
 
-.policy-link {
-  color: var(--el-color-primary);
-  font-weight: 700;
-  text-decoration: none;
-  white-space: nowrap;
-}
-
-.monitor-metrics {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.monitor-metric {
-  padding: 22px;
-}
-
-.monitor-metric strong {
-  color: var(--ink);
-  font-size: 32px;
-  font-variant-numeric: tabular-nums;
-}
-
-.monitor-metric--warning {
-  border-top: 3px solid var(--el-color-warning);
-}
-
-.monitor-metric--primary {
-  border-top: 3px solid var(--el-color-primary);
+.policy-control {
+  min-width: 0;
 }
 
 .monitor-sources-card {
@@ -379,8 +399,7 @@ onBeforeUnmount(clearAutoRefresh)
 }
 
 @media (max-width: 980px) {
-  .monitor-policy,
-  .monitor-metrics {
+  .monitor-policy {
     grid-template-columns: 1fr;
   }
 

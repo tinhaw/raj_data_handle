@@ -144,12 +144,22 @@ def test_pending_monitor_settings_use_seconds_and_india_day_presets() -> None:
     assert payload.withdraw_pending_monitor_refresh_interval_seconds == 30
     assert payload.withdraw_pending_monitor_query_range == "india_yesterday_today"
 
+    for seconds in (5, 15, 20, 25):
+        interval_payload = RetentionSettingsUpdateRequest(
+            uploadedFileRetentionDays=3,
+            resultRetentionDays=30,
+            remoteCacheRetentionDays=30,
+            withdrawPendingMonitorRefreshIntervalSeconds=seconds,
+            sessionTtlDays=30,
+        )
+        assert interval_payload.withdraw_pending_monitor_refresh_interval_seconds == seconds
+
     with pytest.raises(ValidationError):
         RetentionSettingsUpdateRequest(
             uploadedFileRetentionDays=3,
             resultRetentionDays=30,
             remoteCacheRetentionDays=30,
-            withdrawPendingMonitorRefreshIntervalSeconds=5,
+            withdrawPendingMonitorRefreshIntervalSeconds=6,
             sessionTtlDays=30,
         )
     with pytest.raises(ValidationError):

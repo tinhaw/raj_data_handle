@@ -15,12 +15,12 @@ WithdrawOrderQueryRange = Literal[
     "last_24_hours",
     "last_48_hours",
 ]
-WithdrawPendingMonitorRefreshIntervalSeconds = Literal[10, 30, 60, 120, 300]
+WithdrawPendingMonitorRefreshIntervalSeconds = Literal[5, 10, 15, 20, 25, 30, 60, 120, 300]
 WithdrawPendingMonitorQueryRange = Literal[
     "india_today",
     "india_yesterday_today",
 ]
-WITHDRAW_PENDING_MONITOR_REFRESH_INTERVAL_SECONDS = (10, 30, 60, 120, 300)
+WITHDRAW_PENDING_MONITOR_REFRESH_INTERVAL_SECONDS = (5, 10, 15, 20, 25, 30, 60, 120, 300)
 WITHDRAW_PENDING_MONITOR_QUERY_RANGES = (
     "india_today",
     "india_yesterday_today",
