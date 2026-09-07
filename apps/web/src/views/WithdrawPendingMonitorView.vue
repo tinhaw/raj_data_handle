@@ -245,6 +245,8 @@ onBeforeUnmount(clearAutoRefresh)
 }
 
 .monitor-table-card {
+  min-width: 0;
+  overflow: hidden;
   padding: 22px;
 }
 
