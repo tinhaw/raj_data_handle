@@ -104,39 +104,74 @@ TEMPLATE_VARIABLES = frozenset(
 )
 DEFAULT_TEMPLATES: dict[str, str] = {
     "threshold_opened": (
-        "<b>[远端盘口积压] {source_display_name}</b>\n"
-        "指标：{metric_label}\n当前数量：{metric_count}\n"
+        "🚨 <b>提现积压告警</b>\n"
+        "盘口：<b>{source_display_name}</b>\n"
+        "监控指标：{metric_label}\n"
+        "当前数量：<b>{metric_count}</b>\n"
         "告警条件：{comparison_label} {threshold}\n"
-        "检查时间：{checked_at_local}\n查询范围：{query_range_local}\n"
-        "事件编号：{incident_id}"
+        "待审核：{pending_audit_count}｜待审查：{pending_review_count}\n"
+        "检查时间：{checked_at_local}\n"
+        "查询范围：{query_range_local}\n"
+        "事件编号：<code>{incident_id}</code>"
     ),
     "threshold_reminder": (
-        "<b>[远端盘口积压持续] {source_display_name}</b>\n"
-        "指标：{metric_label}\n当前数量：{metric_count}\n峰值：{peak_count}\n"
-        "持续时间：{incident_duration}\n事件编号：{incident_id}"
+        "⚠️ <b>提现积压持续提醒</b>\n"
+        "盘口：<b>{source_display_name}</b>\n"
+        "监控指标：{metric_label}\n"
+        "当前数量：<b>{metric_count}</b>｜峰值：{peak_count}\n"
+        "已持续：{incident_duration}\n"
+        "检查时间：{checked_at_local}\n"
+        "事件编号：<code>{incident_id}</code>"
     ),
     "threshold_recovered": (
-        "<b>[远端盘口积压恢复] {source_display_name}</b>\n"
-        "指标：{metric_label}\n恢复时数量：{metric_count}\n峰值：{peak_count}\n"
-        "持续时间：{incident_duration}\n事件编号：{incident_id}"
+        "✅ <b>提现积压已恢复</b>\n"
+        "盘口：<b>{source_display_name}</b>\n"
+        "监控指标：{metric_label}\n"
+        "恢复时数量：{metric_count}｜事件峰值：{peak_count}\n"
+        "事件持续：{incident_duration}\n"
+        "恢复时间：{checked_at_local}\n"
+        "事件编号：<code>{incident_id}</code>"
     ),
     "source_unavailable": (
-        "<b>[远端盘口不可用] {source_display_name}</b>\n"
-        "错误：{error_code}\n说明：{safe_error_message}\n"
-        "检查时间：{checked_at_local}\n事件编号：{incident_id}"
+        "🔴 <b>远端盘口查询异常</b>\n"
+        "盘口：<b>{source_display_name}</b>\n"
+        "错误代码：{error_code}\n"
+        "错误说明：{safe_error_message}\n"
+        "检查时间：{checked_at_local}\n"
+        "事件编号：<code>{incident_id}</code>"
     ),
     "source_reminder": (
-        "<b>[远端盘口仍不可用] {source_display_name}</b>\n"
-        "错误：{error_code}\n说明：{safe_error_message}\n"
-        "持续时间：{incident_duration}\n事件编号：{incident_id}"
+        "⚠️ <b>远端盘口持续异常</b>\n"
+        "盘口：<b>{source_display_name}</b>\n"
+        "错误代码：{error_code}\n"
+        "错误说明：{safe_error_message}\n"
+        "已持续：{incident_duration}\n"
+        "检查时间：{checked_at_local}\n"
+        "事件编号：<code>{incident_id}</code>"
     ),
     "source_recovered": (
-        "<b>[远端盘口恢复] {source_display_name}</b>\n"
-        "恢复检查时间：{checked_at_local}\n事件编号：{incident_id}"
+        "🟢 <b>远端盘口查询已恢复</b>\n"
+        "盘口：<b>{source_display_name}</b>\n"
+        "恢复时间：{checked_at_local}\n"
+        "事件编号：<code>{incident_id}</code>"
     ),
-    "monitor_stale": "<b>[远端盘口监控过期] {source_display_name}</b>\n事件编号：{incident_id}",
-    "monitor_recovered": "<b>[远端盘口监控恢复] {source_display_name}</b>\n事件编号：{incident_id}",
-    "test_message": "<b>[远端盘口监控测试]</b>\n目的地：{source_display_name}",
+    "monitor_stale": (
+        "🟠 <b>盘口监控长时间未更新</b>\n"
+        "盘口：<b>{source_display_name}</b>\n"
+        "最后检查时间：{checked_at_local}\n"
+        "事件编号：<code>{incident_id}</code>"
+    ),
+    "monitor_recovered": (
+        "🟢 <b>盘口监控已恢复更新</b>\n"
+        "盘口：<b>{source_display_name}</b>\n"
+        "恢复时间：{checked_at_local}\n"
+        "事件编号：<code>{incident_id}</code>"
+    ),
+    "test_message": (
+        "✅ <b>Telegram 通知测试成功</b>\n"
+        "盘口/目的地：<b>{source_display_name}</b>\n"
+        "测试时间：{checked_at_local}"
+    ),
 }
 
 
@@ -223,6 +258,12 @@ async def get_monitor_settings(session: AsyncSession) -> RemoteMarketMonitorSett
     if template is None:
         session.add(_default_template_set())
         await session.flush()
+    elif template.is_builtin and template.templates_json != DEFAULT_TEMPLATES:
+        template.display_name = "中文默认模板"
+        template.templates_json = dict(DEFAULT_TEMPLATES)
+        template.config_version += 1
+        template.updated_at = _utc_now()
+        await session.flush()
     return row
 
 
@@ -254,6 +295,10 @@ def validate_template_map(templates: dict[str, str]) -> dict[str, str]:
             raise RemoteMarketMonitorError("通知模板格式无效。") from exc
         if not variables.issubset(TEMPLATE_VARIABLES):
             raise RemoteMarketMonitorError("通知模板包含不支持的变量。")
+        if "source_display_name" not in variables:
+            raise RemoteMarketMonitorError(
+                "每个通知模板都必须包含盘口名称占位符 {source_display_name}。"
+            )
         normalized[key] = value
     return normalized
 

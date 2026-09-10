@@ -58,7 +58,7 @@ const templateDefinitions = [
 type MonitorTemplateKey = (typeof templateDefinitions)[number]['key']
 
 const templatePlaceholders = [
-  { token: '{source_display_name}', label: '盘口名称' },
+  { token: '{source_display_name}', label: '盘口名称（必填）' },
   { token: '{source_id}', label: '盘口 ID' },
   { token: '{metric_label}', label: '指标名称' },
   { token: '{metric_name}', label: '指标代码' },
@@ -201,6 +201,14 @@ async function saveTemplateSet(): Promise<void> {
   if (emptyDefinition) {
     templateDraft.activeKey = emptyDefinition.key
     ElMessage.error(`“${emptyDefinition.label}”不能为空。`)
+    return
+  }
+  const missingMarketDefinition = templateDefinitions.find(
+    (definition) => !templateDraft.templates[definition.key].includes('{source_display_name}'),
+  )
+  if (missingMarketDefinition) {
+    templateDraft.activeKey = missingMarketDefinition.key
+    ElMessage.error(`“${missingMarketDefinition.label}”必须包含盘口名称占位符。`)
     return
   }
   const templates = Object.fromEntries(
@@ -585,7 +593,7 @@ onMounted(load)
               </el-form-item>
               <div class="template-placeholder-panel">
                 <strong>可用占位符</strong>
-                <p>点击后插入到当前光标位置，发送时会替换为实际数据。</p>
+                <p>点击后插入到当前光标位置，发送时会替换为实际数据；每个消息模板都必须保留“盘口名称”。</p>
                 <div class="template-placeholder-list">
                   <el-button v-for="placeholder in templatePlaceholders" :key="placeholder.token" size="small" plain @click="insertTemplatePlaceholder(placeholder.token)">
                     {{ placeholder.label }} <code>{{ placeholder.token }}</code>

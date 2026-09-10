@@ -61,6 +61,18 @@ def _sample(
     )
 
 
+def test_all_templates_require_market_name_placeholder() -> None:
+    assert all(
+        "{source_display_name}" in template
+        for template in monitor_service.DEFAULT_TEMPLATES.values()
+    )
+    invalid_templates = dict(monitor_service.DEFAULT_TEMPLATES)
+    invalid_templates["test_message"] = "通知测试"
+
+    with pytest.raises(monitor_service.RemoteMarketMonitorError, match="盘口名称"):
+        monitor_service.validate_template_map(invalid_templates)
+
+
 @pytest.mark.asyncio
 async def test_metric_threshold_is_debounced_and_recovery_is_notified(
     monkeypatch: pytest.MonkeyPatch,
@@ -209,7 +221,7 @@ async def test_metric_reminder_interval_starts_from_initial_alert(
         "PENDING_THRESHOLD_REMINDER",
     ]
     assert outbox[1].idempotency_key.endswith(":1")
-    assert "当前数量：14" in outbox[1].payload_json["text"]
+    assert "当前数量：<b>14</b>" in outbox[1].payload_json["text"]
     await engine.dispose()
 
 
