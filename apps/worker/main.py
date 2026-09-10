@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import socket
 
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -21,6 +23,10 @@ from packages.domain.services.reconciliation_execution_service import (
     execute_reconciliation_batch,
 )
 from packages.domain.services.remote_account_connection_service import run_due_account_relogins
+from packages.domain.services.remote_market_monitor_service import (
+    process_next_monitor_notification,
+    run_due_remote_market_monitor_checks,
+)
 from packages.domain.services.retention_cleanup_service import cleanup_expired_data
 from packages.domain.services.spin_order_refresh_service import run_due_spin_order_refreshes
 from packages.domain.services.withdraw_order_refresh_service import (
@@ -36,6 +42,8 @@ logger = logging.getLogger("raj-worker")
 # timer.  The refresh service claims source rows with a durable lease, so this
 # remains safe if a second worker is ever introduced.
 WITHDRAW_ORDER_REFRESH_POLL_SECONDS = 30
+REMOTE_MARKET_MONITOR_POLL_SECONDS = 5
+WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
 
 
 async def process_next_batch(storage: LocalFileStorage) -> bool:
@@ -102,6 +110,20 @@ async def process_due_data_dictionary_refreshes() -> int:
     return len(outcomes)
 
 
+async def process_due_remote_market_monitor_checks() -> int:
+    async with AsyncSessionLocal() as session:
+        return await run_due_remote_market_monitor_checks(
+            session,
+            worker_id=WORKER_ID,
+            settings=get_settings(),
+        )
+
+
+async def process_next_remote_market_monitor_notification() -> bool:
+    async with AsyncSessionLocal() as session:
+        return await process_next_monitor_notification(session, worker_id=WORKER_ID)
+
+
 async def run_due_withdraw_order_refresh_cycle() -> None:
     """Run one protected refresh cycle without exposing remote failure details."""
 
@@ -157,6 +179,28 @@ async def run_due_data_dictionary_refresh_cycle() -> None:
         logger.warning("data dictionary refresh cycle failed; retrying later")
 
 
+async def run_due_remote_market_monitor_cycle() -> None:
+    try:
+        completed = await process_due_remote_market_monitor_checks()
+        if completed:
+            logger.info("remote market monitor cycle processed source_count=%s", completed)
+    except SQLAlchemyError:
+        logger.warning("remote market monitor schema or database is not ready; retrying later")
+    except Exception:
+        logger.warning("remote market monitor cycle failed; retrying later")
+
+
+async def run_remote_market_monitor_notification_cycle() -> None:
+    try:
+        processed = await process_next_remote_market_monitor_notification()
+        if processed:
+            logger.info("remote market monitor notification processed")
+    except SQLAlchemyError:
+        logger.warning("remote market monitor notification database is not ready; retrying later")
+    except Exception:
+        logger.warning("remote market monitor notification cycle failed; retrying later")
+
+
 async def run_withdraw_order_refresh_loop() -> None:
     """Keep cached withdrawal orders current without blocking reconciliation work."""
 
@@ -181,6 +225,18 @@ async def run_data_dictionary_refresh_loop() -> None:
     while True:
         await run_due_data_dictionary_refresh_cycle()
         await asyncio.sleep(WITHDRAW_ORDER_REFRESH_POLL_SECONDS)
+
+
+async def run_remote_market_monitor_loop() -> None:
+    while True:
+        await run_due_remote_market_monitor_cycle()
+        await asyncio.sleep(REMOTE_MARKET_MONITOR_POLL_SECONDS)
+
+
+async def run_remote_market_monitor_notification_loop() -> None:
+    while True:
+        await run_remote_market_monitor_notification_cycle()
+        await asyncio.sleep(REMOTE_MARKET_MONITOR_POLL_SECONDS)
 
 
 async def run_remote_account_relogin_loop() -> None:
@@ -219,6 +275,14 @@ async def run() -> None:
         run_remote_account_relogin_loop(),
         name="remote-account-relogin-loop",
     )
+    remote_market_monitor_task = asyncio.create_task(
+        run_remote_market_monitor_loop(),
+        name="remote-market-monitor-loop",
+    )
+    remote_market_monitor_notification_task = asyncio.create_task(
+        run_remote_market_monitor_notification_loop(),
+        name="remote-market-monitor-notification-loop",
+    )
     try:
         while True:
             try:
@@ -250,6 +314,8 @@ async def run() -> None:
         spin_refresh_task.cancel()
         dictionary_refresh_task.cancel()
         account_relogin_task.cancel()
+        remote_market_monitor_task.cancel()
+        remote_market_monitor_notification_task.cancel()
         try:
             await refresh_task
         except asyncio.CancelledError:
@@ -268,6 +334,14 @@ async def run() -> None:
             pass
         try:
             await account_relogin_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await remote_market_monitor_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await remote_market_monitor_notification_task
         except asyncio.CancelledError:
             pass
 

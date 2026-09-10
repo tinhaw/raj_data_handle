@@ -1193,6 +1193,122 @@ export interface WithdrawPendingMonitorResponse {
   sources: WithdrawPendingMonitorSource[]
 }
 
+export type RemoteMarketMonitorMetric = 'pending_audit' | 'pending_review'
+export type RemoteMarketMonitorComparison = 'gt' | 'gte'
+export type RemoteMarketMonitorQueryWindow =
+  | 'business_today'
+  | 'business_today_and_previous_days'
+export type RemoteMarketMonitorDeliveryMode = 'record_only' | 'telegram'
+
+export interface RemoteMarketMonitorSettings {
+  monitorEnabled: boolean
+  deliveryMode: RemoteMarketMonitorDeliveryMode
+  dashboardRefreshIntervalSeconds: number
+  defaultCheckIntervalSeconds: number
+  sourceRequestTimeoutSeconds: number
+  defaultBreachConsecutiveChecks: number
+  defaultRecoveryConsecutiveChecks: number
+  sourceFailureConsecutiveChecks: number
+  defaultReminderIntervalMinutes: number
+  sourceReminderIntervalMinutes: number
+  staleAfterMultiplier: number
+  notificationMaxAttempts: number
+  checkRunRetentionDays: number
+  notificationAttemptRetentionDays: number
+  configVersion: number
+  updatedAt: string
+}
+
+export interface RemoteMarketMonitorMetricPolicy {
+  metric: RemoteMarketMonitorMetric
+  enabled: boolean
+  comparison: RemoteMarketMonitorComparison
+  threshold: number
+  recoveryThreshold: number
+  breachConsecutiveChecks: number
+  recoveryConsecutiveChecks: number
+  reminderIntervalMinutes: number | null
+}
+
+export interface RemoteMarketMonitorTarget {
+  sourceId: string
+  sourceDisplayName: string
+  businessTimezone: string
+  sourceEnabled: boolean
+  enabled: boolean
+  checkIntervalSeconds: number
+  queryWindowMode: RemoteMarketMonitorQueryWindow
+  previousDays: number
+  sourceFailureConsecutiveChecks: number | null
+  sourceReminderIntervalMinutes: number | null
+  destinationIds: string[]
+  policies: RemoteMarketMonitorMetricPolicy[]
+  nextCheckAt: string | null
+  lastCheckAt: string | null
+  lastSuccessAt: string | null
+  lastPendingAuditCount: number | null
+  lastPendingReviewCount: number | null
+  sourceHealth: string
+  consecutiveSourceFailureCount: number
+  lastErrorCode: string | null
+  lastSafeErrorMessage: string | null
+}
+
+export interface RemoteMarketMonitorTargetUpdate {
+  enabled: boolean
+  checkIntervalSeconds: number
+  queryWindowMode: RemoteMarketMonitorQueryWindow
+  previousDays: number
+  sourceFailureConsecutiveChecks: number | null
+  sourceReminderIntervalMinutes: number | null
+  destinationIds: string[]
+  policies: RemoteMarketMonitorMetricPolicy[]
+}
+
+export interface RemoteMarketMonitorOverview {
+  generatedAt: string
+  settings: RemoteMarketMonitorSettings
+  targets: RemoteMarketMonitorTarget[]
+  openIncidentCount: number
+  pendingOutboxCount: number
+}
+
+export interface RemoteMarketMonitorCheckRun {
+  id: string
+  sourceId: string
+  runMode: string
+  status: string
+  pendingAuditCount: number | null
+  pendingReviewCount: number | null
+  queryRangeStart: string | null
+  queryRangeEnd: string | null
+  startedAt: string
+  finishedAt: string
+  latencyMs: number | null
+  errorCode: string | null
+  safeErrorMessage: string | null
+}
+
+export interface MonitorNotificationDestination {
+  id: string
+  displayName: string
+  channel: string
+  enabled: boolean
+  templateSetId: string
+  botTokenConfigured: boolean
+  chatIdConfigured: boolean
+  updatedAt: string
+}
+
+export interface MonitorNotificationTemplateSet {
+  id: string
+  displayName: string
+  templates: Record<string, string>
+  isBuiltin: boolean
+  configVersion: number
+  updatedAt: string
+}
+
 export interface WithdrawChannelSummaryItem {
   date: string
   payChannel: string

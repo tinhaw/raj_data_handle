@@ -172,9 +172,9 @@ onBeforeUnmount(() => {
             <el-icon><Wallet /></el-icon>
             <template #title>提现订单</template>
           </el-menu-item>
-          <el-menu-item index="/withdraw-pending-monitor">
+          <el-menu-item index="/remote-market-monitor">
             <el-icon><DataAnalysis /></el-icon>
-            <template #title>待处理提现监控</template>
+            <template #title>远端盘口监控</template>
           </el-menu-item>
           <el-menu-item index="/spin-orders">
             <el-icon><Present /></el-icon>

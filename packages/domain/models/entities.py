@@ -695,6 +695,256 @@ class SourceConfig(Base):
     )
 
 
+class RemoteMarketMonitorSetting(Base):
+    """Singleton defaults and safe rollout controls for remote-market monitoring."""
+
+    __tablename__ = "remote_market_monitor_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    monitor_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    delivery_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="record_only")
+    dashboard_refresh_interval_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=30
+    )
+    default_check_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    source_request_timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
+    default_breach_consecutive_checks: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=2
+    )
+    default_recovery_consecutive_checks: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=2
+    )
+    source_failure_consecutive_checks: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=2
+    )
+    default_reminder_interval_minutes: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=10
+    )
+    source_reminder_interval_minutes: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=15
+    )
+    stale_after_multiplier: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    notification_max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    check_run_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    notification_attempt_retention_days: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=90
+    )
+    config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class RemoteMarketMonitorTargetSetting(Base):
+    """One monitoring configuration bound to the existing market master row."""
+
+    __tablename__ = "remote_market_monitor_target_settings"
+
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="RESTRICT"), primary_key=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    check_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    query_window_mode: Mapped[str] = mapped_column(
+        String(48), nullable=False, default="business_today"
+    )
+    previous_days: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    source_failure_consecutive_checks: Mapped[int | None] = mapped_column(Integer)
+    source_reminder_interval_minutes: Mapped[int | None] = mapped_column(Integer)
+    next_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class RemoteMarketMonitorMetricPolicy(Base):
+    """Threshold policy for one monitored metric of a market."""
+
+    __tablename__ = "remote_market_monitor_metric_policies"
+
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="RESTRICT"), primary_key=True
+    )
+    metric: Mapped[str] = mapped_column(String(40), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    comparison: Mapped[str] = mapped_column(String(8), nullable=False, default="gt")
+    threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    recovery_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=90)
+    breach_consecutive_checks: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    recovery_consecutive_checks: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    reminder_interval_minutes: Mapped[int | None] = mapped_column(Integer)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class MonitorNotificationTemplateSet(Base):
+    __tablename__ = "monitor_notification_template_sets"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    templates_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    is_builtin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class MonitorNotificationDestination(Base):
+    __tablename__ = "monitor_notification_destinations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    channel: Mapped[str] = mapped_column(String(20), nullable=False, default="telegram")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    bot_token_secret_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    chat_id_secret_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    template_set_id: Mapped[str] = mapped_column(
+        ForeignKey("monitor_notification_template_sets.id", ondelete="RESTRICT"),
+        nullable=False,
+        default="default-zh",
+    )
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class RemoteMarketMonitorTargetDestination(Base):
+    __tablename__ = "remote_market_monitor_target_destinations"
+
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="RESTRICT"), primary_key=True
+    )
+    destination_id: Mapped[str] = mapped_column(
+        ForeignKey("monitor_notification_destinations.id", ondelete="RESTRICT"), primary_key=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
+class RemoteMarketMonitorState(Base):
+    __tablename__ = "remote_market_monitor_states"
+
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="RESTRICT"), primary_key=True
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(120))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_pending_audit_count: Mapped[int | None] = mapped_column(Integer)
+    last_pending_review_count: Mapped[int | None] = mapped_column(Integer)
+    source_health: Mapped[str] = mapped_column(String(20), nullable=False, default="healthy")
+    consecutive_source_failure_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    last_safe_error_message: Mapped[str | None] = mapped_column(String(500))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class RemoteMarketMonitorCheckRun(Base):
+    __tablename__ = "remote_market_monitor_check_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    run_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="automatic")
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    pending_audit_count: Mapped[int | None] = mapped_column(Integer)
+    pending_review_count: Mapped[int | None] = mapped_column(Integer)
+    query_range_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    query_range_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    safe_error_message: Mapped[str | None] = mapped_column(String(500))
+
+
+class RemoteMarketMonitorIncident(Base):
+    __tablename__ = "remote_market_monitor_incidents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_configs.source_id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    metric: Mapped[str] = mapped_column(String(40), nullable=False)
+    incident_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open", index=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    opening_count: Mapped[int | None] = mapped_column(Integer)
+    latest_count: Mapped[int | None] = mapped_column(Integer)
+    peak_count: Mapped[int | None] = mapped_column(Integer)
+    consecutive_hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    consecutive_recovery_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class MonitorNotificationOutbox(Base):
+    __tablename__ = "monitor_notification_outbox"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    incident_id: Mapped[str | None] = mapped_column(
+        ForeignKey("remote_market_monitor_incidents.id", ondelete="SET NULL"), index=True
+    )
+    destination_id: Mapped[str] = mapped_column(
+        ForeignKey("monitor_notification_destinations.id", ondelete="RESTRICT"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(300), nullable=False, unique=True)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    lease_owner: Mapped[str | None] = mapped_column(String(120))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
+class MonitorNotificationAttempt(Base):
+    __tablename__ = "monitor_notification_attempts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    outbox_id: Mapped[str] = mapped_column(
+        ForeignKey("monitor_notification_outbox.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    telegram_message_id: Mapped[str | None] = mapped_column(String(120))
+    safe_error_message: Mapped[str | None] = mapped_column(String(500))
+
+
 class RemoteAccount(Base):
     """One remote login account belonging to a unified analysis/ERP market.
 

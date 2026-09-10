@@ -1,17 +1,28 @@
 <script setup lang="ts">
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 
 import { apiErrorMessage } from '../api/client'
 import {
   fetchRetentionSettings,
   updateRetentionSettings,
 } from '../api/systemSettings'
+import {
+  createMonitorNotificationDestination,
+  createMonitorNotificationTemplateSet,
+  fetchMonitorNotificationDestinations,
+  fetchMonitorNotificationTemplateSets,
+  fetchRemoteMarketMonitorSettings,
+  updateRemoteMarketMonitorSettings,
+} from '../api/remoteMarketMonitor'
 import { isAdmin } from '../stores/auth'
 import type {
   ChargeOrderExportDateMode,
+  MonitorNotificationDestination,
+  MonitorNotificationTemplateSet,
   RetentionSettings,
+  RemoteMarketMonitorSettings,
   SpinOrderQueryRange,
   SpinOrderRefreshIntervalHours,
   SpinOrderRefreshPageSize,
@@ -24,6 +35,67 @@ import { formatDateTime } from '../ui'
 const loading = ref(false)
 const saving = ref(false)
 const current = ref<RetentionSettings | null>(null)
+const monitorSettings = ref<RemoteMarketMonitorSettings | null>(null)
+const savingMonitorSettings = ref(false)
+const notificationDestinations = ref<MonitorNotificationDestination[]>([])
+const notificationTemplateSets = ref<MonitorNotificationTemplateSet[]>([])
+const savingNotificationConfiguration = ref(false)
+const destinationDraft = reactive({
+  displayName: '', enabled: true, botTokenSecretRef: '', chatIdSecretRef: '', templateSetId: 'default-zh',
+})
+
+const templateDefinitions = [
+  { key: 'threshold_opened', label: '超阈值首次告警', description: '连续超阈值达到设定次数时发送。' },
+  { key: 'threshold_reminder', label: '超阈值重复告警', description: '告警未恢复时，按重复告警间隔发送。' },
+  { key: 'threshold_recovered', label: '积压恢复通知', description: '数量连续恢复到恢复阈值后发送。' },
+  { key: 'source_unavailable', label: '数据源异常告警', description: '远端查询连续失败达到设定次数时发送。' },
+  { key: 'source_reminder', label: '数据源异常重复告警', description: '数据源持续不可用时，按异常提醒间隔发送。' },
+  { key: 'source_recovered', label: '数据源恢复通知', description: '远端查询恢复成功后发送。' },
+  { key: 'monitor_stale', label: '监控过期告警', description: '盘口超过预期时间未完成检查时使用。' },
+  { key: 'monitor_recovered', label: '监控恢复通知', description: '过期的盘口监控恢复运行时使用。' },
+  { key: 'test_message', label: '测试消息', description: '测试 Telegram 目的地时使用。' },
+] as const
+type MonitorTemplateKey = (typeof templateDefinitions)[number]['key']
+
+const templatePlaceholders = [
+  { token: '{source_display_name}', label: '盘口名称' },
+  { token: '{source_id}', label: '盘口 ID' },
+  { token: '{metric_label}', label: '指标名称' },
+  { token: '{metric_name}', label: '指标代码' },
+  { token: '{metric_count}', label: '当前数量' },
+  { token: '{pending_audit_count}', label: '待审核数量' },
+  { token: '{pending_review_count}', label: '待审查数量' },
+  { token: '{comparison_label}', label: '比较符号' },
+  { token: '{threshold}', label: '告警阈值' },
+  { token: '{recovery_threshold}', label: '恢复阈值' },
+  { token: '{checked_at_local}', label: '检查时间' },
+  { token: '{query_range_local}', label: '查询范围' },
+  { token: '{incident_id}', label: '事件编号' },
+  { token: '{incident_started_at_local}', label: '事件开始时间' },
+  { token: '{incident_duration}', label: '持续时间' },
+  { token: '{peak_count}', label: '峰值数量' },
+  { token: '{error_code}', label: '错误代码' },
+  { token: '{safe_error_message}', label: '错误说明' },
+] as const
+
+function emptyTemplateMap(): Record<MonitorTemplateKey, string> {
+  return Object.fromEntries(templateDefinitions.map((item) => [item.key, ''])) as Record<MonitorTemplateKey, string>
+}
+
+const templateDraft = reactive({
+  id: '',
+  displayName: '',
+  activeKey: 'threshold_opened' as MonitorTemplateKey,
+  templates: emptyTemplateMap(),
+})
+const templateTextareaRef = ref<{ textarea?: HTMLTextAreaElement } | null>(null)
+const activeTemplateText = computed({
+  get: () => templateDraft.templates[templateDraft.activeKey],
+  set: (value: string) => { templateDraft.templates[templateDraft.activeKey] = value },
+})
+const activeTemplateDefinition = computed(
+  () => templateDefinitions.find((item) => item.key === templateDraft.activeKey)!,
+)
 const form = reactive({
   uploadedFileRetentionDays: 3,
   resultRetentionDays: 30,
@@ -74,10 +146,90 @@ async function load(): Promise<void> {
   loading.value = true
   try {
     applySettings(await fetchRetentionSettings())
+    monitorSettings.value = await fetchRemoteMarketMonitorSettings()
+    notificationDestinations.value = await fetchMonitorNotificationDestinations()
+    notificationTemplateSets.value = await fetchMonitorNotificationTemplateSets()
+    if (Object.values(templateDraft.templates).every((value) => !value)) {
+      copyTemplateSet('default-zh', false)
+    }
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '系统配置加载失败。'))
   } finally {
     loading.value = false
+  }
+}
+
+function copyTemplateSet(templateSetId: string, showMessage = true): void {
+  const templateSet = notificationTemplateSets.value.find((item) => item.id === templateSetId)
+  if (!templateSet) return
+  for (const definition of templateDefinitions) {
+    templateDraft.templates[definition.key] = templateSet.templates[definition.key] || ''
+  }
+  templateDraft.activeKey = 'threshold_opened'
+  if (showMessage) ElMessage.success(`已载入“${templateSet.displayName}”，请填写新模板集 ID 和名称。`)
+}
+
+async function insertTemplatePlaceholder(token: string): Promise<void> {
+  const textarea = templateTextareaRef.value?.textarea
+  const value = activeTemplateText.value
+  const start = textarea?.selectionStart ?? value.length
+  const end = textarea?.selectionEnd ?? start
+  activeTemplateText.value = `${value.slice(0, start)}${token}${value.slice(end)}`
+  await nextTick()
+  templateTextareaRef.value?.textarea?.focus()
+  templateTextareaRef.value?.textarea?.setSelectionRange(start + token.length, start + token.length)
+}
+
+async function saveNotificationDestination(): Promise<void> {
+  savingNotificationConfiguration.value = true
+  try {
+    await createMonitorNotificationDestination(destinationDraft)
+    Object.assign(destinationDraft, { displayName: '', botTokenSecretRef: '', chatIdSecretRef: '' })
+    notificationDestinations.value = await fetchMonitorNotificationDestinations()
+    ElMessage.success('Telegram 通知目的地已添加。')
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, 'Telegram 通知目的地保存失败。'))
+  } finally {
+    savingNotificationConfiguration.value = false
+  }
+}
+
+async function saveTemplateSet(): Promise<void> {
+  const emptyDefinition = templateDefinitions.find(
+    (definition) => !templateDraft.templates[definition.key].trim(),
+  )
+  if (emptyDefinition) {
+    templateDraft.activeKey = emptyDefinition.key
+    ElMessage.error(`“${emptyDefinition.label}”不能为空。`)
+    return
+  }
+  const templates = Object.fromEntries(
+    templateDefinitions.map((definition) => [definition.key, templateDraft.templates[definition.key]]),
+  )
+  savingNotificationConfiguration.value = true
+  try {
+    await createMonitorNotificationTemplateSet({ id: templateDraft.id, displayName: templateDraft.displayName, templates })
+    Object.assign(templateDraft, { id: '', displayName: '', activeKey: 'threshold_opened', templates: emptyTemplateMap() })
+    notificationTemplateSets.value = await fetchMonitorNotificationTemplateSets()
+    copyTemplateSet('default-zh', false)
+    ElMessage.success('通知模板集已创建。')
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '通知模板集保存失败。'))
+  } finally {
+    savingNotificationConfiguration.value = false
+  }
+}
+
+async function saveMonitorSettings(): Promise<void> {
+  if (!monitorSettings.value) return
+  savingMonitorSettings.value = true
+  try {
+    monitorSettings.value = await updateRemoteMarketMonitorSettings(monitorSettings.value)
+    ElMessage.success('远端盘口监控全局设置已保存。')
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '远端盘口监控全局设置保存失败。'))
+  } finally {
+    savingMonitorSettings.value = false
   }
 }
 
@@ -317,8 +469,8 @@ onMounted(load)
 
       <section class="settings-section">
         <div class="settings-section-heading">
-          <h2>待处理提现监控</h2>
-          <p>监控页打开期间按设置直接读取各盘口的汇总接口；不写入订单缓存，也不保留远端响应。</p>
+          <h2>旧版提现汇总查询（兼容）</h2>
+          <p>仅保留给旧版接口和已打开的旧页面；新的远端盘口监控不读取此处配置。</p>
         </div>
         <el-form label-position="top">
           <div class="form-grid">
@@ -348,6 +500,102 @@ onMounted(load)
             </el-form-item>
           </div>
         </el-form>
+      </section>
+
+      <section v-if="monitorSettings" class="settings-section">
+        <div class="settings-section-heading">
+          <h2>远端盘口监控全局策略</h2>
+          <p>控制后台 Worker、默认告警行为与 Telegram 投递模式；各盘口阈值和群路由在“远端盘口监控”页面单独维护。</p>
+        </div>
+        <el-form label-position="top">
+          <div class="form-grid">
+            <el-form-item label="启用后台监控">
+              <el-switch v-model="monitorSettings.monitorEnabled" :disabled="!isAdmin" />
+              <span class="field-help">默认关闭；启用后仅运行已在盘口策略中启用的目标。</span>
+            </el-form-item>
+            <el-form-item label="通知投递模式">
+              <el-select v-model="monitorSettings.deliveryMode" :disabled="!isAdmin">
+                <el-option label="仅记录（灰度，不发送 Telegram）" value="record_only" />
+                <el-option label="Telegram 投递" value="telegram" />
+              </el-select>
+              <span class="field-help">建议先保持仅记录，核对 24 小时后再切换为真实投递。</span>
+            </el-form-item>
+            <el-form-item label="页面数据显示刷新间隔（秒）">
+              <el-input-number v-model="monitorSettings.dashboardRefreshIntervalSeconds" :min="5" :max="300" :disabled="!isAdmin" />
+              <span class="field-help">只刷新本页面展示的数据，不查询远端，也不会触发 Telegram 告警。</span>
+            </el-form-item>
+            <el-form-item label="新盘口默认远端查询间隔（秒）">
+              <el-input-number v-model="monitorSettings.defaultCheckIntervalSeconds" :min="30" :max="3600" :disabled="!isAdmin" />
+              <span class="field-help">决定后台多久查询一次待审核和待审查数量。</span>
+            </el-form-item>
+            <el-form-item label="远端监控请求超时（秒）">
+              <el-input-number v-model="monitorSettings.sourceRequestTimeoutSeconds" :min="5" :max="120" :disabled="!isAdmin" />
+            </el-form-item>
+            <el-form-item label="默认连续超阈值次数">
+              <el-input-number v-model="monitorSettings.defaultBreachConsecutiveChecks" :min="1" :max="20" :disabled="!isAdmin" />
+            </el-form-item>
+            <el-form-item label="默认连续恢复次数">
+              <el-input-number v-model="monitorSettings.defaultRecoveryConsecutiveChecks" :min="1" :max="20" :disabled="!isAdmin" />
+            </el-form-item>
+            <el-form-item label="超阈值重复告警间隔（分钟）">
+              <el-input-number v-model="monitorSettings.defaultReminderIntervalMinutes" :min="1" :max="1440" :disabled="!isAdmin" />
+              <span class="field-help">首次告警后若仍未恢复，才按此间隔再次发送；与页面刷新、远端查询间隔无关。</span>
+            </el-form-item>
+            <el-form-item label="源异常连续次数">
+              <el-input-number v-model="monitorSettings.sourceFailureConsecutiveChecks" :min="1" :max="20" :disabled="!isAdmin" />
+            </el-form-item>
+            <el-form-item label="数据源异常重复告警间隔（分钟）">
+              <el-input-number v-model="monitorSettings.sourceReminderIntervalMinutes" :min="1" :max="1440" :disabled="!isAdmin" />
+              <span class="field-help">只控制远端接口持续不可用时的重复 Telegram 告警。</span>
+            </el-form-item>
+          </div>
+          <el-button v-if="isAdmin" type="primary" :loading="savingMonitorSettings" @click="saveMonitorSettings">保存监控全局策略</el-button>
+        </el-form>
+      </section>
+
+      <section v-if="monitorSettings" class="settings-section">
+        <div class="settings-section-heading"><h2>Telegram 通知目的地与模板</h2><p>只保存运行时环境变量引用，不保存或展示 Bot Token、Chat ID 的实际值。模板按消息类型分别编辑，可点击插入占位符，无需编写 JSON。</p></div>
+        <div class="notification-config-grid">
+          <section>
+            <h3>已配置目的地</h3>
+            <el-empty v-if="!notificationDestinations.length" description="尚未配置 Telegram 通知目的地" :image-size="72" />
+            <div v-for="destination in notificationDestinations" :key="destination.id" class="notification-config-item"><strong>{{ destination.displayName }}</strong><span>{{ destination.enabled ? '已启用' : '已停用' }} · 模板：{{ destination.templateSetId }}</span><span>Bot Token {{ destination.botTokenConfigured ? '已引用' : '未配置' }} · Chat ID {{ destination.chatIdConfigured ? '已引用' : '未配置' }}</span></div>
+            <el-form v-if="isAdmin" label-position="top" class="notification-draft">
+              <el-form-item label="目的地名称"><el-input v-model="destinationDraft.displayName" placeholder="例如：运营告警群" /></el-form-item>
+              <el-form-item label="Bot Token 密钥引用"><el-input v-model="destinationDraft.botTokenSecretRef" placeholder="env://OPS_TELEGRAM_BOT_TOKEN" /></el-form-item>
+              <el-form-item label="Chat ID 密钥引用"><el-input v-model="destinationDraft.chatIdSecretRef" placeholder="env://OPS_PRIMARY_CHAT_ID" /></el-form-item>
+              <el-form-item label="通知模板集"><el-select v-model="destinationDraft.templateSetId"><el-option v-for="templateSet in notificationTemplateSets" :key="templateSet.id" :label="templateSet.displayName" :value="templateSet.id" /></el-select></el-form-item>
+              <el-button type="primary" :loading="savingNotificationConfiguration" @click="saveNotificationDestination">添加通知目的地</el-button>
+            </el-form>
+          </section>
+          <section>
+            <h3>模板集</h3>
+            <div v-for="templateSet in notificationTemplateSets" :key="templateSet.id" class="notification-config-item"><strong>{{ templateSet.displayName }}</strong><span>{{ templateSet.id }} · {{ templateSet.isBuiltin ? '内置只读' : '自定义' }}</span><el-button v-if="isAdmin" link type="primary" @click="copyTemplateSet(templateSet.id)">以此模板创建副本</el-button></div>
+            <el-form v-if="isAdmin" label-position="top" class="notification-draft">
+              <el-form-item label="新模板集 ID"><el-input v-model="templateDraft.id" placeholder="ops-zh" /></el-form-item>
+              <el-form-item label="新模板集名称"><el-input v-model="templateDraft.displayName" placeholder="运营中文模板" /></el-form-item>
+              <el-form-item label="消息类型">
+                <el-select v-model="templateDraft.activeKey">
+                  <el-option v-for="definition in templateDefinitions" :key="definition.key" :label="definition.label" :value="definition.key" />
+                </el-select>
+                <span class="field-help">{{ activeTemplateDefinition.description }}</span>
+              </el-form-item>
+              <el-form-item :label="activeTemplateDefinition.label">
+                <el-input ref="templateTextareaRef" v-model="activeTemplateText" type="textarea" :rows="8" placeholder="输入要发送到 Telegram 的消息内容，并从下方插入占位符。" />
+              </el-form-item>
+              <div class="template-placeholder-panel">
+                <strong>可用占位符</strong>
+                <p>点击后插入到当前光标位置，发送时会替换为实际数据。</p>
+                <div class="template-placeholder-list">
+                  <el-button v-for="placeholder in templatePlaceholders" :key="placeholder.token" size="small" plain @click="insertTemplatePlaceholder(placeholder.token)">
+                    {{ placeholder.label }} <code>{{ placeholder.token }}</code>
+                  </el-button>
+                </div>
+              </div>
+              <el-button type="primary" :loading="savingNotificationConfiguration" @click="saveTemplateSet">创建模板集</el-button>
+            </el-form>
+          </section>
+        </div>
       </section>
 
       <section class="settings-section">
@@ -510,6 +758,72 @@ onMounted(load)
 
 .settings-card :deep(.el-select) {
   width: 100%;
+}
+
+.notification-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 28px;
+}
+
+.notification-config-grid h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+
+.notification-config-item {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.notification-config-item span {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.notification-draft {
+  margin-top: 16px;
+}
+
+.template-placeholder-panel {
+  margin: -2px 0 18px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+
+.template-placeholder-panel > strong {
+  font-size: 13px;
+}
+
+.template-placeholder-panel > p {
+  margin: 4px 0 10px;
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.template-placeholder-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.template-placeholder-list .el-button {
+  margin: 0;
+}
+
+.template-placeholder-list code {
+  margin-left: 4px;
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .notification-config-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .settings-footer {

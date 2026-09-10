@@ -23,6 +23,12 @@ from apps.api.routers.erp_reports import router as erp_reports_router
 from apps.api.routers.notifications import router as notifications_router
 from apps.api.routers.payment_templates import router as payment_templates_router
 from apps.api.routers.remote_accounts import router as remote_accounts_router
+from apps.api.routers.remote_market_monitor import (
+    router as remote_market_monitor_router,
+)
+from apps.api.routers.remote_market_monitor import (
+    system_router as remote_market_monitor_system_router,
+)
 from apps.api.routers.sources import router as sources_router
 from apps.api.routers.spin_orders import router as spin_orders_router
 from apps.api.routers.sync_logs import router as sync_logs_router
@@ -70,6 +76,8 @@ async def request_id_middleware(request: Request, call_next):
         return response
     finally:
         reset_request_id(token)
+
+
 app.include_router(auth_router, prefix=settings.api_prefix)
 app.include_router(sources_router, prefix=settings.api_prefix)
 app.include_router(system_settings_router, prefix=settings.api_prefix)
@@ -86,6 +94,8 @@ app.include_router(erp_reports_router, prefix=settings.api_prefix)
 app.include_router(erp_redemption_router, prefix=settings.api_prefix)
 app.include_router(remote_accounts_router, prefix=settings.api_prefix)
 app.include_router(payment_templates_router, prefix=settings.api_prefix)
+app.include_router(remote_market_monitor_router, prefix=settings.api_prefix)
+app.include_router(remote_market_monitor_system_router, prefix=settings.api_prefix)
 app.include_router(batches_router, prefix=settings.api_prefix)
 app.include_router(notifications_router, prefix=settings.api_prefix)
 app.include_router(withdraw_orders_router, prefix=settings.api_prefix)

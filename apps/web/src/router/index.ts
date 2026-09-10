@@ -186,10 +186,11 @@ const router = createRouter({
       component: () => import('../views/WithdrawOrdersView.vue'),
       meta: { navKey: '/withdraw-orders' },
     },
+    { path: '/withdraw-pending-monitor', redirect: '/remote-market-monitor' },
     {
-      path: '/withdraw-pending-monitor',
+      path: '/remote-market-monitor',
       component: () => import('../views/WithdrawPendingMonitorView.vue'),
-      meta: { navKey: '/withdraw-pending-monitor' },
+      meta: { navKey: '/remote-market-monitor', title: '远端盘口监控' },
     },
     {
       path: '/spin-orders',
