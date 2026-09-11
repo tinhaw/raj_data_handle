@@ -2,6 +2,7 @@ import { api } from './client'
 
 import type {
   MonitorNotificationDestination,
+  MonitorNotificationDestinationTestResult,
   MonitorNotificationTemplateSet,
   RemoteMarketMonitorCheckRun,
   RemoteMarketMonitorOverview,
@@ -54,14 +55,26 @@ export async function fetchMonitorNotificationDestinations(): Promise<
 export async function createMonitorNotificationDestination(payload: {
   displayName: string
   enabled: boolean
-  botTokenSecretRef: string
-  chatIdSecretRef: string
+  botToken: string
+  chatId: string
   templateSetId: string
 }): Promise<MonitorNotificationDestination> {
   return (
     await api.post<MonitorNotificationDestination>(
       '/system-settings/monitor-notification-destinations',
       payload,
+    )
+  ).data
+}
+
+export async function testMonitorNotificationDestination(
+  destinationId: string,
+  sourceId: string,
+): Promise<MonitorNotificationDestinationTestResult> {
+  return (
+    await api.post<MonitorNotificationDestinationTestResult>(
+      `/system-settings/monitor-notification-destinations/${destinationId}/test`,
+      { sourceId },
     )
   ).data
 }

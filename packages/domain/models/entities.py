@@ -806,8 +806,12 @@ class MonitorNotificationDestination(Base):
     display_name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
     channel: Mapped[str] = mapped_column(String(20), nullable=False, default="telegram")
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    bot_token_secret_ref: Mapped[str] = mapped_column(String(200), nullable=False)
-    chat_id_secret_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    # New destinations keep both Telegram values in one encrypted envelope.
+    # The legacy env references remain nullable for existing installations.
+    encrypted_credentials: Mapped[str | None] = mapped_column(Text)
+    credential_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    bot_token_secret_ref: Mapped[str | None] = mapped_column(String(200))
+    chat_id_secret_ref: Mapped[str | None] = mapped_column(String(200))
     template_set_id: Mapped[str] = mapped_column(
         ForeignKey("monitor_notification_template_sets.id", ondelete="RESTRICT"),
         nullable=False,

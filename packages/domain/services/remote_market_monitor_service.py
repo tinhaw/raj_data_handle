@@ -13,12 +13,18 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from string import Formatter
+from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from packages.common.security import (
+    SecurityValidationError,
+    decrypt_credentials,
+    encrypt_credentials,
+)
 from packages.common.settings import Settings, get_settings
 from packages.domain.models import (
     MonitorNotificationAttempt,
@@ -407,8 +413,12 @@ def _destination_response_values(destination: MonitorNotificationDestination) ->
         "channel": destination.channel,
         "enabled": destination.enabled,
         "template_set_id": destination.template_set_id,
-        "bot_token_configured": bool(destination.bot_token_secret_ref),
-        "chat_id_configured": bool(destination.chat_id_secret_ref),
+        "bot_token_configured": bool(
+            destination.encrypted_credentials or destination.bot_token_secret_ref
+        ),
+        "chat_id_configured": bool(
+            destination.encrypted_credentials or destination.chat_id_secret_ref
+        ),
         "updated_at": destination.updated_at,
     }
 
@@ -426,18 +436,55 @@ async def list_notification_destinations(
     )
 
 
+def _encrypt_destination_credentials(
+    *,
+    destination_id: str,
+    credential_version: int,
+    bot_token: str,
+    chat_id: str,
+    settings: Settings | None = None,
+) -> str:
+    try:
+        return encrypt_credentials(
+            {"bot_token": bot_token.strip(), "chat_id": chat_id.strip()},
+            source_id=f"monitor-notification-destination:{destination_id}",
+            credential_version=credential_version,
+            settings=settings,
+        )
+    except SecurityValidationError as exc:
+        raise RemoteMarketMonitorError(
+            "Telegram 凭据无法安全保存，请检查系统加密密钥配置。"
+        ) from exc
+
+
 async def create_notification_destination(
     session: AsyncSession,
     *,
     payload: MonitorNotificationDestinationCreateRequest,
     actor_user_id: int,
+    settings: Settings | None = None,
 ) -> MonitorNotificationDestination:
     await get_monitor_settings(session)
     if await session.get(MonitorNotificationTemplateSet, payload.template_set_id) is None:
         raise RemoteMarketMonitorError("通知模板集不存在。")
+    destination_id = str(uuid4())
+    encrypted_credentials: str | None = None
+    credential_version = 0
+    if payload.bot_token is not None and payload.chat_id is not None:
+        credential_version = 1
+        encrypted_credentials = _encrypt_destination_credentials(
+            destination_id=destination_id,
+            credential_version=credential_version,
+            bot_token=payload.bot_token.get_secret_value(),
+            chat_id=payload.chat_id.get_secret_value(),
+            settings=settings,
+        )
     destination = MonitorNotificationDestination(
+        id=destination_id,
         display_name=payload.display_name.strip(),
         enabled=payload.enabled,
+        encrypted_credentials=encrypted_credentials,
+        credential_version=credential_version,
         bot_token_secret_ref=payload.bot_token_secret_ref,
         chat_id_secret_ref=payload.chat_id_secret_ref,
         template_set_id=payload.template_set_id,
@@ -464,6 +511,7 @@ async def update_notification_destination(
     destination_id: str,
     payload: MonitorNotificationDestinationUpdateRequest,
     actor_user_id: int,
+    settings: Settings | None = None,
 ) -> MonitorNotificationDestination:
     destination = await session.get(MonitorNotificationDestination, destination_id)
     if destination is None:
@@ -475,8 +523,34 @@ async def update_notification_destination(
         is None
     ):
         raise RemoteMarketMonitorError("通知模板集不存在。")
+    direct_credentials = payload.bot_token is not None and payload.chat_id is not None
+    reference_credentials = (
+        payload.bot_token_secret_ref is not None and payload.chat_id_secret_ref is not None
+    )
+    credential_field_names = {
+        "bot_token",
+        "chat_id",
+        "bot_token_secret_ref",
+        "chat_id_secret_ref",
+    }
     for name, value in values.items():
-        setattr(destination, name, value.strip() if isinstance(value, str) else value)
+        if name not in credential_field_names:
+            setattr(destination, name, value.strip() if isinstance(value, str) else value)
+    if direct_credentials:
+        destination.credential_version += 1
+        destination.encrypted_credentials = _encrypt_destination_credentials(
+            destination_id=destination.id,
+            credential_version=destination.credential_version,
+            bot_token=payload.bot_token.get_secret_value(),
+            chat_id=payload.chat_id.get_secret_value(),
+            settings=settings,
+        )
+        destination.bot_token_secret_ref = None
+        destination.chat_id_secret_ref = None
+    elif reference_credentials:
+        destination.encrypted_credentials = None
+        destination.bot_token_secret_ref = payload.bot_token_secret_ref
+        destination.chat_id_secret_ref = payload.chat_id_secret_ref
     destination.updated_by = actor_user_id
     destination.updated_at = _utc_now()
     session.add(
@@ -485,7 +559,12 @@ async def update_notification_destination(
             action="remote_market_monitor.destination.update",
             target_type="monitor_notification_destination",
             target_id=destination.id,
-            metadata_json={"changed": sorted(values)},
+            metadata_json={
+                "changed": sorted(
+                    "telegram_credentials" if name in credential_field_names else name
+                    for name in values
+                )
+            },
         )
     )
     await session.commit()
@@ -1537,6 +1616,107 @@ def _resolve_env_secret(reference: str) -> str | None:
     return value.strip() if value and value.strip() else None
 
 
+def _resolve_destination_credentials(
+    destination: MonitorNotificationDestination,
+    *,
+    settings: Settings | None = None,
+) -> tuple[str, str] | None:
+    if destination.encrypted_credentials:
+        try:
+            values = decrypt_credentials(
+                destination.encrypted_credentials,
+                source_id=f"monitor-notification-destination:{destination.id}",
+                credential_version=destination.credential_version,
+                settings=settings,
+            )
+        except SecurityValidationError:
+            return None
+        token = values.get("bot_token", "").strip()
+        chat_id = values.get("chat_id", "").strip()
+    else:
+        token = _resolve_env_secret(destination.bot_token_secret_ref or "") or ""
+        chat_id = _resolve_env_secret(destination.chat_id_secret_ref or "") or ""
+    return (token, chat_id) if token and chat_id else None
+
+
+async def test_notification_destination(
+    session: AsyncSession,
+    *,
+    destination_id: str,
+    source_id: str,
+    actor_user_id: int,
+    settings: Settings | None = None,
+) -> dict[str, str | bool | None]:
+    """Send one explicit Telegram test message for a selected market."""
+
+    destination = await session.get(MonitorNotificationDestination, destination_id)
+    if destination is None:
+        raise RemoteMarketMonitorError("Telegram 通知目的地不存在。")
+    source = await _get_source(session, source_id)
+    credentials = _resolve_destination_credentials(destination, settings=settings)
+    if credentials is None:
+        raise RemoteMarketMonitorError("Telegram Bot Token 或 Chat ID 未配置或无法解密。")
+    now = _utc_now()
+    context: dict[str, object] = {key: "—" for key in TEMPLATE_VARIABLES}
+    context.update(
+        {
+            "source_display_name": source.display_name,
+            "source_id": source.source_id,
+            "checked_at_local": _format_context_time(now, source.business_timezone),
+        }
+    )
+    text = await _render_destination_message(
+        session,
+        destination=destination,
+        template_key="test_message",
+        context=context,
+    )
+    token, chat_id = credentials
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                },
+            )
+        response_payload = response.json() if response.content else {}
+    except httpx.HTTPError as exc:
+        raise RemoteMarketMonitorError("Telegram 网络请求失败。") from exc
+    except ValueError as exc:
+        raise RemoteMarketMonitorError("Telegram 返回了无效响应。") from exc
+    if not (
+        response.is_success
+        and isinstance(response_payload, dict)
+        and response_payload.get("ok") is True
+    ):
+        raise RemoteMarketMonitorError(
+            f"Telegram 测试发送失败（HTTP {response.status_code}）。"
+        )
+    result = response_payload.get("result")
+    message_id = str(result.get("message_id")) if isinstance(result, dict) else None
+    session.add(
+        SecurityAuditLog(
+            actor_user_id=actor_user_id,
+            action="remote_market_monitor.destination.test",
+            target_type="monitor_notification_destination",
+            target_id=destination.id,
+            metadata_json={"sourceId": source.source_id},
+        )
+    )
+    await session.commit()
+    return {
+        "success": True,
+        "destination_id": destination.id,
+        "source_id": source.source_id,
+        "source_display_name": source.display_name,
+        "telegram_message_id": message_id,
+    }
+
+
 async def _claim_next_outbox(
     session: AsyncSession,
     *,
@@ -1635,17 +1815,17 @@ async def process_next_monitor_notification(
             safe_error_message="Telegram 通知目的地已不存在或被停用。",
         )
         return True
-    token = _resolve_env_secret(destination.bot_token_secret_ref)
-    chat_id = _resolve_env_secret(destination.chat_id_secret_ref)
-    if token is None or chat_id is None:
+    credentials = _resolve_destination_credentials(destination)
+    if credentials is None:
         await _finish_outbox_attempt(
             session,
             outbox_id=outbox.id,
             started_at=started_at,
             status="permanent_failed",
-            safe_error_message="Telegram 密钥引用未在运行时环境中配置。",
+            safe_error_message="Telegram Bot Token 或 Chat ID 未配置或无法解密。",
         )
         return True
+    token, chat_id = credentials
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             response = await client.post(

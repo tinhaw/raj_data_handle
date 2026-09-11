@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 
 from packages.common.schemas import ApiSchema
 
@@ -65,22 +65,46 @@ class MonitorNotificationDestinationResponse(ApiSchema):
 class MonitorNotificationDestinationCreateRequest(ApiSchema):
     display_name: str = Field(min_length=1, max_length=120)
     enabled: bool = True
-    bot_token_secret_ref: str = Field(min_length=7, max_length=200)
-    chat_id_secret_ref: str = Field(min_length=7, max_length=200)
+    bot_token: SecretStr | None = Field(default=None, min_length=1, max_length=256)
+    chat_id: SecretStr | None = Field(default=None, min_length=1, max_length=128)
+    bot_token_secret_ref: str | None = Field(default=None, min_length=7, max_length=200)
+    chat_id_secret_ref: str | None = Field(default=None, min_length=7, max_length=200)
     template_set_id: str = Field(default="default-zh", min_length=1, max_length=64)
 
     @field_validator("bot_token_secret_ref", "chat_id_secret_ref")
     @classmethod
-    def validate_secret_ref(cls, value: str) -> str:
+    def validate_secret_ref(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         normalized = value.strip()
         if not normalized.startswith("env://") or len(normalized) <= len("env://"):
             raise ValueError("密钥引用必须使用 env://变量名。")
         return normalized
 
+    @model_validator(mode="after")
+    def validate_credentials(self) -> MonitorNotificationDestinationCreateRequest:
+        has_direct = self.bot_token is not None or self.chat_id is not None
+        has_references = (
+            self.bot_token_secret_ref is not None or self.chat_id_secret_ref is not None
+        )
+        if has_direct and has_references:
+            raise ValueError("Telegram 凭据不能同时使用直接填写和环境变量引用。")
+        if has_direct and (self.bot_token is None or self.chat_id is None):
+            raise ValueError("Bot Token 和 Chat ID 必须同时填写。")
+        if has_references and (
+            self.bot_token_secret_ref is None or self.chat_id_secret_ref is None
+        ):
+            raise ValueError("Bot Token 和 Chat ID 的密钥引用必须同时填写。")
+        if not has_direct and not has_references:
+            raise ValueError("请填写 Bot Token 和 Chat ID。")
+        return self
+
 
 class MonitorNotificationDestinationUpdateRequest(ApiSchema):
     display_name: str | None = Field(default=None, min_length=1, max_length=120)
     enabled: bool | None = None
+    bot_token: SecretStr | None = Field(default=None, min_length=1, max_length=256)
+    chat_id: SecretStr | None = Field(default=None, min_length=1, max_length=128)
     bot_token_secret_ref: str | None = Field(default=None, min_length=7, max_length=200)
     chat_id_secret_ref: str | None = Field(default=None, min_length=7, max_length=200)
     template_set_id: str | None = Field(default=None, min_length=1, max_length=64)
@@ -94,6 +118,36 @@ class MonitorNotificationDestinationUpdateRequest(ApiSchema):
         if not normalized.startswith("env://") or len(normalized) <= len("env://"):
             raise ValueError("密钥引用必须使用 env://变量名。")
         return normalized
+
+    @model_validator(mode="after")
+    def validate_credentials(self) -> MonitorNotificationDestinationUpdateRequest:
+        direct_values = (self.bot_token, self.chat_id)
+        reference_values = (self.bot_token_secret_ref, self.chat_id_secret_ref)
+        if any(value is not None for value in direct_values) and not all(
+            value is not None for value in direct_values
+        ):
+            raise ValueError("更新凭据时 Bot Token 和 Chat ID 必须同时填写。")
+        if any(value is not None for value in reference_values) and not all(
+            value is not None for value in reference_values
+        ):
+            raise ValueError("更新密钥引用时 Bot Token 和 Chat ID 必须同时填写。")
+        if any(value is not None for value in direct_values) and any(
+            value is not None for value in reference_values
+        ):
+            raise ValueError("Telegram 凭据不能同时使用直接填写和环境变量引用。")
+        return self
+
+
+class MonitorNotificationDestinationTestRequest(ApiSchema):
+    source_id: str = Field(min_length=1, max_length=64)
+
+
+class MonitorNotificationDestinationTestResponse(ApiSchema):
+    success: bool
+    destination_id: str
+    source_id: str
+    source_display_name: str
+    telegram_message_id: str | None = None
 
 
 class MonitorNotificationTemplateSetResponse(ApiSchema):

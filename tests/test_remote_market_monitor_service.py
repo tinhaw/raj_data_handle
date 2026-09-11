@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from packages.common.settings import Settings
 from packages.domain.models import (
     Base,
     MonitorNotificationDestination,
@@ -14,9 +16,13 @@ from packages.domain.models import (
     RemoteMarketMonitorTargetDestination,
     SourceConfig,
 )
+from packages.domain.schemas.remote_market_monitor import (
+    MonitorNotificationDestinationCreateRequest,
+)
 from packages.domain.services import remote_market_monitor_service as monitor_service
 from packages.domain.services.remote_market_monitor_service import (
     MonitorSample,
+    create_notification_destination,
     ensure_target_settings,
     get_monitor_settings,
     run_automatic_monitor_check,
@@ -38,6 +44,13 @@ def _source() -> SourceConfig:
         enabled=True,
         business_timezone="Asia/Kolkata",
         currency="INR",
+    )
+
+
+def _settings() -> Settings:
+    return Settings(
+        secret_key="test-secret-key-that-is-longer-than-32-characters",
+        database_url="sqlite+aiosqlite:///:memory:",
     )
 
 
@@ -71,6 +84,72 @@ def test_all_templates_require_market_name_placeholder() -> None:
 
     with pytest.raises(monitor_service.RemoteMarketMonitorError, match="盘口名称"):
         monitor_service.validate_template_map(invalid_templates)
+
+
+@pytest.mark.asyncio
+async def test_direct_telegram_credentials_are_encrypted_and_test_uses_selected_market(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, factory = await _database()
+    configured = _settings()
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        async def __aenter__(self) -> FakeClient:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def post(self, url: str, json: dict[str, object]) -> httpx.Response:
+            captured.update({"url": url, "payload": json})
+            return httpx.Response(
+                200,
+                json={"ok": True, "result": {"message_id": 42}},
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(monitor_service.httpx, "AsyncClient", FakeClient)
+    async with factory() as session:
+        source = _source()
+        session.add(source)
+        await session.commit()
+        destination = await create_notification_destination(
+            session,
+            payload=MonitorNotificationDestinationCreateRequest(
+                display_name="运营群",
+                bot_token="123456:TEST_TOKEN",
+                chat_id="-1001234567890",
+                template_set_id="default-zh",
+            ),
+            actor_user_id=1,
+            settings=configured,
+        )
+
+        assert destination.encrypted_credentials is not None
+        assert "TEST_TOKEN" not in destination.encrypted_credentials
+        assert destination.bot_token_secret_ref is None
+        assert destination.chat_id_secret_ref is None
+        assert monitor_service._resolve_destination_credentials(
+            destination, settings=configured
+        ) == ("123456:TEST_TOKEN", "-1001234567890")
+
+        result = await monitor_service.test_notification_destination(
+            session,
+            destination_id=destination.id,
+            source_id=source.source_id,
+            actor_user_id=1,
+            settings=configured,
+        )
+
+    assert result["success"] is True
+    assert result["source_display_name"] == "RajWin"
+    assert result["telegram_message_id"] == "42"
+    assert "RajWin" in str(captured["payload"])
+    await engine.dispose()
 
 
 @pytest.mark.asyncio

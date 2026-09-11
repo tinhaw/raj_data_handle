@@ -17,6 +17,8 @@ from packages.domain.models import (
 from packages.domain.schemas.remote_market_monitor import (
     MonitorNotificationDestinationCreateRequest,
     MonitorNotificationDestinationResponse,
+    MonitorNotificationDestinationTestRequest,
+    MonitorNotificationDestinationTestResponse,
     MonitorNotificationDestinationUpdateRequest,
     MonitorNotificationTemplateSetCreateRequest,
     MonitorNotificationTemplateSetResponse,
@@ -41,6 +43,7 @@ from packages.domain.services.remote_market_monitor_service import (
     list_notification_destinations,
     list_template_sets,
     run_manual_monitor_query,
+    test_notification_destination,
     update_monitor_settings,
     update_notification_destination,
     update_target_settings,
@@ -283,6 +286,28 @@ async def patch_notification_destination(
     except RemoteMarketMonitorError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return MonitorNotificationDestinationResponse.model_validate(_destination_response_values(row))
+
+
+@system_router.post(
+    "/monitor-notification-destinations/{destination_id}/test",
+    response_model=MonitorNotificationDestinationTestResponse,
+)
+async def post_notification_destination_test(
+    destination_id: str,
+    payload: MonitorNotificationDestinationTestRequest,
+    auth: AuthContext = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> MonitorNotificationDestinationTestResponse:
+    try:
+        result = await test_notification_destination(
+            session,
+            destination_id=destination_id,
+            source_id=payload.source_id,
+            actor_user_id=auth.user.id,
+        )
+    except RemoteMarketMonitorError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return MonitorNotificationDestinationTestResponse.model_validate(result)
 
 
 @system_router.get(

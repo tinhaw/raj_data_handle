@@ -1300,6 +1300,14 @@ export interface MonitorNotificationDestination {
   updatedAt: string
 }
 
+export interface MonitorNotificationDestinationTestResult {
+  success: boolean
+  destinationId: string
+  sourceId: string
+  sourceDisplayName: string
+  telegramMessageId: string | null
+}
+
 export interface MonitorNotificationTemplateSet {
   id: string
   displayName: string

@@ -13,8 +13,6 @@ import {
   createMonitorNotificationTemplateSet,
   fetchMonitorNotificationDestinations,
   fetchMonitorNotificationTemplateSets,
-  fetchRemoteMarketMonitorSettings,
-  updateRemoteMarketMonitorSettings,
 } from '../api/remoteMarketMonitor'
 import { isAdmin } from '../stores/auth'
 import type {
@@ -22,7 +20,6 @@ import type {
   MonitorNotificationDestination,
   MonitorNotificationTemplateSet,
   RetentionSettings,
-  RemoteMarketMonitorSettings,
   SpinOrderQueryRange,
   SpinOrderRefreshIntervalHours,
   SpinOrderRefreshPageSize,
@@ -35,13 +32,11 @@ import { formatDateTime } from '../ui'
 const loading = ref(false)
 const saving = ref(false)
 const current = ref<RetentionSettings | null>(null)
-const monitorSettings = ref<RemoteMarketMonitorSettings | null>(null)
-const savingMonitorSettings = ref(false)
 const notificationDestinations = ref<MonitorNotificationDestination[]>([])
 const notificationTemplateSets = ref<MonitorNotificationTemplateSet[]>([])
 const savingNotificationConfiguration = ref(false)
 const destinationDraft = reactive({
-  displayName: '', enabled: true, botTokenSecretRef: '', chatIdSecretRef: '', templateSetId: 'default-zh',
+  displayName: '', enabled: true, botToken: '', chatId: '', templateSetId: 'default-zh',
 })
 
 const templateDefinitions = [
@@ -146,7 +141,6 @@ async function load(): Promise<void> {
   loading.value = true
   try {
     applySettings(await fetchRetentionSettings())
-    monitorSettings.value = await fetchRemoteMarketMonitorSettings()
     notificationDestinations.value = await fetchMonitorNotificationDestinations()
     notificationTemplateSets.value = await fetchMonitorNotificationTemplateSets()
     if (Object.values(templateDraft.templates).every((value) => !value)) {
@@ -184,7 +178,7 @@ async function saveNotificationDestination(): Promise<void> {
   savingNotificationConfiguration.value = true
   try {
     await createMonitorNotificationDestination(destinationDraft)
-    Object.assign(destinationDraft, { displayName: '', botTokenSecretRef: '', chatIdSecretRef: '' })
+    Object.assign(destinationDraft, { displayName: '', botToken: '', chatId: '' })
     notificationDestinations.value = await fetchMonitorNotificationDestinations()
     ElMessage.success('Telegram 通知目的地已添加。')
   } catch (error) {
@@ -225,19 +219,6 @@ async function saveTemplateSet(): Promise<void> {
     ElMessage.error(apiErrorMessage(error, '通知模板集保存失败。'))
   } finally {
     savingNotificationConfiguration.value = false
-  }
-}
-
-async function saveMonitorSettings(): Promise<void> {
-  if (!monitorSettings.value) return
-  savingMonitorSettings.value = true
-  try {
-    monitorSettings.value = await updateRemoteMarketMonitorSettings(monitorSettings.value)
-    ElMessage.success('远端盘口监控全局设置已保存。')
-  } catch (error) {
-    ElMessage.error(apiErrorMessage(error, '远端盘口监控全局设置保存失败。'))
-  } finally {
-    savingMonitorSettings.value = false
   }
 }
 
@@ -510,68 +491,17 @@ onMounted(load)
         </el-form>
       </section>
 
-      <section v-if="monitorSettings" class="settings-section">
-        <div class="settings-section-heading">
-          <h2>远端盘口监控全局策略</h2>
-          <p>控制后台 Worker、默认告警行为与 Telegram 投递模式；各盘口阈值和群路由在“远端盘口监控”页面单独维护。</p>
-        </div>
-        <el-form label-position="top">
-          <div class="form-grid">
-            <el-form-item label="启用后台监控">
-              <el-switch v-model="monitorSettings.monitorEnabled" :disabled="!isAdmin" />
-              <span class="field-help">默认关闭；启用后仅运行已在盘口策略中启用的目标。</span>
-            </el-form-item>
-            <el-form-item label="通知投递模式">
-              <el-select v-model="monitorSettings.deliveryMode" :disabled="!isAdmin">
-                <el-option label="仅记录（灰度，不发送 Telegram）" value="record_only" />
-                <el-option label="Telegram 投递" value="telegram" />
-              </el-select>
-              <span class="field-help">建议先保持仅记录，核对 24 小时后再切换为真实投递。</span>
-            </el-form-item>
-            <el-form-item label="页面数据显示刷新间隔（秒）">
-              <el-input-number v-model="monitorSettings.dashboardRefreshIntervalSeconds" :min="5" :max="300" :disabled="!isAdmin" />
-              <span class="field-help">只刷新本页面展示的数据，不查询远端，也不会触发 Telegram 告警。</span>
-            </el-form-item>
-            <el-form-item label="新盘口默认远端查询间隔（秒）">
-              <el-input-number v-model="monitorSettings.defaultCheckIntervalSeconds" :min="30" :max="3600" :disabled="!isAdmin" />
-              <span class="field-help">决定后台多久查询一次待审核和待审查数量。</span>
-            </el-form-item>
-            <el-form-item label="远端监控请求超时（秒）">
-              <el-input-number v-model="monitorSettings.sourceRequestTimeoutSeconds" :min="5" :max="120" :disabled="!isAdmin" />
-            </el-form-item>
-            <el-form-item label="默认连续超阈值次数">
-              <el-input-number v-model="monitorSettings.defaultBreachConsecutiveChecks" :min="1" :max="20" :disabled="!isAdmin" />
-            </el-form-item>
-            <el-form-item label="默认连续恢复次数">
-              <el-input-number v-model="monitorSettings.defaultRecoveryConsecutiveChecks" :min="1" :max="20" :disabled="!isAdmin" />
-            </el-form-item>
-            <el-form-item label="超阈值重复告警间隔（分钟）">
-              <el-input-number v-model="monitorSettings.defaultReminderIntervalMinutes" :min="1" :max="1440" :disabled="!isAdmin" />
-              <span class="field-help">首次告警后若仍未恢复，才按此间隔再次发送；与页面刷新、远端查询间隔无关。</span>
-            </el-form-item>
-            <el-form-item label="源异常连续次数">
-              <el-input-number v-model="monitorSettings.sourceFailureConsecutiveChecks" :min="1" :max="20" :disabled="!isAdmin" />
-            </el-form-item>
-            <el-form-item label="数据源异常重复告警间隔（分钟）">
-              <el-input-number v-model="monitorSettings.sourceReminderIntervalMinutes" :min="1" :max="1440" :disabled="!isAdmin" />
-              <span class="field-help">只控制远端接口持续不可用时的重复 Telegram 告警。</span>
-            </el-form-item>
-          </div>
-          <el-button v-if="isAdmin" type="primary" :loading="savingMonitorSettings" @click="saveMonitorSettings">保存监控全局策略</el-button>
-        </el-form>
-      </section>
-
-      <section v-if="monitorSettings" class="settings-section">
-        <div class="settings-section-heading"><h2>Telegram 通知目的地与模板</h2><p>只保存运行时环境变量引用，不保存或展示 Bot Token、Chat ID 的实际值。模板按消息类型分别编辑，可点击插入占位符，无需编写 JSON。</p></div>
+      <section class="settings-section">
+        <div class="settings-section-heading"><h2>Telegram 通知目的地与模板</h2><p>Bot Token 和 Chat ID 由管理员直接填写，服务端加密保存且永不回显明文。模板按消息类型分别编辑，可点击插入占位符。</p></div>
         <div class="notification-config-grid">
           <section>
             <h3>已配置目的地</h3>
             <el-empty v-if="!notificationDestinations.length" description="尚未配置 Telegram 通知目的地" :image-size="72" />
-            <div v-for="destination in notificationDestinations" :key="destination.id" class="notification-config-item"><strong>{{ destination.displayName }}</strong><span>{{ destination.enabled ? '已启用' : '已停用' }} · 模板：{{ destination.templateSetId }}</span><span>Bot Token {{ destination.botTokenConfigured ? '已引用' : '未配置' }} · Chat ID {{ destination.chatIdConfigured ? '已引用' : '未配置' }}</span></div>
+            <div v-for="destination in notificationDestinations" :key="destination.id" class="notification-config-item"><strong>{{ destination.displayName }}</strong><span>{{ destination.enabled ? '已启用' : '已停用' }} · 模板：{{ destination.templateSetId }}</span><span>Bot Token {{ destination.botTokenConfigured ? '已配置' : '未配置' }} · Chat ID {{ destination.chatIdConfigured ? '已配置' : '未配置' }}</span></div>
             <el-form v-if="isAdmin" label-position="top" class="notification-draft">
               <el-form-item label="目的地名称"><el-input v-model="destinationDraft.displayName" placeholder="例如：运营告警群" /></el-form-item>
-              <el-form-item label="Bot Token 密钥引用"><el-input v-model="destinationDraft.botTokenSecretRef" placeholder="env://OPS_TELEGRAM_BOT_TOKEN" /></el-form-item>
-              <el-form-item label="Chat ID 密钥引用"><el-input v-model="destinationDraft.chatIdSecretRef" placeholder="env://OPS_PRIMARY_CHAT_ID" /></el-form-item>
+              <el-form-item label="Bot Token"><el-input v-model="destinationDraft.botToken" type="password" show-password autocomplete="new-password" placeholder="例如：123456789:AA..." /><span class="field-help">仅在保存时提交，之后只显示“已配置”。</span></el-form-item>
+              <el-form-item label="Chat ID"><el-input v-model="destinationDraft.chatId" placeholder="例如：-1001234567890" /></el-form-item>
               <el-form-item label="通知模板集"><el-select v-model="destinationDraft.templateSetId"><el-option v-for="templateSet in notificationTemplateSets" :key="templateSet.id" :label="templateSet.displayName" :value="templateSet.id" /></el-select></el-form-item>
               <el-button type="primary" :loading="savingNotificationConfiguration" @click="saveNotificationDestination">添加通知目的地</el-button>
             </el-form>

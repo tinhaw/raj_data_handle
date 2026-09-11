@@ -7,7 +7,9 @@ import { apiErrorMessage } from '../api/client'
 import {
   fetchMonitorNotificationDestinations,
   fetchRemoteMarketMonitorOverview,
+  testMonitorNotificationDestination,
   testRemoteMarketMonitorTarget,
+  updateRemoteMarketMonitorSettings,
   updateRemoteMarketMonitorTarget,
 } from '../api/remoteMarketMonitor'
 import { isAdmin } from '../stores/auth'
@@ -22,11 +24,14 @@ import { formatDateTime } from '../ui'
 
 const loading = ref(false)
 const saving = ref(false)
+const savingGlobal = ref(false)
 const testing = ref(false)
+const testingTelegram = ref(false)
 const monitor = ref<RemoteMarketMonitorOverview | null>(null)
 const destinations = ref<MonitorNotificationDestination[]>([])
 const settingsVisible = ref(false)
 const editingTarget = ref<RemoteMarketMonitorTarget | null>(null)
+const telegramTest = reactive({ destinationId: '', sourceId: '' })
 let refreshTimer: number | undefined
 
 const form = reactive<RemoteMarketMonitorTargetUpdate>({
@@ -78,11 +83,21 @@ function thresholdLabel(policy: RemoteMarketMonitorMetricPolicy): string {
   return `${policy.comparison === 'gt' ? '>' : '≥'} ${policy.threshold}`
 }
 
+function applyTelegramTestDefaults(): void {
+  if (!telegramTest.destinationId && destinations.value.length) {
+    telegramTest.destinationId = destinations.value[0]!.id
+  }
+  if (!telegramTest.sourceId && monitor.value?.targets.length) {
+    telegramTest.sourceId = monitor.value.targets[0]!.sourceId
+  }
+}
+
 async function load(): Promise<void> {
   if (loading.value) return
   loading.value = true
   try {
     monitor.value = await fetchRemoteMarketMonitorOverview()
+    applyTelegramTestDefaults()
     scheduleAutoRefresh()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '远端盘口监控加载失败。'))
@@ -95,8 +110,42 @@ async function loadDestinations(): Promise<void> {
   if (!isAdmin.value) return
   try {
     destinations.value = await fetchMonitorNotificationDestinations()
+    applyTelegramTestDefaults()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, 'Telegram 通知目的地加载失败。'))
+  }
+}
+
+async function saveGlobalSettings(): Promise<void> {
+  if (!monitor.value) return
+  savingGlobal.value = true
+  try {
+    monitor.value.settings = await updateRemoteMarketMonitorSettings(monitor.value.settings)
+    scheduleAutoRefresh()
+    ElMessage.success('监控运行参数已保存。')
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '监控运行参数保存失败。'))
+  } finally {
+    savingGlobal.value = false
+  }
+}
+
+async function sendTelegramTest(): Promise<void> {
+  if (!telegramTest.destinationId || !telegramTest.sourceId) {
+    ElMessage.warning('请选择 Telegram 目的地和测试盘口。')
+    return
+  }
+  testingTelegram.value = true
+  try {
+    const result = await testMonitorNotificationDestination(
+      telegramTest.destinationId,
+      telegramTest.sourceId,
+    )
+    ElMessage.success(`测试消息已发送，盘口：${result.sourceDisplayName}。`)
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, 'Telegram 测试消息发送失败。'))
+  } finally {
+    testingTelegram.value = false
   }
 }
 
@@ -179,6 +228,68 @@ onBeforeUnmount(clearAutoRefresh)
       <div><span>状态刷新</span><strong>每 {{ monitor.settings.dashboardRefreshIntervalSeconds }} 秒</strong></div>
     </section>
 
+    <section v-if="monitor" class="surface-card monitor-runtime-card">
+      <div class="section-heading">
+        <div><h2>监控运行与消息间隔</h2><p>页面刷新、远端查询和 Telegram 重复告警分别计时，互不替代。</p></div>
+      </div>
+      <el-form label-position="top" class="monitor-form">
+        <div class="form-grid">
+          <el-form-item label="启用后台监控">
+            <el-switch v-model="monitor.settings.monitorEnabled" :disabled="!isAdmin" />
+            <span class="field-help">只运行下方已单独启用的盘口。</span>
+          </el-form-item>
+          <el-form-item label="通知投递模式">
+            <el-select v-model="monitor.settings.deliveryMode" :disabled="!isAdmin">
+              <el-option label="仅记录（不发送 Telegram）" value="record_only" />
+              <el-option label="Telegram 投递" value="telegram" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="页面数据显示刷新间隔（秒）">
+            <el-input-number v-model="monitor.settings.dashboardRefreshIntervalSeconds" :min="5" :max="300" :disabled="!isAdmin" />
+            <span class="field-help">只更新本页面，不查询远端、不发送消息。</span>
+          </el-form-item>
+          <el-form-item label="新盘口默认远端查询间隔（秒）">
+            <el-input-number v-model="monitor.settings.defaultCheckIntervalSeconds" :min="30" :max="3600" :disabled="!isAdmin" />
+            <span class="field-help">现有盘口可在各自“配置策略”中覆盖。</span>
+          </el-form-item>
+          <el-form-item label="超阈值重复告警间隔（分钟）">
+            <el-input-number v-model="monitor.settings.defaultReminderIntervalMinutes" :min="1" :max="1440" :disabled="!isAdmin" />
+            <span class="field-help">首次告警后仍未恢复时，按此间隔再次发送。</span>
+          </el-form-item>
+          <el-form-item label="数据源异常重复告警间隔（分钟）">
+            <el-input-number v-model="monitor.settings.sourceReminderIntervalMinutes" :min="1" :max="1440" :disabled="!isAdmin" />
+          </el-form-item>
+          <el-form-item label="远端请求超时（秒）">
+            <el-input-number v-model="monitor.settings.sourceRequestTimeoutSeconds" :min="5" :max="120" :disabled="!isAdmin" />
+          </el-form-item>
+          <el-form-item label="默认连续超阈值次数">
+            <el-input-number v-model="monitor.settings.defaultBreachConsecutiveChecks" :min="1" :max="20" :disabled="!isAdmin" />
+          </el-form-item>
+          <el-form-item label="默认连续恢复次数">
+            <el-input-number v-model="monitor.settings.defaultRecoveryConsecutiveChecks" :min="1" :max="20" :disabled="!isAdmin" />
+          </el-form-item>
+          <el-form-item label="数据源异常连续次数">
+            <el-input-number v-model="monitor.settings.sourceFailureConsecutiveChecks" :min="1" :max="20" :disabled="!isAdmin" />
+          </el-form-item>
+        </div>
+        <el-button v-if="isAdmin" type="primary" :loading="savingGlobal" @click="saveGlobalSettings">保存监控运行参数</el-button>
+      </el-form>
+
+      <div v-if="isAdmin" class="telegram-test-panel">
+        <div><h3>发送 Telegram 测试消息</h3><p>选择一个通知目的地和盘口，消息中的盘口占位符会替换为所选盘口名称。</p></div>
+        <div class="telegram-test-controls">
+          <el-select v-model="telegramTest.destinationId" placeholder="选择通知目的地">
+            <el-option v-for="destination in destinations" :key="destination.id" :label="destination.displayName" :value="destination.id" />
+          </el-select>
+          <el-select v-model="telegramTest.sourceId" placeholder="选择测试盘口">
+            <el-option v-for="target in monitor.targets" :key="target.sourceId" :label="target.sourceDisplayName" :value="target.sourceId" />
+          </el-select>
+          <el-button type="primary" plain :loading="testingTelegram" :disabled="!destinations.length || !monitor.targets.length" @click="sendTelegramTest">发送测试消息</el-button>
+        </div>
+        <el-empty v-if="!destinations.length" description="请先到系统设置添加 Telegram 目的地" :image-size="56" />
+      </div>
+    </section>
+
     <section class="surface-card monitor-sources-card" v-loading="loading && !monitor">
       <div class="section-heading">
         <div><h2>盘口策略与实时状态</h2><p>每个盘口独立检查、独立阈值、独立告警状态与 Telegram 群路由。</p></div>
@@ -223,7 +334,7 @@ onBeforeUnmount(clearAutoRefresh)
         </div>
         <el-form-item label="Telegram 通知群">
           <el-select v-model="form.destinationIds" multiple placeholder="选择系统设置中已配置的目的地"><el-option v-for="destination in destinations.filter((item) => item.enabled)" :key="destination.id" :label="destination.displayName" :value="destination.id" /></el-select>
-          <span class="field-help">群组和密钥引用在系统设置中管理；此处只绑定已配置目的地。</span>
+          <span class="field-help">群组 Bot Token、Chat ID 和模板在系统设置中管理；此处只绑定已配置目的地。</span>
         </el-form-item>
         <section v-for="policy in form.policies" :key="policy.metric" class="metric-policy">
           <h3>{{ policy.metric === 'pending_audit' ? '待审核（状态 0）' : '待审查（状态 4）' }}</h3>
@@ -248,7 +359,7 @@ onBeforeUnmount(clearAutoRefresh)
 .monitor-summary div, .source-card__metrics > div { display: grid; gap: 5px; }
 .monitor-summary span, .source-card__header span, .source-card__metrics span, .source-card__metrics small, .source-card__details, .field-help { color: var(--ink-muted); font-size: 13px; }
 .monitor-summary strong { font-size: 16px; color: var(--ink); }
-.monitor-sources-card { padding: 24px; }
+.monitor-runtime-card, .monitor-sources-card { padding: 24px; }
 .section-heading, .source-card__header, .source-card__actions { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .section-heading { margin-bottom: 18px; }
 .section-heading h2, .section-heading p, .source-card h3, .metric-policy h3 { margin: 0; }
@@ -267,5 +378,10 @@ onBeforeUnmount(clearAutoRefresh)
 .metric-policy h3 { margin-bottom: 14px; font-size: 15px; }
 .monitor-form :deep(.el-select), .monitor-form :deep(.el-input-number) { width: 100%; }
 .field-help { display: block; margin-top: 6px; }
+.telegram-test-panel { display: grid; gap: 14px; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); }
+.telegram-test-panel h3, .telegram-test-panel p { margin: 0; }
+.telegram-test-panel p { margin-top: 5px; color: var(--ink-muted); font-size: 13px; }
+.telegram-test-controls { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto; gap: 12px; }
 @media (max-width: 900px) { .monitor-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .telegram-test-controls { grid-template-columns: 1fr; } }
 </style>
