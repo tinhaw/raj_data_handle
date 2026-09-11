@@ -20,12 +20,26 @@ export async function updateSource(
   return (await api.patch<SourceConfig>(`/settings/sources/${sourceId}`, payload)).data
 }
 
+export async function reorderSources(sourceIds: string[]): Promise<SourceConfig[]> {
+  return (await api.put<SourceConfig[]>('/settings/sources/order', { sourceIds })).data
+}
+
 export async function testSourceConnection(
   sourceId: string,
 ): Promise<{ sourceId: string; status: string; requestId: string; message: string }> {
   return (
     await api.post<{ sourceId: string; status: string; requestId: string; message: string }>(
       `/settings/sources/${sourceId}/test-connection`,
+    )
+  ).data
+}
+
+export async function testSourceScoringApi(
+  sourceId: string,
+): Promise<{ sourceId: string; status: string; requestId: string; message: string }> {
+  return (
+    await api.post<{ sourceId: string; status: string; requestId: string; message: string }>(
+      `/settings/sources/${sourceId}/test-scoring-api`,
     )
   ).data
 }

@@ -143,6 +143,11 @@ ssh "$DATA_HANDLE_SSH_TARGET" 'cd /opt/raj_data_handle && docker compose \
 
 ## 5. 数据库变更门禁
 
+对于没有 Git 检出的源码上传部署，在获批窗口中先停写并完成备份，再执行
+`--upload-source --stage-only --remote-deploy`，只上传源码和环境、不启动服务。
+随后单独执行 `--schema-only --remote-deploy`，成功后执行普通
+`--upload-source --remote-deploy`。这样可避免先启动不兼容旧表结构的新版应用。
+
 首个 Alembic 版本会在 **`data_handle`** 新库中创建 `app_users`、`auth_sessions`、
 `security_audit_logs`、`system_retention_settings`、`source_configs`、支付平台/模板、
 支付渠道绑定、文件对象/引用、比对批次/结果/活动日志和用户通知等表及索引。它不会触及

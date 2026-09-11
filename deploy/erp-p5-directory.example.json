@@ -1,0 +1,28 @@
+{
+  "users": [
+    {
+      "legacy_username": "legacy-admin",
+      "target_username": "admin",
+      "target_role_grants": [
+        "ERP_SYSTEM_ADMIN"
+      ]
+    }
+  ],
+  "ignored_legacy_usernames": [],
+  "markets": [
+    {
+      "legacy_code": "RAJWIN",
+      "target_source_id": "rajwin"
+    }
+  ],
+  "remote_accounts": [
+    {
+      "legacy_market_code": "RAJWIN",
+      "legacy_username": "legacy-remote-user",
+      "target_source_id": "rajwin",
+      "target_login_username": "legacy-remote-user",
+      "target_display_name": "ERP · legacy-remote-user",
+      "create_disabled_placeholder": true
+    }
+  ]
+}

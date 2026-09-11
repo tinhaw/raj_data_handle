@@ -94,11 +94,16 @@ async def list_results(
 async def all_results(
     session: AsyncSession,
     batch_id: str,
+    *,
+    result_status: str | None = None,
 ) -> list[OrderReconciliationResult]:
+    filters = [OrderReconciliationResult.batch_id == batch_id]
+    if result_status:
+        filters.append(OrderReconciliationResult.result_status == result_status)
     return list(
         await session.scalars(
             select(OrderReconciliationResult)
-            .where(OrderReconciliationResult.batch_id == batch_id)
+            .where(*filters)
             .order_by(OrderReconciliationResult.created_at, OrderReconciliationResult.id)
         )
     )

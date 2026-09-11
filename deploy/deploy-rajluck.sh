@@ -29,8 +29,8 @@ Options:
   -h, --help     Show this help.
 
 Normal application rollout never runs schema migrations automatically. For a
-schema-changing release, deploy application code first, then run --schema-only
-once only after the approved RDS backup/fallback plan is confirmed.
+schema-changing release, stage source without starting services, stop affected
+writers and verify the approved backup, then run --schema-only before rollout.
 EOF
 }
 
@@ -121,6 +121,8 @@ else
     log "Rolling out application code (database migration remains separately gated)."
 fi
 
-dc up -d --build --remove-orphans
+# Images are tagged as `latest`; without an explicit recreate Compose may keep
+# a running container that still references the previously built image.
+dc up -d --build --force-recreate --remove-orphans
 dc ps
 log "Application rollout completed without running a schema migration."

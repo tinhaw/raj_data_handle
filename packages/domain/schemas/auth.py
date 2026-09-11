@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from packages.common.schemas import ApiSchema
 
@@ -62,3 +63,53 @@ class UserUpdateRequest(ApiSchema):
     role: str | None = None
     is_active: bool | None = None
     password: str | None = None
+
+
+UserLogEventType = Literal["login", "access"]
+
+
+class UserAccessLogRequest(ApiSchema):
+    """A browser route visited by the currently authenticated user."""
+
+    path: str = Field(min_length=1, max_length=500, pattern=r"^/")
+
+
+class UserLogQueryRequest(ApiSchema):
+    user_id: int | None = Field(default=None, ge=1)
+    event_types: list[UserLogEventType] | None = Field(default=None, max_length=2)
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=50, ge=10, le=100)
+
+    @field_validator("event_types")
+    @classmethod
+    def normalize_event_types(
+        cls, value: list[UserLogEventType] | None
+    ) -> list[UserLogEventType] | None:
+        if not value:
+            return None
+        return list(dict.fromkeys(value))
+
+    @model_validator(mode="after")
+    def validate_time_range(self) -> UserLogQueryRequest:
+        if self.started_at and self.ended_at and self.started_at > self.ended_at:
+            raise ValueError("访问时间范围的开始时间不能晚于结束时间。")
+        return self
+
+
+class UserLogResponse(ApiSchema):
+    id: str
+    user_id: int
+    username: str | None
+    display_name: str | None
+    event_type: UserLogEventType
+    path: str | None
+    occurred_at: datetime
+
+
+class UserLogQueryResponse(ApiSchema):
+    items: list[UserLogResponse]
+    total: int
+    page: int
+    page_size: int

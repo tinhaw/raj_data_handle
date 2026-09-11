@@ -1,0 +1,167 @@
+package com.rajads.erp.redemption;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sun.net.httpserver.HttpServer;
+import jakarta.servlet.http.Cookie;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+import java.math.BigDecimal;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class UnifiedRedemptionRemoteExecutorClientTest {
+    private HttpServer server;
+
+    @AfterEach
+    void cleanup() {
+        RequestContextHolder.resetRequestAttributes();
+        if (server != null) server.stop(0);
+    }
+
+    @Test
+    void postsRemoteCreateOverHttp11WithoutH2cUpgrade() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/compatibility-redemption/create", exchange -> {
+            assertThat(exchange.getRequestMethod()).isEqualTo("POST");
+            assertThat(exchange.getRequestHeaders().getFirst("Cookie"))
+                    .isEqualTo("raj_session=test-session");
+            assertThat(exchange.getRequestHeaders().getFirst("Upgrade")).isNull();
+            JsonNode request = objectMapper.readTree(exchange.getRequestBody());
+            assertThat(request.path("options").path("single_key_limit").asInt()).isEqualTo(3);
+            assertThat(request.path("options").path("key_number").asInt()).isEqualTo(5);
+            assertThat(request.path("valid_from").asText()).isEqualTo("2026-09-06");
+            assertThat(request.path("valid_to").asText()).isEqualTo("2026-09-07");
+            assertThat(request.path("execution_confirmed").asBoolean()).isTrue();
+
+            byte[] body = ("{\"remoteConfigurationId\":\"remote-123\","
+                    + "\"remoteGroupKey\":\"group-123\","
+                    + "\"remoteRequestId\":\"request-123\"}")
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setCookies(new Cookie("raj_session", "test-session"));
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+
+        URI uri = URI.create("http://127.0.0.1:" + server.getAddress().getPort()
+                + "/compatibility-redemption");
+        UnifiedRedemptionRemoteExecutorClient.CreatedConfiguration created =
+                new UnifiedRedemptionRemoteExecutorClient(objectMapper, uri, "raj_session")
+                        .create(
+                                23L,
+                                31L,
+                                "test-create",
+                                LocalDate.of(2026, 9, 5),
+                                LocalDate.of(2026, 9, 6),
+                                LocalDate.of(2026, 9, 7),
+                                List.of(901091L),
+                                BigDecimal.valueOf(3),
+                                BigDecimal.valueOf(5),
+                                new RemoteCreationOptions(
+                                        "test", 5, 5, null, null, null,
+                                        5, 1, 3, false, true, true, 1,
+                                        true, 1, true, 1
+                                )
+                        );
+
+        assertThat(created.configurationId()).isEqualTo("remote-123");
+        assertThat(created.groupKey()).isEqualTo("group-123");
+        assertThat(created.requestId()).isEqualTo("request-123");
+    }
+
+    @Test
+    void downloadsEveryCodeThroughTheUnifiedExecutor() throws Exception {
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/compatibility-redemption/download", exchange -> {
+            assertThat(exchange.getRequestMethod()).isEqualTo("POST");
+            assertThat(exchange.getRequestHeaders().getFirst("Cookie")).isEqualTo("raj_session=test-session");
+            assertThat(exchange.getRequestHeaders().getFirst("Upgrade")).isNull();
+            JsonNode payload = mapper.readTree(exchange.getRequestBody());
+            assertThat(payload.path("key_number").asInt()).isEqualTo(5);
+            assertThat(payload.path("account_id").asInt()).isEqualTo(23);
+            assertThat(payload.path("execution_confirmed").asBoolean()).isTrue();
+            byte[] body = "{\"redemption_codes\":[\"A\",\"B\",\"C\",\"D\",\"E\"],\"remote_group_key\":\"group-1\"}"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        var request = new MockHttpServletRequest();
+        request.setCookies(new Cookie("raj_session", "test-session"));
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+        URI uri = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/compatibility-redemption");
+        var result = new UnifiedRedemptionRemoteExecutorClient(mapper, uri, "raj_session")
+                .download(23L, 31L, "cfg-1", "group-1", 5);
+        assertThat(result.codes()).containsExactly("A", "B", "C", "D", "E");
+        assertThat(result.groupKey()).isEqualTo("group-1");
+    }
+
+    @Test
+    void postsConfirmedRemotePublishThroughUnifiedExecutor() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/compatibility-redemption/publish", exchange -> {
+            assertThat(exchange.getRequestMethod()).isEqualTo("POST");
+            assertThat(exchange.getRequestHeaders().getFirst("Cookie"))
+                    .isEqualTo("raj_session=test-session");
+            assertThat(exchange.getRequestHeaders().getFirst("Upgrade")).isNull();
+            JsonNode request = objectMapper.readTree(exchange.getRequestBody());
+            assertThat(request.path("account_id").asLong()).isEqualTo(23L);
+            assertThat(request.path("batch_id").asLong()).isEqualTo(24L);
+            assertThat(request.path("publish_environment").asText()).isEqualTo("prod");
+            assertThat(request.path("mode").asText()).isEqualTo("SCHEDULED");
+            assertThat(request.path("scheduled_time").asText()).isEqualTo("2026-09-05T18:30");
+            assertThat(request.path("fallback_to_scheduled").asBoolean()).isFalse();
+            assertThat(request.path("execution_confirmed").asBoolean()).isTrue();
+
+            byte[] body = ("{\"remotePublishTaskId\":\"publish-123\","
+                    + "\"remoteRequestId\":\"request-456\"}")
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setCookies(new Cookie("raj_session", "test-session"));
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+
+        URI uri = URI.create("http://127.0.0.1:" + server.getAddress().getPort()
+                + "/compatibility-redemption");
+        UnifiedRedemptionRemoteExecutorClient.PublishedBatch published =
+                new UnifiedRedemptionRemoteExecutorClient(objectMapper, uri, "raj_session")
+                        .publish(
+                                23L,
+                                24L,
+                                "prod",
+                                true,
+                                LocalDateTime.of(2026, 9, 5, 18, 30),
+                                false
+                        );
+
+        assertThat(published.taskId()).isEqualTo("publish-123");
+        assertThat(published.requestId()).isEqualTo("request-456");
+    }
+}

@@ -1,38 +1,41 @@
 <script setup lang="ts">
-import { Connection, Delete, Edit, Plus, Refresh } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, Delete, Edit, Plus, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 import { apiErrorMessage } from '../api/client'
 import {
-  clearSourceCredentials,
   createSource,
   deleteSource,
   fetchAllSources,
-  testSourceConnection,
+  reorderSources,
   updateSource,
 } from '../api/sources'
 import type { SourceConfig } from '../types'
-import { formatDateTime } from '../ui'
 
+const router = useRouter()
 const loading = ref(false)
 const saving = ref(false)
-const testing = ref(false)
+const reordering = ref(false)
 const rows = ref<SourceConfig[]>([])
-const dialogVisible = ref(false)
-const editingId = ref<string | null>(null)
-const credentialsConfigured = ref(false)
+const sourceDialogVisible = ref(false)
+const editingSourceId = ref<string | null>(null)
+const scoringApiKeyConfigured = ref(false)
+const initialReviewV1ApiKeyConfigured = ref(false)
 const presetSourceIds = new Set(['rajwin', 'rajluck'])
+
 const form = reactive({
   sourceId: '',
   displayName: '',
   baseUrl: '',
   businessTimezone: 'Asia/Kolkata',
   currency: 'INR',
+  scoringApiBaseUrl: '',
+  scoringApiKey: '',
+  initialReviewV1ApiBaseUrl: '',
+  initialReviewV1ApiKey: '',
   enabled: false,
-  username: '',
-  password: '',
-  totpSecret: '',
 })
 
 async function load(): Promise<void> {
@@ -46,96 +49,93 @@ async function load(): Promise<void> {
   }
 }
 
-function add(): void {
-  editingId.value = null
-  credentialsConfigured.value = false
+function resetForm(): void {
+  editingSourceId.value = null
+  scoringApiKeyConfigured.value = false
+  initialReviewV1ApiKeyConfigured.value = false
   form.sourceId = ''
   form.displayName = ''
   form.baseUrl = ''
   form.businessTimezone = 'Asia/Kolkata'
   form.currency = 'INR'
+  form.scoringApiBaseUrl = ''
+  form.scoringApiKey = ''
+  form.initialReviewV1ApiBaseUrl = ''
+  form.initialReviewV1ApiKey = ''
   form.enabled = false
-  form.username = ''
-  form.password = ''
-  form.totpSecret = ''
-  dialogVisible.value = true
 }
 
-function edit(row: SourceConfig): void {
-  editingId.value = row.sourceId
-  credentialsConfigured.value = row.credentialConfigured
+function openCreate(): void {
+  resetForm()
+  sourceDialogVisible.value = true
+}
+
+function openEdit(row: SourceConfig): void {
+  editingSourceId.value = row.sourceId
+  scoringApiKeyConfigured.value = row.scoringApiKeyConfigured
+  initialReviewV1ApiKeyConfigured.value = row.initialReviewV1ApiKeyConfigured
   form.sourceId = row.sourceId
   form.displayName = row.displayName
   form.baseUrl = row.baseUrl || ''
   form.businessTimezone = row.businessTimezone
   form.currency = row.currency
+  form.scoringApiBaseUrl = row.scoringApiBaseUrl || ''
+  form.scoringApiKey = ''
+  form.initialReviewV1ApiBaseUrl = row.initialReviewV1ApiBaseUrl || ''
+  form.initialReviewV1ApiKey = ''
   form.enabled = row.enabled
-  form.username = ''
-  form.password = ''
-  form.totpSecret = ''
-  dialogVisible.value = true
+  sourceDialogVisible.value = true
 }
 
-function validateForm(): boolean {
+function payload(): Record<string, unknown> {
+  return {
+    displayName: form.displayName.trim(),
+    baseUrl: form.baseUrl.trim() || null,
+    businessTimezone: form.businessTimezone.trim(),
+    currency: form.currency.trim(),
+    ...(editingSourceId.value === null ? {} : { enabled: form.enabled }),
+    scoringApi: {
+      baseUrl: form.scoringApiBaseUrl.trim() || null,
+      apiKey: form.scoringApiKey || null,
+    },
+    initialReviewV1Api: {
+      baseUrl: form.initialReviewV1ApiBaseUrl.trim() || null,
+      apiKey: form.initialReviewV1ApiKey || null,
+    },
+  }
+}
+
+function apiConfigured(baseUrl: string | null, keyConfigured: boolean): boolean {
+  return Boolean(baseUrl && keyConfigured)
+}
+
+function validate(): boolean {
+  if (!form.displayName.trim() || !form.baseUrl.trim()) {
+    ElMessage.warning('请填写盘口显示名和远端后台 Base URL。')
+    return false
+  }
   if (
-    editingId.value === null &&
+    editingSourceId.value === null &&
     !/^[a-z][a-z0-9_-]{1,63}$/.test(form.sourceId.trim())
   ) {
-    ElMessage.warning(
-      '来源 ID 须为 2-64 位，以小写字母开头，且只能包含小写字母、数字、下划线和连字符。',
-    )
+    ElMessage.warning('来源 ID 须为 2-64 位，以小写字母开头，且只能包含小写字母、数字、下划线和连字符。')
     return false
   }
   return true
 }
 
-function sourcePayload(enabled: boolean): Record<string, unknown> {
-  const credentials =
-    form.username || form.password || form.totpSecret
-      ? {
-          username: form.username || null,
-          password: form.password || null,
-          totpSecret: form.totpSecret || null,
-        }
-      : undefined
-  return {
-    displayName: form.displayName,
-    baseUrl: form.baseUrl || null,
-    businessTimezone: form.businessTimezone,
-    currency: form.currency,
-    enabled,
-    credentials,
-  }
-}
-
-function credentialsWereProvided(): boolean {
-  return Boolean(form.username || form.password || form.totpSecret)
-}
-
-async function persistSource(enabled: boolean): Promise<string> {
-  if (editingId.value === null) {
-    const sourceId = form.sourceId.trim()
-    await createSource({
-      sourceId,
-      ...sourcePayload(false),
-    })
-    editingId.value = sourceId
-    credentialsConfigured.value ||= credentialsWereProvided()
-    return sourceId
-  }
-  await updateSource(editingId.value, sourcePayload(enabled))
-  credentialsConfigured.value ||= credentialsWereProvided()
-  return editingId.value
-}
-
 async function save(): Promise<void> {
-  if (!validateForm()) return
-  const wasCreating = editingId.value === null
+  if (!validate()) return
   saving.value = true
   try {
-    await persistSource(wasCreating ? false : form.enabled)
-    ElMessage.success(wasCreating ? '盘口草稿已创建。' : '盘口配置已保存。')
-    dialogVisible.value = false
+    if (editingSourceId.value === null) {
+      await createSource({ sourceId: form.sourceId.trim(), enabled: false, ...payload() })
+      ElMessage.success('盘口已创建，请继续创建所属远端账号。')
+    } else {
+      await updateSource(editingSourceId.value, payload())
+      ElMessage.success('盘口配置已保存。')
+    }
+    sourceDialogVisible.value = false
     await load()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '盘口配置保存失败。'))
@@ -144,43 +144,12 @@ async function save(): Promise<void> {
   }
 }
 
-async function saveAndTest(): Promise<void> {
-  if (!validateForm()) return
-  const enableAfterPassed = form.enabled
-  testing.value = true
-  try {
-    const sourceId = await persistSource(false)
-    const result = await testSourceConnection(sourceId)
-    if (result.status !== 'passed') {
-      form.enabled = false
-      ElMessage.warning(result.message)
-      return
-    }
-    if (enableAfterPassed) {
-      await updateSource(sourceId, { enabled: true })
-    }
-    ElMessage.success(
-      enableAfterPassed ? '连接测试通过，盘口已启用。' : '连接测试通过，盘口草稿已保存。',
-    )
-    dialogVisible.value = false
-  } catch (error) {
-    ElMessage.warning(apiErrorMessage(error, '保存或连接测试失败。'))
-  } finally {
-    await load()
-    testing.value = false
-  }
-}
-
-async function remove(row: SourceConfig): Promise<void> {
+async function removeSource(row: SourceConfig): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      `将永久删除盘口“${row.displayName}”（${row.sourceId}）、本地加密凭据和渠道映射。该操作无法撤销。`,
+      `将永久删除盘口“${row.displayName}”（${row.sourceId}）及其本地映射。该操作无法撤销。`,
       '删除盘口',
-      {
-        type: 'warning',
-        confirmButtonText: '确认删除',
-        cancelButtonText: '取消',
-      },
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' },
     )
     await deleteSource(row.sourceId)
     ElMessage.success('盘口已删除。')
@@ -191,19 +160,21 @@ async function remove(row: SourceConfig): Promise<void> {
   }
 }
 
-async function clearCredentials(row: SourceConfig): Promise<void> {
+async function moveSource(index: number, offset: -1 | 1): Promise<void> {
+  const targetIndex = index + offset
+  if (targetIndex < 0 || targetIndex >= rows.value.length || reordering.value) return
+  const sourceIds = rows.value.map((row) => row.sourceId)
+  const [movedSource] = sourceIds.splice(index, 1)
+  if (!movedSource) return
+  sourceIds.splice(targetIndex, 0, movedSource)
+  reordering.value = true
   try {
-    await ElMessageBox.confirm(
-      '清除后盘口会自动停用，且无法恢复已保存的账号、密码和 TOTP Secret。',
-      '清除远端凭据',
-      { type: 'warning', confirmButtonText: '确认清除' },
-    )
-    await clearSourceCredentials(row.sourceId)
-    ElMessage.success('凭据已清除，盘口已停用。')
-    await load()
+    rows.value = await reorderSources(sourceIds)
+    ElMessage.success('盘口展示顺序已保存。')
   } catch (error) {
-    if (error === 'cancel' || error === 'close') return
-    ElMessage.error(apiErrorMessage(error, '清除凭据失败。'))
+    ElMessage.error(apiErrorMessage(error, '盘口展示顺序保存失败。'))
+  } finally {
+    reordering.value = false
   }
 }
 
@@ -214,19 +185,20 @@ onMounted(load)
   <div class="page-stack">
     <header class="page-header">
       <div>
-        <span class="page-eyebrow">Admin settings</span>
+        <span class="page-eyebrow">Unified market registry</span>
         <h1>盘口配置</h1>
-        <p>集中维护远端盘口的连接地址、访问凭据、业务时区与启用状态。</p>
+        <p>维护分析与 ERP 共用的盘口主数据、Base URL、时区和只读 API 配置。</p>
       </div>
       <div class="header-actions">
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
-        <el-button type="primary" :icon="Plus" @click="add">新增盘口</el-button>
+        <el-button @click="router.push('/erp/remote-connections')">远端账号</el-button>
+        <el-button type="primary" :icon="Plus" @click="openCreate">新建盘口</el-button>
       </div>
     </header>
 
     <el-alert
-      title="凭据字段只写不读"
-      description="页面只显示是否已配置；账号、密码和 TOTP Secret 加密保存，接口永不回显。连接测试只执行登录和充值渠道字典读取。"
+      title="先配置盘口，再创建账号"
+      description="盘口保存 Base URL、时区和 API 配置；远端登录账号在“远端账号”中创建，并必须选择所属盘口。首个启用账号会自动成为该盘口的默认账号。"
       type="info"
       show-icon
       :closable="false"
@@ -234,6 +206,27 @@ onMounted(load)
 
     <section class="surface-card table-card">
       <el-table v-loading="loading" :data="rows">
+        <el-table-column label="展示顺序" width="140" align="center">
+          <template #default="{ $index }">
+            <el-button-group>
+              <el-button
+                text
+                :icon="ArrowUp"
+                :disabled="$index === 0 || reordering"
+                aria-label="上移盘口"
+                @click="moveSource($index, -1)"
+              />
+              <el-button
+                text
+                :icon="ArrowDown"
+                :disabled="$index === rows.length - 1 || reordering"
+                aria-label="下移盘口"
+                @click="moveSource($index, 1)"
+              />
+            </el-button-group>
+            <span class="order-number">{{ $index + 1 }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="来源 ID" min-width="150">
           <template #default="{ row }">
             <span>{{ row.sourceId }}</span>
@@ -247,122 +240,109 @@ onMounted(load)
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="盘口名" min-width="130" prop="displayName" />
-        <el-table-column label="Base URL" min-width="230" prop="baseUrl" show-overflow-tooltip />
-        <el-table-column label="时区 / 币种" min-width="180">
+        <el-table-column label="盘口" min-width="160" prop="displayName" />
+        <el-table-column
+          label="远端后台 Base URL"
+          min-width="280"
+          prop="baseUrl"
+          show-overflow-tooltip
+        />
+        <el-table-column label="评分审核 API" width="140">
+          <template #default="{ row }">
+            <el-tag :type="apiConfigured(row.scoringApiBaseUrl, row.scoringApiKeyConfigured) ? 'success' : 'info'">
+              {{ apiConfigured(row.scoringApiBaseUrl, row.scoringApiKeyConfigured) ? '已配置' : '未配置' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="v1版初审 API" width="140">
+          <template #default="{ row }">
+            <el-tag :type="apiConfigured(row.initialReviewV1ApiBaseUrl, row.initialReviewV1ApiKeyConfigured) ? 'success' : 'info'">
+              {{ apiConfigured(row.initialReviewV1ApiBaseUrl, row.initialReviewV1ApiKeyConfigured) ? '已配置' : '未配置' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="时区 / 币种" min-width="165">
           <template #default="{ row }">{{ row.businessTimezone }} · {{ row.currency }}</template>
         </el-table-column>
-        <el-table-column label="凭据" width="110">
+        <el-table-column label="状态" width="100">
           <template #default="{ row }">
-            <el-tag :type="row.credentialConfigured ? 'success' : 'info'">
-              {{ row.credentialConfigured ? '已配置' : '未配置' }}
-            </el-tag>
+            <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '已启用' : '停用' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="连接测试" min-width="160">
+        <el-table-column label="操作" width="250" fixed="right">
           <template #default="{ row }">
-            <span>{{ row.lastTestStatus || '未测试' }}</span>
-            <small class="table-subtext">{{ formatDateTime(row.lastTestedAt) }}</small>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="90">
-          <template #default="{ row }">
-            <el-tag :type="row.enabled ? 'success' : 'info'">
-              {{ row.enabled ? '已启用' : '停用' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="330" fixed="right">
-          <template #default="{ row }">
-            <el-button text type="primary" :icon="Edit" @click="edit(row)">编辑</el-button>
-            <el-button
-              v-if="row.credentialConfigured"
-              text
-              type="danger"
-              :icon="Delete"
-              @click="clearCredentials(row)"
-            >
-              清除凭据
-            </el-button>
-            <el-tooltip :content="row.enabled ? '请先停用盘口再删除' : '永久删除盘口'">
-              <span>
-                <el-button
-                  text
-                  type="danger"
-                  :icon="Delete"
-                  :disabled="row.enabled"
-                  @click="remove(row)"
-                >
-                  删除
-                </el-button>
-              </span>
-            </el-tooltip>
+            <div class="source-actions">
+              <el-button text type="primary" :icon="Edit" @click="openEdit(row)">编辑盘口</el-button>
+              <el-button
+                text
+                type="primary"
+                @click="router.push({ path: '/erp/remote-connections', query: { sourceId: row.sourceId, create: '1' } })"
+              >
+                新建账号
+              </el-button>
+              <el-tooltip :content="row.enabled ? '请先按批准流程停用盘口再删除' : '永久删除盘口'">
+                <span>
+                  <el-button
+                    text
+                    type="danger"
+                    :icon="Delete"
+                    :disabled="row.enabled"
+                    @click="removeSource(row)"
+                  >
+                    删除
+                  </el-button>
+                </span>
+              </el-tooltip>
+            </div>
           </template>
         </el-table-column>
       </el-table>
     </section>
 
     <el-dialog
-      v-model="dialogVisible"
-      :title="editingId === null ? '新增盘口' : `编辑 ${editingId}`"
+      v-model="sourceDialogVisible"
+      :title="editingSourceId === null ? '新建盘口' : `编辑盘口 ${editingSourceId}`"
       width="620px"
     >
       <el-form label-position="top">
-        <el-form-item v-if="editingId === null" label="来源 ID">
+        <el-form-item v-if="editingSourceId === null" label="来源 ID">
           <el-input v-model="form.sourceId" placeholder="例如 rajstar" maxlength="64" />
-          <span class="field-help">
-            创建后不可修改；使用小写字母、数字、下划线或连字符。
-          </span>
+          <span class="field-help">创建后不可修改；使用小写字母、数字、下划线或连字符。</span>
         </el-form-item>
         <div class="form-grid">
-          <el-form-item label="盘口显示名">
-            <el-input v-model="form.displayName" />
-          </el-form-item>
-          <el-form-item label="业务时区">
-            <el-input v-model="form.businessTimezone" />
-          </el-form-item>
-          <el-form-item label="币种">
-            <el-input v-model="form.currency" maxlength="3" />
-          </el-form-item>
-          <el-form-item label="启用">
-            <el-switch v-model="form.enabled" />
-            <span class="field-help">
-              选择启用时，请使用“保存并测试”；连接通过后会自动启用。
-            </span>
-          </el-form-item>
+          <el-form-item label="盘口显示名"><el-input v-model="form.displayName" /></el-form-item>
+          <el-form-item label="业务时区"><el-input v-model="form.businessTimezone" /></el-form-item>
+          <el-form-item label="币种"><el-input v-model="form.currency" maxlength="3" /></el-form-item>
         </div>
-        <el-form-item label="Base URL">
-          <el-input v-model="form.baseUrl" placeholder="https://admin.example.com" />
+        <el-form-item label="远端后台 Base URL">
+          <el-input v-model="form.baseUrl" placeholder="https://remote-admin.example.com" />
+          <span class="field-help">填写后台根地址；不要附带 /api、查询参数或接口路径。</span>
         </el-form-item>
-        <el-divider content-position="left">
-          {{
-            credentialsConfigured
-              ? '远端凭据（已设置；留空则保持原值）'
-              : '远端凭据（首次配置需填写账号、密码和 TOTP Secret）'
-          }}
-        </el-divider>
-        <div class="form-grid">
-          <el-form-item label="登录账号">
-            <el-input
-              v-model="form.username"
-              :placeholder="credentialsConfigured ? '已设置，留空则保持原值' : '请输入登录账号'"
-              autocomplete="off"
-            />
-          </el-form-item>
-          <el-form-item label="登录密码">
-            <el-input
-              v-model="form.password"
-              :placeholder="credentialsConfigured ? '已设置，留空则保持原值' : '请输入登录密码'"
-              type="password"
-              show-password
-              autocomplete="new-password"
-            />
-          </el-form-item>
-        </div>
-        <el-form-item label="TOTP Secret">
+        <el-form-item v-if="editingSourceId !== null" label="启用盘口">
+          <el-switch v-model="form.enabled" />
+          <span class="field-help">启用前必须已有一个启用且凭据完整的默认账号。</span>
+        </el-form-item>
+        <el-divider content-position="left">评分审核 API（可选，按盘口配置）</el-divider>
+        <el-form-item label="评分审核 API Base URL">
+          <el-input v-model="form.scoringApiBaseUrl" placeholder="https://primary.example.com/api" />
+        </el-form-item>
+        <el-form-item label="评分审核 API Key">
           <el-input
-            v-model="form.totpSecret"
-            :placeholder="credentialsConfigured ? '已设置，留空则保持原值' : '请输入 TOTP Secret'"
+            v-model="form.scoringApiKey"
+            :placeholder="scoringApiKeyConfigured ? '已设置，留空则保持原值' : '请输入 API Key'"
+            type="password"
+            show-password
+            autocomplete="off"
+          />
+        </el-form-item>
+        <el-divider content-position="left">v1版初审 API（可选，按盘口配置）</el-divider>
+        <el-form-item label="v1版初审 API Base URL">
+          <el-input v-model="form.initialReviewV1ApiBaseUrl" placeholder="https://primary.example.com/api" />
+        </el-form-item>
+        <el-form-item label="v1版初审 API Key">
+          <el-input
+            v-model="form.initialReviewV1ApiKey"
+            :placeholder="initialReviewV1ApiKeyConfigured ? '已设置，留空则保持原值' : '请输入 API Key'"
             type="password"
             show-password
             autocomplete="off"
@@ -370,19 +350,8 @@ onMounted(load)
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button :loading="saving" :disabled="testing" @click="save">
-          {{ editingId === null ? '创建草稿' : '保存配置' }}
-        </el-button>
-        <el-button
-          type="primary"
-          :icon="Connection"
-          :loading="testing"
-          :disabled="saving"
-          @click="saveAndTest"
-        >
-          保存并测试
-        </el-button>
+        <el-button @click="sourceDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="save">保存盘口</el-button>
       </template>
     </el-dialog>
   </div>
@@ -396,5 +365,22 @@ onMounted(load)
   color: var(--ink-muted);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.source-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.source-actions > span {
+  display: inline-flex;
+}
+
+.source-actions :deep(.el-button) {
+  margin-left: 0;
+  white-space: nowrap;
 }
 </style>
