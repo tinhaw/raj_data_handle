@@ -38,7 +38,7 @@ class RemoteMarketMonitorSettingsUpdateRequest(ApiSchema):
     monitor_enabled: bool
     delivery_mode: DeliveryMode
     dashboard_refresh_interval_seconds: int = Field(ge=5, le=300)
-    default_check_interval_seconds: int = Field(ge=30, le=3600)
+    default_check_interval_seconds: int = Field(ge=10, le=3600)
     source_request_timeout_seconds: int = Field(ge=5, le=120)
     default_breach_consecutive_checks: int = Field(ge=1, le=20)
     default_recovery_consecutive_checks: int = Field(ge=1, le=20)
@@ -193,7 +193,7 @@ class RemoteMarketMonitorMetricPolicyResponse(RemoteMarketMonitorMetricPolicyInp
 
 class RemoteMarketMonitorTargetUpdateRequest(ApiSchema):
     enabled: bool
-    check_interval_seconds: int = Field(ge=30, le=3600)
+    check_interval_seconds: int = Field(ge=10, le=3600)
     query_window_mode: QueryWindowMode
     previous_days: int = Field(default=1, ge=1, le=7)
     source_failure_consecutive_checks: int | None = Field(default=None, ge=1, le=20)

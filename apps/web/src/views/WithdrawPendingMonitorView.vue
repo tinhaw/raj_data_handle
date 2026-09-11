@@ -249,7 +249,7 @@ onBeforeUnmount(clearAutoRefresh)
             <span class="field-help">只更新本页面，不查询远端、不发送消息。</span>
           </el-form-item>
           <el-form-item label="新盘口默认远端查询间隔（秒）">
-            <el-input-number v-model="monitor.settings.defaultCheckIntervalSeconds" :min="30" :max="3600" :disabled="!isAdmin" />
+            <el-input-number v-model="monitor.settings.defaultCheckIntervalSeconds" :min="10" :max="3600" :disabled="!isAdmin" />
             <span class="field-help">现有盘口可在各自“配置策略”中覆盖。</span>
           </el-form-item>
           <el-form-item label="超阈值重复告警间隔（分钟）">
@@ -326,7 +326,7 @@ onBeforeUnmount(clearAutoRefresh)
       <el-form label-position="top" class="monitor-form">
         <div class="form-grid">
           <el-form-item label="启用该盘口监控"><el-switch v-model="form.enabled" /></el-form-item>
-          <el-form-item label="远端查询间隔（秒）"><el-input-number v-model="form.checkIntervalSeconds" :min="30" :max="3600" /><span class="field-help">后台按此周期读取状态 0 和 4 的数量。</span></el-form-item>
+          <el-form-item label="远端查询间隔（秒）"><el-input-number v-model="form.checkIntervalSeconds" :min="10" :max="3600" /><span class="field-help">后台按此周期读取状态 0 和 4 的数量。</span></el-form-item>
           <el-form-item label="查询范围"><el-select v-model="form.queryWindowMode"><el-option label="盘口业务日当天" value="business_today" /><el-option label="当天及前 N 天" value="business_today_and_previous_days" /></el-select></el-form-item>
           <el-form-item v-if="form.queryWindowMode === 'business_today_and_previous_days'" label="回查天数"><el-input-number v-model="form.previousDays" :min="1" :max="7" /></el-form-item>
           <el-form-item label="源异常连续次数（留空继承全局）"><el-input-number v-model="form.sourceFailureConsecutiveChecks" :min="1" :max="20" clearable /></el-form-item>
