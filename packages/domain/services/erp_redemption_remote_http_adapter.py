@@ -9,6 +9,7 @@ semantics available without enabling remote writes during code deployment.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from io import BytesIO
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -17,6 +18,11 @@ import httpx
 from openpyxl import load_workbook
 
 from packages.common.totp import generate_totp
+from packages.domain.schemas.remote_account import (
+    ErpCompatibilityRemoteVerifyRequest,
+    ErpCompatibilityRemoteVerifyResponse,
+    ErpRemoteConfigurationVerification,
+)
 from packages.domain.services.erp_redemption_remote_adapter import (
     ErpRedemptionRemoteAdapter,
     RemoteCancelPublishCommand,
@@ -464,6 +470,95 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
             redemption_code=_extract_code_text(content, command.key_number),
             remote_group_key=group_key,
             remote_request_id=request_id,
+        )
+
+    async def _verification_rows(self, path: str, wanted: set[str]):
+        """Bound pagination; absence is only proven after the last advertised page."""
+        found: dict[str, dict] = {}
+        for page in range(1, 51):
+            payload, _ = await self._request("GET", path, params={"page": page, "pageSize": 100})
+            rows = _nested(payload, "data.items")
+            page_info = _nested(payload, "data.pageInfo")
+            if not isinstance(rows, list) or not isinstance(page_info, dict):
+                raise ErpRedemptionRemoteHttpError("远端核验列表缺少有效分页信息。")
+            try:
+                total_pages = int(page_info["totalPage"])
+                current_page = int(page_info["currentPage"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ErpRedemptionRemoteHttpError("远端核验分页信息无效。") from exc
+            if current_page != page or total_pages < 0:
+                raise ErpRedemptionRemoteHttpError("远端核验分页不一致。")
+            for row in rows:
+                if isinstance(row, dict) and (row_id := _first_text(row, "id")) in wanted:
+                    if row_id in found and found[row_id] != row:
+                        raise ErpRedemptionRemoteHttpError("远端核验发现重复配置标识。")
+                    found[row_id] = row
+            if wanted <= found.keys() or page >= total_pages:
+                return found
+        raise ErpRedemptionRemoteHttpError("远端核验未查完所有分页，请缩小范围后重试。")
+
+    async def verify_publication(
+        self, *, grant: ErpRemoteExecutionGrant, payload: ErpCompatibilityRemoteVerifyRequest
+    ) -> ErpCompatibilityRemoteVerifyResponse:
+        self._assert_grant(grant, "DOWNLOAD")
+        rows = await self._verification_rows(
+            "/api/common/publishTask/index", {payload.remote_publish_task_id}
+        )
+        task = rows.get(payload.remote_publish_task_id)
+        status = None
+        state = "UNKNOWN"
+        if (
+            task
+            and str(task.get("cfg_type")) == "19"
+            and task.get("env") == payload.publish_environment
+        ):
+            raw_status = str(task.get("status"))
+            if raw_status in {"0", "1", "2", "3", "4", "5"}:
+                status = int(raw_status)
+                state = {
+                    0: "WAITING",
+                    1: "RUNNING",
+                    2: "FAILED",
+                    3: "COMPLETED",
+                    4: "COMPLETED",
+                    5: "CANCELLED",
+                }[status]
+        configurations = [
+            ErpRemoteConfigurationVerification(
+                configuration_id=ref.configuration_id, state="UNKNOWN"
+            )
+            for ref in payload.configurations
+        ]
+        configuration_error = None
+        if state == "COMPLETED" and payload.configurations:
+            try:
+                configs = await self._verification_rows(
+                    INDEX_PATH, {ref.configuration_id for ref in payload.configurations}
+                )
+                for ref, verified in zip(payload.configurations, configurations, strict=True):
+                    row = configs.get(ref.configuration_id)
+                    verified.state = "MISSING"
+                    if row is not None:
+                        verified.state = (
+                            "MATCHED"
+                            if (
+                                bool(ref.group_key)
+                                and _first_text(row, "group_key", "groupKey") == ref.group_key
+                                and str(row.get("key_number")) == str(ref.key_number)
+                            )
+                            else "MISMATCH"
+                        )
+            except ErpRedemptionRemoteHttpError as exc:
+                # A denied configuration query must not erase a proven task result.
+                configuration_error = str(exc)
+        return ErpCompatibilityRemoteVerifyResponse(
+            remote_publish_task_id=payload.remote_publish_task_id,
+            remote_status=status,
+            publication_state=state,
+            can_cancel=state == "WAITING" and str(task.get("publish_type")) == "2",
+            configurations=configurations,
+            configuration_error=configuration_error,
+            checked_at=datetime.now(UTC),
         )
 
     async def cancel_publish(

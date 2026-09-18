@@ -44,6 +44,7 @@ public class RedemptionRemoteOperationService {
     private final CurrentUser currentUser;
     private final AuditService auditService;
     private final PlatformTransactionManager transactionManager;
+    private final jakarta.persistence.EntityManager entityManager;
     private final RemoteOperationGate remoteOperationGate;
     private final RedemptionCodeStorage codeStorage;
 
@@ -212,11 +213,67 @@ public class RedemptionRemoteOperationService {
         }));
     }
 
+    public UnifiedRedemptionRemoteExecutorClient.PublicationVerification verifyPublication(Long batchId) {
+        var executor = unifiedRemoteExecutorClient.getIfAvailable();
+        if (executor == null) throw ApiException.conflict("REMOTE_VERIFY_UNAVAILABLE", "当前环境不支持统一远端核验");
+        var context = required(tx().execute(status -> {
+            RedemptionCodeBatch batch = requireBatch(batchId);
+            if (!java.util.Set.of("PUBLISHED", "COMPLETED").contains(batch.getStatus())
+                    || batch.getRemotePublishTaskId() == null || batch.getRemotePublishTaskId().startsWith("PENDING:")) {
+                throw ApiException.conflict("REMOTE_VERIFY_NOT_ALLOWED", "当前批次没有可核验的远端发布任务");
+            }
+            var account = remoteDirectory.requireEnabled(batch.getRemoteConnectionId());
+            List<UnifiedRedemptionRemoteExecutorClient.ConfigurationReference> refs = new ArrayList<>();
+            for (var issue : issueRepository.findByBatchIdOrderByClaimDateAscCampaignTierIdAsc(batchId)) {
+                requireMatchingMarket(issue, account);
+                if (issue.getRemoteConfigurationId() == null) throw ApiException.conflict("REMOTE_CONFIGURATION_ID_REQUIRED", "配置标识缺失，请先核对任务");
+                refs.add(new UnifiedRedemptionRemoteExecutorClient.ConfigurationReference(issue.getRemoteConfigurationId(),
+                        issue.getRemoteGroupKey(), batch.getRemoteKeyNumber() == null ? 1 : batch.getRemoteKeyNumber()));
+            }
+            return new VerificationContext(account.id(), batch.getRemotePublishTaskId(), options(batch).publishEnvironment(), refs);
+        }));
+        var result = executor.verifyPublication(context.accountId(), batchId, context.taskId(), context.environment(), context.configurations());
+        tx().executeWithoutResult(status -> {
+            var batch = requireFreshBatch(batchId);
+            if (!context.taskId().equals(batch.getRemotePublishTaskId()) || !context.accountId().equals(batch.getRemoteConnectionId())) {
+                throw ApiException.conflict("REMOTE_PUBLISH_STATE_CHANGED", "发布任务已变化，请刷新后重新核验");
+            }
+            auditService.record("REDEMPTION_REMOTE_PUBLICATION_VERIFIED", "REDEMPTION_CODE_BATCH", batchId.toString(), null, null, result);
+        });
+        return result;
+    }
+
+    private RedemptionCodeBatch requireFreshBatch(Long batchId) {
+        var batch = requireBatch(batchId);
+        // OpenEntityManagerInView may retain the pre-network version across short transactions.
+        entityManager.refresh(batch);
+        return batch;
+    }
+
+    private record VerificationContext(Long accountId, String taskId, String environment,
+            List<UnifiedRedemptionRemoteExecutorClient.ConfigurationReference> configurations) { }
+
     public Long downloadCode(Long issueId) {
         UnifiedRedemptionRemoteExecutorClient executor = unifiedRemoteExecutorClient.getIfAvailable();
         if (executor != null) {
-            DownloadContext context = required(tx().execute(status -> prepareDownload(issueId)));
             try {
+                var issue = requireIssue(issueId);
+                var verification = verifyPublication(issue.getBatchId());
+                if (!"COMPLETED".equals(verification.publicationState())) {
+                    throw ApiException.conflict("REMOTE_PUBLICATION_NOT_COMPLETED", "尚未确认远端发布完成，请先核验远端状态");
+                }
+                if (verification.configurations().stream().noneMatch(item ->
+                        Objects.equals(item.configurationId(), issue.getRemoteConfigurationId()) && "MATCHED".equals(item.state()))) {
+                    throw ApiException.conflict("REMOTE_CONFIGURATION_MISMATCH", "远端发布已完成，但兑换配置未找到或不匹配，请先核验配置");
+                }
+                DownloadContext context = required(tx().execute(status -> {
+                    var batch = requireFreshBatch(issue.getBatchId());
+                    if (!verification.remotePublishTaskId().equals(batch.getRemotePublishTaskId())) {
+                        throw ApiException.conflict("REMOTE_PUBLISH_STATE_CHANGED", "发布任务已变化，请重新核验");
+                    }
+                    activateConfirmedPublication(batch);
+                    return prepareDownload(issueId);
+                }));
                 var result = executor.download(context.accountId(), issueId, context.configurationId(), context.groupKey(), context.keyNumber());
                 return required(tx().execute(status -> completeDownload(issueId, result.groupKey(), String.join("\n", result.codes()))));
             } catch (RuntimeException exception) {
@@ -521,7 +578,7 @@ public class RedemptionRemoteOperationService {
         if (!isCancellableScheduledPublish(batch)) throw ApiException.conflict("SCHEDULED_PUBLISH_NOT_CANCELLABLE", "定时发布状态已变化，请刷新后重试");
         batch.setStatus("READY_TO_PUBLISH");
         batch.setRemotePublishCancelledAt(Instant.now());
-        batch.setRemotePublishNote("已人工撤销定时发布，不再进行后续自动定时发布尝试");
+        batch.setRemotePublishNote(appendNote(batch.getRemotePublishNote(), "已人工撤销定时发布，不再进行后续自动定时发布尝试"));
         batch.setRemotePublishError(null);
         batch.setRemotePublishTaskId(null);
         batchRepository.save(batch);
@@ -533,7 +590,7 @@ public class RedemptionRemoteOperationService {
     private void recordCancelFailure(Long batchId, String error) {
         RedemptionCodeBatch batch = requireBatch(batchId);
         if ("PUBLISHED".equals(batch.getStatus()) && "SCHEDULED".equals(batch.getRemotePublishMode())) {
-            batch.setRemotePublishNote(limitNote("撤销定时发布失败：" + error + "；原定发布时间：" + formatIndiaTime(batch.getRemoteScheduledPublishAt())));
+            batch.setRemotePublishNote(appendNote(batch.getRemotePublishNote(), "撤销定时发布失败：" + error + "；原定发布时间：" + formatIndiaTime(batch.getRemoteScheduledPublishAt())));
             batchRepository.save(batch);
         }
         auditService.record("REDEMPTION_REMOTE_SCHEDULED_PUBLISH_CANCEL_FAILED", "REDEMPTION_CODE_BATCH", batchId.toString(), null, null,
@@ -557,7 +614,7 @@ public class RedemptionRemoteOperationService {
     private DownloadContext prepareDownload(Long issueId) {
         RedemptionCodeIssue issue = requireIssue(issueId);
         RedemptionCodeBatch batch = requireRemoteBatch(issue);
-        activateScheduledPublishIfDue(batch);
+        if (unifiedRemoteExecutorClient.getIfAvailable() == null) activateStandaloneScheduledPublishIfDue(batch);
         if (!("PUBLISHED".equals(issue.getWorkflowStatus()) || "CODE_IMPORTED".equals(issue.getWorkflowStatus()))) {
             throw ApiException.conflict("REMOTE_DOWNLOAD_NOT_ALLOWED", "请先发布该远端兑换码配置");
         }
@@ -573,7 +630,7 @@ public class RedemptionRemoteOperationService {
      * first download request advances the locally tracked issues to PUBLISHED. Any remote export error remains on
      * the affected issue, rather than claiming that the scheduled task completed successfully.
      */
-    private void activateScheduledPublishIfDue(RedemptionCodeBatch batch) {
+    private void activateStandaloneScheduledPublishIfDue(RedemptionCodeBatch batch) {
         if (!("PUBLISHED".equals(batch.getStatus()) && "SCHEDULED".equals(batch.getRemotePublishMode())
                 && batch.getRemoteScheduledPublishAt() != null && !batch.getRemoteScheduledPublishAt().isAfter(nowInIndia()))) {
             return;
@@ -584,6 +641,16 @@ public class RedemptionRemoteOperationService {
         createdIssues.forEach(issue -> issue.setWorkflowStatus("PUBLISHED"));
         issueRepository.saveAll(createdIssues);
         batch.setRemotePublishNote(appendNote(batch.getRemotePublishNote(), "已到定时发布时间，开始下载兑换码"));
+        batchRepository.save(batch);
+    }
+
+    private void activateConfirmedPublication(RedemptionCodeBatch batch) {
+        var issues = issueRepository.findByBatchIdOrderByClaimDateAscCampaignTierIdAsc(batch.getId());
+        var created = issues.stream().filter(issue -> "CREATED".equals(issue.getWorkflowStatus())).toList();
+        if (created.isEmpty()) return;
+        created.forEach(issue -> issue.setWorkflowStatus("PUBLISHED"));
+        issueRepository.saveAll(created);
+        batch.setRemotePublishNote(appendNote(batch.getRemotePublishNote(), "已核验远端发布完成，开始下载兑换码"));
         batchRepository.save(batch);
     }
 

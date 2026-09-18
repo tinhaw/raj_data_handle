@@ -413,7 +413,7 @@ class RedemptionCampaignHttpTest {
                         .content("{\"rowVersion\":" + scheduledDetail.at("/batch/rowVersion").asLong() + "}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.batch.status").value("READY_TO_PUBLISH"))
-                .andExpect(jsonPath("$.data.batch.remotePublishNote").value("已人工撤销定时发布，不再进行后续自动定时发布尝试"))
+                .andExpect(jsonPath("$.data.batch.remotePublishNote").value(org.hamcrest.Matchers.containsString("已人工撤销定时发布，不再进行后续自动定时发布尝试")))
                 .andReturn();
         JsonNode cancelledDetail = data(cancelledResult);
         verify(remoteGiftCodeBackendClient).cancelScheduledPublish(any(), any());

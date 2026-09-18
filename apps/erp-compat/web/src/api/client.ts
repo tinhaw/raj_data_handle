@@ -1,3 +1,4 @@
+import type { PublicationVerification } from '@/modules/redemption/publicationStatus'
 import axios, { AxiosError } from 'axios'
 import type {
   AuditLog,
@@ -845,6 +846,7 @@ export const api = {
     downloadRemoteCode: async (issueId: string | number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/remote-download`))),
     publishBatch: async (batchId: string | number, rowVersion?: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/publish`, { rowVersion }))),
     publishRemoteBatch: async (batchId: string | number, rowVersion: number | undefined, mode: 'IMMEDIATE' | 'SCHEDULED' = 'IMMEDIATE', scheduledTime?: string, fallbackToScheduled = true) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/remote-publish`, { rowVersion, mode, scheduledTime, fallbackToScheduled }))),
+    verifyRemotePublication: async (batchId: string | number) => request<PublicationVerification>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/remote-publish/verify`)),
     cancelScheduledPublish: async (batchId: string | number, rowVersion?: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/remote-publish/cancel`, { rowVersion }))),
     recoverRemotePublish: async (batchId: string | number, rowVersion?: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/remote-publish/recover`, { rowVersion }))),
     importDownloadedCodes: async (batchId: string | number, rows: Array<{ remoteConfigurationId: string; redemptionCode: string }>) => {

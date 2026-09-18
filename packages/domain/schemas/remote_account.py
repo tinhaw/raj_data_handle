@@ -267,6 +267,37 @@ class ErpCompatibilityRemotePublishResponse(ApiSchema):
     remote_request_id: str | None = None
 
 
+class ErpRemoteConfigurationReference(ApiSchema):
+    configuration_id: str = Field(min_length=1, max_length=255)
+    group_key: str | None = Field(default=None, max_length=255)
+    key_number: int = Field(ge=1, le=1000)
+
+
+class ErpCompatibilityRemoteVerifyRequest(ApiSchema):
+    account_id: int = Field(ge=1)
+    batch_id: int = Field(ge=1)
+    remote_publish_task_id: str = Field(pattern=r"^[1-9][0-9]*$", max_length=255)
+    publish_environment: Literal["test", "prod"]
+    configurations: list[ErpRemoteConfigurationReference] = Field(
+        default_factory=list, max_length=1000
+    )
+
+
+class ErpRemoteConfigurationVerification(ApiSchema):
+    configuration_id: str
+    state: Literal["MATCHED", "MISSING", "MISMATCH", "UNKNOWN"]
+
+
+class ErpCompatibilityRemoteVerifyResponse(ApiSchema):
+    remote_publish_task_id: str
+    remote_status: int | None = None
+    publication_state: Literal["WAITING", "RUNNING", "FAILED", "COMPLETED", "CANCELLED", "UNKNOWN"]
+    can_cancel: bool = False
+    configurations: list[ErpRemoteConfigurationVerification] = Field(default_factory=list)
+    checked_at: datetime
+    configuration_error: str | None = None
+
+
 class ErpCompatibilityRemoteCancelRequest(ApiSchema):
     account_id: int = Field(ge=1)
     batch_id: int = Field(ge=1)

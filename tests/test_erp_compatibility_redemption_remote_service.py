@@ -19,6 +19,7 @@ from packages.domain.schemas.remote_account import (
     ErpCompatibilityRemoteCreateRequest,
     ErpCompatibilityRemoteDownloadRequest,
     ErpCompatibilityRemotePublishRequest,
+    ErpCompatibilityRemoteVerifyRequest,
     RemoteAccountCreateRequest,
     RemoteAccountCredentialsWrite,
 )
@@ -30,6 +31,7 @@ from packages.domain.services.erp_compatibility_redemption_remote_service import
     execute_compatibility_remote_create,
     execute_compatibility_remote_download,
     execute_compatibility_remote_publish,
+    execute_compatibility_remote_verify,
 )
 from packages.domain.services.erp_remote_account_tag_service import (
     sync_remote_account_tags,
@@ -535,3 +537,108 @@ def test_compatibility_cancel_rejects_invalid_task_or_missing_confirmation(task_
             remote_publish_task_id=task_id,
             execution_confirmed=confirmed,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authorized", [True, False])
+async def test_publication_verification_uses_unified_account_read_capability(authorized):
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings = _settings()
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.path == "/api/system/login":
+            return httpx.Response(200, json={"data": {"token": "test-jwt"}})
+        assert request.method == "GET"
+        assert request.url.path == "/api/common/publishTask/index"
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "items": [{"id": 222, "status": 4, "env": "test", "cfg_type": 19}],
+                    "pageInfo": {"currentPage": 1, "totalPage": 1},
+                }
+            },
+        )
+
+    async with factory() as session:
+        await create_source(
+            session,
+            request=SourceCreateRequest(
+                source_id="rajwin",
+                display_name="RajWin",
+                base_url="https://remote.example",
+                enabled=False,
+            ),
+            actor_user_id=1,
+            settings=settings,
+        )
+        account = await create_remote_account(
+            session,
+            request=RemoteAccountCreateRequest(
+                source_id="rajwin",
+                login_username="current-enabled-account",
+                display_name="当前启用账号",
+                credentials=RemoteAccountCredentialsWrite(
+                    password="test-password",
+                    totp_secret="JBSWY3DPEHPK3PXP",
+                ),
+            ),
+            actor_user_id=1,
+            settings=settings,
+        )
+        await upsert_source(
+            session,
+            source_id="rajwin",
+            request=SourcePatchRequest(enabled=True),
+            actor_user_id=1,
+            settings=settings,
+        )
+        compatibility_id = (
+            await get_erp_compatibility_ids(
+                session,
+                entity_type="remote_account",
+                canonical_ids=[account.account.id],
+            )
+        )[account.account.id]
+
+        if not authorized:
+            await session.execute(
+                update(RemoteAccountCapability)
+                .where(
+                    RemoteAccountCapability.account_id == account.account.id,
+                    RemoteAccountCapability.capability == "ERP_REDEMPTION_DOWNLOAD",
+                )
+                .values(enabled=False)
+            )
+            await session.commit()
+        request = ErpCompatibilityRemoteVerifyRequest(
+            account_id=compatibility_id,
+            batch_id=54,
+            remote_publish_task_id="222",
+            publish_environment="test",
+        )
+        if authorized:
+            result = await execute_compatibility_remote_verify(
+                session,
+                payload=request,
+                actor_user_id=1,
+                settings=settings,
+                transport=httpx.MockTransport(handler),
+            )
+            assert result.publication_state == "COMPLETED"
+        else:
+            with pytest.raises(ErpCompatibilityRemoteExecutionError):
+                await execute_compatibility_remote_verify(
+                    session,
+                    payload=request,
+                    actor_user_id=1,
+                    settings=settings,
+                    transport=httpx.MockTransport(handler),
+                )
+            assert calls == []
+    await engine.dispose()

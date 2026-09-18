@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 
 PAGE = (
@@ -8,26 +6,10 @@ PAGE = (
 )
 
 
-def test_immediate_published_batch_does_not_fall_back_to_generating() -> None:
+def test_download_and_cancel_actions_require_remote_verification():
     source = PAGE.read_text(encoding="utf-8")
-
-    assert (
-        "if (row.detail.batch.status === 'PUBLISHED') "
-        "return { text: '已发布', type: 'primary' as const }"
-    ) in source
-    assert (
-        "if (batch.status === 'PUBLISHED') return "
-        "`${batch.publishedCount} / ${batch.expectedCodeCount} 条远端配置已发布，待下载兑换码`"
-    ) in source
-
-
-def test_multi_market_published_task_uses_published_counts() -> None:
-    source = PAGE.read_text(encoding="utf-8")
-
-    assert (
-        "task.members.every((member) => member.detail.batch.status === 'PUBLISHED')"
-    ) in source
-    assert (
-        "task.members.reduce((total, member) => "
-        "total + member.detail.batch.publishedCount, 0)"
-    ) in source
+    assert "hasScheduledPublishReached" not in source
+    assert "const check = await verifyRemotePublication(row, true)" in source
+    assert "check?.canCancel" in source
+    assert "publicationCheck(row)?.publicationState === 'COMPLETED'" in source
+    assert "发布 / 兑换码状态" in source

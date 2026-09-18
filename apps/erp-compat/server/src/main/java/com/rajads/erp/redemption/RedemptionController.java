@@ -104,6 +104,12 @@ public class RedemptionController {
         return service.batch(remoteOperations.publish(batchId, request));
     }
 
+    @PostMapping("/batches/{batchId}/remote-publish/verify")
+    @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
+    public UnifiedRedemptionRemoteExecutorClient.PublicationVerification verifyRemotePublish(@PathVariable Long batchId) {
+        return remoteOperations.verifyPublication(batchId);
+    }
+
     @PostMapping("/batches/{batchId}/remote-publish/cancel")
     @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
     public RedemptionDtos.BatchDetailResponse cancelRemotePublish(@PathVariable Long batchId,

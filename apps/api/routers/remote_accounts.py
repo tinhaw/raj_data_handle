@@ -24,6 +24,8 @@ from packages.domain.schemas.remote_account import (
     ErpCompatibilityRemotePublishRequest,
     ErpCompatibilityRemotePublishResponse,
     ErpCompatibilityRemoteRegistry,
+    ErpCompatibilityRemoteVerifyRequest,
+    ErpCompatibilityRemoteVerifyResponse,
     RemoteAccountCapabilityUpdateRequest,
     RemoteAccountConnectionRequest,
     RemoteAccountCreateRequest,
@@ -52,6 +54,7 @@ from packages.domain.services.erp_compatibility_redemption_remote_service import
     execute_compatibility_remote_create,
     execute_compatibility_remote_download,
     execute_compatibility_remote_publish,
+    execute_compatibility_remote_verify,
 )
 from packages.domain.services.erp_remote_account_tag_service import (
     RemoteAccountTagSyncError,
@@ -179,6 +182,27 @@ async def post_compatibility_redemption_publish(
         remote_publish_task_id=result.remote_publish_task_id,
         remote_request_id=result.remote_request_id,
     )
+
+
+@router.post(
+    "/compatibility-redemption/verify",
+    response_model=ErpCompatibilityRemoteVerifyResponse,
+    include_in_schema=False,
+)
+async def post_compatibility_redemption_verify(
+    payload: ErpCompatibilityRemoteVerifyRequest,
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REDEMPTION_GENERATE)),
+    session: AsyncSession = Depends(get_db_session),
+) -> ErpCompatibilityRemoteVerifyResponse:
+    try:
+        return await execute_compatibility_remote_verify(
+            session,
+            payload=payload,
+            actor_user_id=auth.user.id,
+            settings=get_settings(),
+        )
+    except ErpCompatibilityRemoteExecutionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.post(

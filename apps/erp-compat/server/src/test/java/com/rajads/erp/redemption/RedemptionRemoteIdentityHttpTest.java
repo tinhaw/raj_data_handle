@@ -140,6 +140,46 @@ class RedemptionRemoteIdentityHttpTest {
         verifyNoInteractions(standalone, gate);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"waiting", "missing", "success", "empty", "unavailable", "race"})
+    void downloadRequiresActualPublicationAndMatchingConfiguration(String scenario) throws Exception {
+        var session = login();
+        String prefix = "VERIFY_" + scenario.toUpperCase();
+        long market = market(session, prefix);
+        long accountId = account(session, market, prefix.toLowerCase());
+        var group = group(session, market, prefix + "_GROUP");
+        register(session, group).andExpect(status().isOk());
+        long batchId = group.at("/batch/id").asLong();
+        long issueId = group.at("/issues/0/id").asLong();
+        // Local time is deliberately in the past for WAITING and the future for COMPLETED.
+        jdbc.update("update erp_compat_redemption_code_batches set status='PUBLISHED',remote_publish_mode='SCHEDULED',remote_publish_task_id='222',remote_scheduled_publish_at=? where id=?",
+                java.time.LocalDateTime.now(java.time.ZoneId.of("Asia/Kolkata")).plusHours(scenario.equals("waiting") ? -1 : 1), batchId);
+        jdbc.update("update erp_compat_redemption_code_issues set remote_group_key='group-174' where id=?", issueId);
+        var configs = java.util.List.of(new UnifiedRedemptionRemoteExecutorClient.ConfigurationVerification(
+                "manual-scope-id", scenario.equals("missing") ? "MISSING" : "MATCHED"));
+        var verification = new UnifiedRedemptionRemoteExecutorClient.PublicationVerification("222", scenario.equals("waiting") ? 0 : 4,
+                scenario.equals("waiting") ? "WAITING" : "COMPLETED", scenario.equals("waiting"), configs, java.time.Instant.now().toString(), null);
+        when(executor.verifyPublication(eq(accountId), eq(batchId), eq("222"), eq("test"), anyList())).thenReturn(verification);
+        if (scenario.equals("unavailable")) when(executor.verifyPublication(anyLong(), anyLong(), anyString(), anyString(), anyList()))
+                .thenThrow(new com.rajads.erp.identity.CompatibilityIdentityUnavailableException("verification unavailable"));
+        if (scenario.equals("race")) when(executor.verifyPublication(anyLong(), anyLong(), anyString(), anyString(), anyList()))
+                .thenAnswer(invocation -> { jdbc.update("update erp_compat_redemption_code_batches set remote_publish_task_id='223' where id=?", batchId); return verification; });
+        when(executor.download(anyLong(), anyLong(), anyString(), any(), anyInt()))
+                .thenReturn(new UnifiedRedemptionRemoteExecutorClient.DownloadedCodes(java.util.List.of("CODE-VERIFY-1"), "group-174"));
+        if (scenario.equals("empty")) when(executor.download(anyLong(), anyLong(), anyString(), any(), anyInt()))
+                .thenThrow(com.rajads.erp.shared.ApiException.badRequest("EMPTY_CODES", "远端兑换码文件应包含 1 个兑换码，实际 0 个。"));
+        var action = mvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + issueId + "/remote-download").session(session).with(csrf()));
+        if (scenario.equals("success")) action.andExpect(status().isOk()).andExpect(jsonPath("$.data.batch.status").value("COMPLETED"));
+        else if (scenario.equals("unavailable")) action.andExpect(status().isServiceUnavailable());
+        else if (scenario.equals("empty")) action.andExpect(status().isBadRequest());
+        else action.andExpect(status().isConflict());
+        String expected = scenario.equals("success") ? "CODE_IMPORTED" : scenario.equals("empty") ? "PUBLISHED" : "CREATED";
+        assertThat(jdbc.queryForObject("select workflow_status from erp_compat_redemption_code_issues where id=?", String.class, issueId)).isEqualTo(expected);
+        if (!java.util.Set.of("success", "empty").contains(scenario)) verify(executor, never()).download(anyLong(), anyLong(), anyString(), any(), anyInt());
+        verify(executor).verifyPublication(eq(accountId), eq(batchId), eq("222"), eq("test"), anyList());
+        verifyNoInteractions(standalone, gate);
+    }
+
     private org.springframework.test.web.servlet.ResultActions create(MockHttpSession session, long issue, boolean retry) throws Exception {
         return mvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + issue + "/remote-create")
                 .param("retryFailed", Boolean.toString(retry)).session(session).with(csrf()));

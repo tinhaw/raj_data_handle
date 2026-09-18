@@ -136,6 +136,33 @@ public class UnifiedRedemptionRemoteExecutorClient {
                 responseText(body, "remoteRequestId", "remote_request_id"));
     }
 
+    public record ConfigurationReference(String configuration_id, String group_key, int key_number) { }
+    public record ConfigurationVerification(String configurationId, String state) { }
+    public record PublicationVerification(String remotePublishTaskId, Integer remoteStatus,
+            String publicationState, boolean canCancel, List<ConfigurationVerification> configurations, String checkedAt, String configurationError) { }
+
+    public PublicationVerification verifyPublication(Long accountId, Long batchId, String taskId,
+            String environment, List<ConfigurationReference> configurations) {
+        JsonNode body = postJson("/verify", Map.of("account_id", accountId, "batch_id", batchId,
+                "remote_publish_task_id", taskId, "publish_environment", environment, "configurations", configurations),
+                "远端状态核验被拒绝", "UNIFIED_REMOTE_VERIFY_REJECTED", "远端状态暂时无法核验");
+        String returnedId = responseText(body, "remotePublishTaskId", "remote_publish_task_id");
+        String state = responseText(body, "publicationState", "publication_state");
+        String checkedAt = responseText(body, "checkedAt", "checked_at");
+        if (!taskId.equals(returnedId) || state == null || checkedAt == null
+                || !java.util.Set.of("WAITING", "RUNNING", "FAILED", "COMPLETED", "CANCELLED", "UNKNOWN").contains(state)
+                || !body.path("configurations").isArray()) {
+            throw new CompatibilityIdentityUnavailableException("远端状态核验返回无效结果");
+        }
+        List<ConfigurationVerification> verified = new java.util.ArrayList<>();
+        for (JsonNode item : body.path("configurations")) verified.add(new ConfigurationVerification(
+                responseText(item, "configurationId", "configuration_id"), item.path("state").asText()));
+        JsonNode remoteStatus = body.has("remoteStatus") ? body.path("remoteStatus") : body.path("remote_status");
+        boolean canCancel = body.has("canCancel") ? body.path("canCancel").asBoolean() : body.path("can_cancel").asBoolean();
+        return new PublicationVerification(returnedId, remoteStatus.isInt() ? remoteStatus.intValue() : null,
+                state, "WAITING".equals(state) && canCancel, List.copyOf(verified), checkedAt, responseText(body, "configurationError", "configuration_error"));
+    }
+
     public void cancelScheduledPublish(Long accountId, Long batchId, String taskId) {
         if (accountId == null || batchId == null || taskId == null || taskId.isBlank()) {
             throw ApiException.badRequest("UNIFIED_REMOTE_CANCEL_INVALID", "统一远端撤销缺少账号、批次或发布任务 ID");

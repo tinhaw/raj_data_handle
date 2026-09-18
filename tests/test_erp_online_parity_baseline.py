@@ -88,6 +88,7 @@ def test_compatibility_internal_contracts_expose_confirmed_redemption_bridges() 
             "/api/v1/erp/remote-accounts/compatibility-redemption/create",
             "/api/v1/erp/remote-accounts/compatibility-redemption/publish",
             "/api/v1/erp/remote-accounts/compatibility-redemption/cancel",
+            "/api/v1/erp/remote-accounts/compatibility-redemption/verify",
         }
     }
     assert set(internal_routes) == {
@@ -96,6 +97,7 @@ def test_compatibility_internal_contracts_expose_confirmed_redemption_bridges() 
         "/api/v1/erp/remote-accounts/compatibility-redemption/create",
         "/api/v1/erp/remote-accounts/compatibility-redemption/publish",
         "/api/v1/erp/remote-accounts/compatibility-redemption/cancel",
+        "/api/v1/erp/remote-accounts/compatibility-redemption/verify",
     }
     assert internal_routes["/api/v1/erp/access/compatibility-session"].methods == {"GET"}
     assert internal_routes["/api/v1/erp/remote-accounts/compatibility-registry"].methods == {"GET"}
@@ -113,6 +115,10 @@ def test_compatibility_internal_contracts_expose_confirmed_redemption_bridges() 
     )
     assert (
         internal_routes["/api/v1/erp/remote-accounts/compatibility-redemption/cancel"].methods
+        == {"POST"}
+    )
+    assert (
+        internal_routes["/api/v1/erp/remote-accounts/compatibility-redemption/verify"].methods
         == {"POST"}
     )
     assert all(route.include_in_schema is False for route in internal_routes.values())

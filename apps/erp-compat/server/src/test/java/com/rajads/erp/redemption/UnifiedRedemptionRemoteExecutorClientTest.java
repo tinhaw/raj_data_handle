@@ -146,6 +146,38 @@ class UnifiedRedemptionRemoteExecutorClientTest {
     }
 
     @Test
+    void verificationForwardsTaskAndConfigurationIdentity() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/compatibility-redemption/verify", exchange -> {
+            JsonNode payload = mapper.readTree(exchange.getRequestBody());
+            assertThat(payload.path("remote_publish_task_id").asText()).isEqualTo("222");
+            assertThat(payload.path("publish_environment").asText()).isEqualTo("test");
+            assertThat(payload.at("/configurations/0/configuration_id").asText()).isEqualTo("174");
+            assertThat(payload.at("/configurations/0/group_key").asText()).isEqualTo("group-174");
+            assertThat(payload.at("/configurations/0/key_number").asInt()).isEqualTo(200);
+            byte[] body = """
+                    {"remotePublishTaskId":"222","remoteStatus":4,"publicationState":"COMPLETED","canCancel":false,
+                     "configurations":[{"configurationId":"174","state":"MISSING"}],"checkedAt":"2026-09-19T00:00:00Z"}
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        var request = new MockHttpServletRequest();
+        request.setCookies(new Cookie("raj_session", "test-session"));
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+        var client = new UnifiedRedemptionRemoteExecutorClient(mapper,
+                URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/compatibility-redemption"), "raj_session");
+        var result = client.verifyPublication(23L, 54L, "222", "test", List.of(
+                new UnifiedRedemptionRemoteExecutorClient.ConfigurationReference("174", "group-174", 200)));
+        assertThat(result.publicationState()).isEqualTo("COMPLETED");
+        assertThat(result.canCancel()).isFalse();
+        assertThat(result.configurations().getFirst().state()).isEqualTo("MISSING");
+    }
+
+    @Test
     void postsConfirmedRemotePublishThroughUnifiedExecutor() throws Exception {
         ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
