@@ -136,6 +136,22 @@ public class UnifiedRedemptionRemoteExecutorClient {
                 responseText(body, "remoteRequestId", "remote_request_id"));
     }
 
+    public void cancelScheduledPublish(Long accountId, Long batchId, String taskId) {
+        if (accountId == null || batchId == null || taskId == null || taskId.isBlank()) {
+            throw ApiException.badRequest("UNIFIED_REMOTE_CANCEL_INVALID", "统一远端撤销缺少账号、批次或发布任务 ID");
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("account_id", accountId);
+        payload.put("batch_id", batchId);
+        payload.put("remote_publish_task_id", taskId);
+        payload.put("execution_confirmed", true);
+        JsonNode body = postJson("/cancel", payload, "统一远端撤销服务拒绝了该请求",
+                "UNIFIED_REMOTE_CANCEL_REJECTED", "统一远端撤销服务暂时不可用");
+        if (!body.path("cancelled").isBoolean() || !body.path("cancelled").booleanValue()) {
+            throw new CompatibilityIdentityUnavailableException("统一远端撤销服务未确认撤销成功");
+        }
+    }
+
     public DownloadedCodes download(Long accountId, Long issueId, String configurationId, String groupKey, int keyNumber) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("account_id", accountId);

@@ -13,6 +13,8 @@ from packages.common.database import get_db_session
 from packages.common.settings import get_settings
 from packages.domain.models import RemoteAccountTagSnapshot, SourceConfig
 from packages.domain.schemas.remote_account import (
+    ErpCompatibilityRemoteCancelRequest,
+    ErpCompatibilityRemoteCancelResponse,
     ErpCompatibilityRemoteConnection,
     ErpCompatibilityRemoteCreateRequest,
     ErpCompatibilityRemoteCreateResponse,
@@ -46,6 +48,7 @@ from packages.domain.services.erp_compatibility_id_service import (
 )
 from packages.domain.services.erp_compatibility_redemption_remote_service import (
     ErpCompatibilityRemoteExecutionError,
+    execute_compatibility_remote_cancel,
     execute_compatibility_remote_create,
     execute_compatibility_remote_download,
     execute_compatibility_remote_publish,
@@ -174,6 +177,31 @@ async def post_compatibility_redemption_publish(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return ErpCompatibilityRemotePublishResponse(
         remote_publish_task_id=result.remote_publish_task_id,
+        remote_request_id=result.remote_request_id,
+    )
+
+
+@router.post(
+    "/compatibility-redemption/cancel",
+    response_model=ErpCompatibilityRemoteCancelResponse,
+    include_in_schema=False,
+)
+async def post_compatibility_redemption_cancel(
+    payload: ErpCompatibilityRemoteCancelRequest,
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REDEMPTION_GENERATE)),
+    session: AsyncSession = Depends(get_db_session),
+) -> ErpCompatibilityRemoteCancelResponse:
+    try:
+        result = await execute_compatibility_remote_cancel(
+            session,
+            payload=payload,
+            actor_user_id=auth.user.id,
+            settings=get_settings(),
+        )
+    except ErpCompatibilityRemoteExecutionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return ErpCompatibilityRemoteCancelResponse(
+        cancelled=True,
         remote_request_id=result.remote_request_id,
     )
 

@@ -116,6 +116,35 @@ class UnifiedRedemptionRemoteExecutorClientTest {
         assertThat(result.groupKey()).isEqualTo("group-1");
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"true", "false", "null"})
+    void cancelRequiresExplicitSuccessAndForwardsOnlyTaskIdentity(String confirmed) throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/compatibility-redemption/cancel", exchange -> {
+            assertThat(exchange.getRequestMethod()).isEqualTo("POST");
+            JsonNode payload = mapper.readTree(exchange.getRequestBody());
+            assertThat(payload.size()).isEqualTo(4);
+            assertThat(payload.path("account_id").asLong()).isEqualTo(23L);
+            assertThat(payload.path("batch_id").asLong()).isEqualTo(24L);
+            assertThat(payload.path("remote_publish_task_id").asText()).isEqualTo("17717");
+            assertThat(payload.path("execution_confirmed").asBoolean()).isTrue();
+            byte[] body = ("{\"cancelled\":" + confirmed + "}").getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        var request = new MockHttpServletRequest();
+        request.setCookies(new Cookie("raj_session", "test-session"));
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+        var client = new UnifiedRedemptionRemoteExecutorClient(mapper,
+                URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/compatibility-redemption"), "raj_session");
+        if (confirmed.equals("true")) client.cancelScheduledPublish(23L, 24L, "17717");
+        else org.assertj.core.api.Assertions.assertThatThrownBy(() -> client.cancelScheduledPublish(23L, 24L, "17717"))
+                .isInstanceOf(com.rajads.erp.identity.CompatibilityIdentityUnavailableException.class);
+    }
+
     @Test
     void postsConfirmedRemotePublishThroughUnifiedExecutor() throws Exception {
         ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();

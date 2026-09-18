@@ -267,6 +267,24 @@ class ErpCompatibilityRemotePublishResponse(ApiSchema):
     remote_request_id: str | None = None
 
 
+class ErpCompatibilityRemoteCancelRequest(ApiSchema):
+    account_id: int = Field(ge=1)
+    batch_id: int = Field(ge=1)
+    remote_publish_task_id: str = Field(min_length=1, max_length=255, pattern=r"^[1-9][0-9]*$")
+    execution_confirmed: bool = False
+
+    @model_validator(mode="after")
+    def validate_remote_confirmation(self) -> ErpCompatibilityRemoteCancelRequest:
+        if not self.execution_confirmed:
+            raise ValueError("必须明确确认本次撤销定时发布。")
+        return self
+
+
+class ErpCompatibilityRemoteCancelResponse(ApiSchema):
+    cancelled: bool
+    remote_request_id: str | None = None
+
+
 class RemoteTag(ApiSchema):
     id: int = Field(ge=1)
     name: str = Field(min_length=1, max_length=200)

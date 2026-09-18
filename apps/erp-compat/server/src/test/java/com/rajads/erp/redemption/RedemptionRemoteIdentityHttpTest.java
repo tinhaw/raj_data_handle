@@ -85,6 +85,61 @@ class RedemptionRemoteIdentityHttpTest {
         verifyNoInteractions(executor, standalone);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"success", "rejected", "unavailable", "stale", "elapsed", "changed_market"})
+    void cancellationUsesUnifiedExecutorAndPreservesStateUntilConfirmed(String scenario) throws Exception {
+        MockHttpSession session = login();
+        String prefix = "CANCEL_" + scenario.toUpperCase();
+        long market = market(session, prefix);
+        long account = account(session, market, prefix.toLowerCase());
+        JsonNode group = group(session, market, prefix + "_GROUP");
+        register(session, group).andExpect(status().isOk());
+        long batchId = group.at("/batch/id").asLong();
+        String path = "/api/v1/redemption-campaigns/batches/" + batchId;
+        long version = jdbc.queryForObject("select row_version from erp_compat_redemption_code_batches where id=?", Long.class, batchId);
+        when(executor.publish(anyLong(), anyLong(), anyString(), anyBoolean(), any(), anyBoolean()))
+                .thenReturn(new UnifiedRedemptionRemoteExecutorClient.PublishedBatch("17717", null));
+        String future = java.time.LocalDateTime.now(java.time.ZoneId.of("Asia/Kolkata")).plusHours(2)
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        JsonNode scheduled = send(session, path + "/remote-publish", mapper.writeValueAsString(java.util.Map.of(
+                "rowVersion", version, "mode", "SCHEDULED", "scheduledTime", future)));
+        version = scheduled.at("/batch/rowVersion").asLong();
+        // Production forbids the old client, but must still allow the unified cancellation path.
+        doThrow(com.rajads.erp.shared.ApiException.forbidden("legacy client disabled")).when(gate).requireEnabled("remote_cancel");
+        if (scenario.equals("rejected")) doThrow(com.rajads.erp.shared.ApiException.conflict("CANCEL_DENIED", "cancel denied"))
+                .when(executor).cancelScheduledPublish(account, batchId, "17717");
+        if (scenario.equals("unavailable")) doThrow(new com.rajads.erp.identity.CompatibilityIdentityUnavailableException("cancel unavailable"))
+                .when(executor).cancelScheduledPublish(account, batchId, "17717");
+        if (scenario.equals("elapsed")) jdbc.update("update erp_compat_redemption_code_batches set remote_scheduled_publish_at=? where id=?",
+                java.time.LocalDateTime.now(java.time.ZoneId.of("Asia/Kolkata")).minusHours(1), batchId);
+        if (scenario.equals("changed_market")) {
+            long otherMarket = market(session, prefix + "_OTHER");
+            long otherAccount = account(session, otherMarket, prefix.toLowerCase() + "-other");
+            jdbc.update("update erp_compat_redemption_code_batches set remote_connection_id=? where id=?", otherAccount, batchId);
+        }
+        clearInvocations(executor);
+        var result = mvc.perform(post(path + "/remote-publish/cancel").session(session).with(csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(java.util.Map.of(
+                        "rowVersion", scenario.equals("stale") ? version - 1 : version))));
+        if (scenario.equals("success")) {
+            result.andExpect(status().isOk()).andExpect(jsonPath("$.data.batch.status").value("READY_TO_PUBLISH"));
+            assertThat(jdbc.queryForObject("select remote_publish_task_id from erp_compat_redemption_code_batches where id=?", String.class, batchId)).isNull();
+            long cancelledVersion = jdbc.queryForObject("select row_version from erp_compat_redemption_code_batches where id=?", Long.class, batchId);
+            JsonNode published = send(session, path + "/remote-publish", mapper.writeValueAsString(java.util.Map.of(
+                    "rowVersion", cancelledVersion, "mode", "IMMEDIATE", "fallbackToScheduled", false)));
+            assertThat(published.at("/batch/remotePublishMode").asText()).isEqualTo("IMMEDIATE");
+            assertThat(published.at("/issues/0/workflowStatus").asText()).isEqualTo("PUBLISHED");
+        } else {
+            if (scenario.equals("unavailable")) result.andExpect(status().isServiceUnavailable());
+            else result.andExpect(status().isConflict());
+            assertThat(jdbc.queryForMap("select status,remote_publish_mode,remote_publish_task_id from erp_compat_redemption_code_batches where id=?", batchId))
+                    .containsEntry("status", "PUBLISHED").containsEntry("remote_publish_mode", "SCHEDULED").containsEntry("remote_publish_task_id", "17717");
+        }
+        if (java.util.Set.of("stale", "elapsed", "changed_market").contains(scenario)) verifyNoInteractions(executor);
+        else verify(executor).cancelScheduledPublish(account, batchId, "17717");
+        verifyNoInteractions(standalone, gate);
+    }
+
     private org.springframework.test.web.servlet.ResultActions create(MockHttpSession session, long issue, boolean retry) throws Exception {
         return mvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + issue + "/remote-create")
                 .param("retryFailed", Boolean.toString(retry)).session(session).with(csrf()));

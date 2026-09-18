@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from packages.common.settings import Settings
 from packages.domain.models import RemoteAccount, SourceConfig
 from packages.domain.schemas.remote_account import (
+    ErpCompatibilityRemoteCancelRequest,
     ErpCompatibilityRemoteCreateRequest,
     ErpCompatibilityRemoteDownloadRequest,
     ErpCompatibilityRemotePublishRequest,
@@ -27,6 +28,8 @@ from packages.domain.services.erp_compatibility_id_service import (
     resolve_erp_compatibility_id,
 )
 from packages.domain.services.erp_redemption_remote_adapter import (
+    RemoteCancelPublishCommand,
+    RemoteCancelPublishResult,
     RemoteCreateCommand,
     RemoteCreateResult,
     RemoteCreationOptions,
@@ -378,3 +381,82 @@ async def execute_compatibility_remote_publish(
         remote_publish_task_id=result.remote_publish_task_id,
         remote_request_id=result.remote_request_id,
     )
+
+
+async def execute_compatibility_remote_cancel(
+    session: AsyncSession,
+    *,
+    payload: ErpCompatibilityRemoteCancelRequest,
+    actor_user_id: int,
+    settings: Settings,
+    transport=None,
+) -> RemoteCancelPublishResult:
+    try:
+        account_id = await resolve_erp_compatibility_id(
+            session, entity_type="remote_account", legacy_id=payload.account_id
+        )
+        grant = await authorize_erp_redemption_remote_execution(
+            session,
+            account_id=account_id,
+            operation="CANCEL",
+            execution_authorized=payload.execution_confirmed,
+        )
+        account = await session.get(RemoteAccount, account_id)
+        source = await session.get(SourceConfig, grant.source_id)
+        if account is None or source is None or not source.base_url:
+            raise ErpCompatibilityRemoteExecutionError("统一远端账号或盘口配置不可用。")
+        envelope = credential_envelope_for_account(account=account, source=source)
+        if envelope is None:
+            raise ErpCompatibilityRemoteExecutionError("统一远端账号凭据配置不完整。")
+        credentials = decrypt_remote_account_credentials(envelope, settings=settings)
+        async with RajAdminGiftCodeAdapter(
+            remote_session=account_session(
+                session, envelope=envelope, base_url=source.base_url, settings=settings
+            ),
+            account_id=account.id,
+            source_id=source.source_id,
+            base_url=source.base_url,
+            username=credentials["username"],
+            password=credentials["password"],
+            totp_secret=credentials["totp_secret"],
+            business_timezone=settings.default_business_timezone,
+            transport=transport,
+        ) as adapter:
+            result = await adapter.cancel_publish(
+                grant=grant,
+                command=RemoteCancelPublishCommand(
+                    remote_publish_task_id=payload.remote_publish_task_id,
+                ),
+            )
+    except (
+        ErpCompatibilityRemoteExecutionError,
+        ErpCompatibilityIdError,
+        ErpRemoteExecutionGateError,
+        RemoteAccountCredentialsError,
+        ErpRedemptionRemoteHttpError,
+    ) as exc:
+        await write_audit(
+            session,
+            action="erp_compatibility_redemption.remote_cancel",
+            actor_user_id=actor_user_id,
+            target_type="erp_compatibility_remote_account",
+            target_id=str(payload.account_id),
+            result="failure",
+            metadata={"batch_id": payload.batch_id, "operation": "CANCEL"},
+        )
+        await session.commit()
+        raise ErpCompatibilityRemoteExecutionError(str(exc)) from exc
+    await write_audit(
+        session,
+        action="erp_compatibility_redemption.remote_cancel",
+        actor_user_id=actor_user_id,
+        target_type="remote_account",
+        target_id=account.id,
+        metadata={
+            "batch_id": payload.batch_id,
+            "operation": "CANCEL",
+            "remote_publish_task_id": payload.remote_publish_task_id,
+        },
+    )
+    await session.commit()
+    return result

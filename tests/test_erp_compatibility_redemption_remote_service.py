@@ -8,12 +8,13 @@ from io import BytesIO
 import httpx
 import pytest
 from openpyxl import Workbook
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from packages.common.settings import Settings
-from packages.domain.models import Base, SecurityAuditLog
+from packages.domain.models import Base, RemoteAccountCapability, SecurityAuditLog
 from packages.domain.schemas.remote_account import (
+    ErpCompatibilityRemoteCancelRequest,
     ErpCompatibilityRemoteCreateOptions,
     ErpCompatibilityRemoteCreateRequest,
     ErpCompatibilityRemoteDownloadRequest,
@@ -25,6 +26,7 @@ from packages.domain.schemas.source import SourceCreateRequest, SourcePatchReque
 from packages.domain.services.erp_compatibility_id_service import get_erp_compatibility_ids
 from packages.domain.services.erp_compatibility_redemption_remote_service import (
     ErpCompatibilityRemoteExecutionError,
+    execute_compatibility_remote_cancel,
     execute_compatibility_remote_create,
     execute_compatibility_remote_download,
     execute_compatibility_remote_publish,
@@ -405,3 +407,131 @@ async def test_tag_sync_uses_unified_account_and_replaces_the_local_snapshot() -
     assert result.source == "REMOTE"
     assert [tag.id for tag in result.tags] == [901990, 901991]
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scenario", ["success", "rejected", "unconfirmed", "no_capability", "unknown_account"]
+)
+async def test_compatibility_cancel_uses_unified_authorization_and_remote_task_id(
+    scenario: str,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings = _settings()
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path == "/api/system/login":
+            return httpx.Response(200, json={"success": True, "data": {"token": "test-jwt"}})
+        assert request.url.path == "/api/common/publishTask/cancelAuto"
+        assert request.method == "POST"
+        assert json.loads(request.content) == {"id": 17717}
+        return httpx.Response(
+            200,
+            headers={"x-request-id": "cancel-1"},
+            json={
+                "success": True,
+                "data": {"ret": 0 if scenario == "rejected" else 1},
+            },
+        )
+
+    async with factory() as session:
+        await create_source(
+            session,
+            request=SourceCreateRequest(
+                source_id="rajwin",
+                display_name="RajWin",
+                base_url="https://remote.example",
+                enabled=False,
+            ),
+            actor_user_id=1,
+            settings=settings,
+        )
+        account = await create_remote_account(
+            session,
+            request=RemoteAccountCreateRequest(
+                source_id="rajwin",
+                login_username="current-enabled-account",
+                display_name="当前启用账号",
+                credentials=RemoteAccountCredentialsWrite(
+                    password="test-password",
+                    totp_secret="JBSWY3DPEHPK3PXP",
+                ),
+            ),
+            actor_user_id=1,
+            settings=settings,
+        )
+        await upsert_source(
+            session,
+            source_id="rajwin",
+            request=SourcePatchRequest(enabled=True),
+            actor_user_id=1,
+            settings=settings,
+        )
+        compatibility_id = (
+            await get_erp_compatibility_ids(
+                session,
+                entity_type="remote_account",
+                canonical_ids=[account.account.id],
+            )
+        )[account.account.id]
+
+        if scenario == "no_capability":
+            await session.execute(
+                update(RemoteAccountCapability)
+                .where(
+                    RemoteAccountCapability.account_id == account.account.id,
+                    RemoteAccountCapability.capability == "ERP_REDEMPTION_CANCEL",
+                )
+                .values(enabled=False)
+            )
+            await session.commit()
+        payload = ErpCompatibilityRemoteCancelRequest(
+            account_id=compatibility_id if scenario != "unknown_account" else 9_000_000_000_999,
+            batch_id=24,
+            remote_publish_task_id="17717",
+            execution_confirmed=True,
+        )
+        if scenario == "unconfirmed":
+            payload = payload.model_copy(update={"execution_confirmed": False})
+        kwargs = dict(
+            payload=payload,
+            actor_user_id=1,
+            settings=settings,
+            transport=httpx.MockTransport(handler),
+        )
+        if scenario == "success":
+            result = await execute_compatibility_remote_cancel(session, **kwargs)
+            assert result.remote_request_id == "cancel-1"
+        else:
+            with pytest.raises(ErpCompatibilityRemoteExecutionError):
+                await execute_compatibility_remote_cancel(session, **kwargs)
+        audit = await session.scalar(
+            select(SecurityAuditLog).where(
+                SecurityAuditLog.action == "erp_compatibility_redemption.remote_cancel",
+            )
+        )
+        assert audit.result == ("success" if scenario == "success" else "failure")
+        assert audit.metadata_json["batch_id"] == 24
+        if scenario in {"no_capability", "unconfirmed", "unknown_account"}:
+            assert requests == []
+        else:
+            assert requests.count("/api/common/publishTask/cancelAuto") == 1
+    await engine.dispose()
+
+
+@pytest.mark.parametrize("task_id,confirmed", [("", True), ("PENDING:123", True), ("17717", False)])
+def test_compatibility_cancel_rejects_invalid_task_or_missing_confirmation(task_id, confirmed):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ErpCompatibilityRemoteCancelRequest(
+            account_id=23,
+            batch_id=24,
+            remote_publish_task_id=task_id,
+            execution_confirmed=confirmed,
+        )

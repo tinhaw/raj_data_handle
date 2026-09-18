@@ -489,20 +489,28 @@ public class RedemptionRemoteOperationService {
     }
 
     public Long cancelScheduledPublish(Long batchId, Long rowVersion) {
-        remoteOperationGate.requireEnabled("remote_cancel");
+        UnifiedRedemptionRemoteExecutorClient executor = unifiedRemoteExecutorClient.getIfAvailable();
+        if (executor == null) remoteOperationGate.requireEnabled("remote_cancel");
         RemoteBatchContext context = required(tx().execute(status -> {
             RedemptionCodeBatch batch = requireBatch(batchId);
             if (rowVersion == null || !Objects.equals(batch.getRowVersion(), rowVersion)) throw ApiException.conflict("BATCH_VERSION_CONFLICT", "批次已被其他人修改，请刷新后重试");
             if (!isCancellableScheduledPublish(batch)) throw ApiException.conflict("SCHEDULED_PUBLISH_NOT_CANCELLABLE", "定时发布时间已到或批次不是定时发布状态");
             if (batch.getRemotePublishTaskId() == null || batch.getRemotePublishTaskId().isBlank()) throw ApiException.conflict("REMOTE_PUBLISH_TASK_REQUIRED", "该定时发布缺少远端任务 ID，不能撤销");
-            return new RemoteBatchContext(null, requireEnabledConnection(batch), options(batch), true,
-                    batch.getRemoteScheduledPublishAt(), "", batch.getRemotePublishTaskId(), false);
+            RedemptionRemoteDirectory.Account account = remoteDirectory.requireEnabled(batch.getRemoteConnectionId());
+            for (RedemptionCodeIssue issue : issueRepository.findByBatchIdOrderByClaimDateAscCampaignTierIdAsc(batchId)) {
+                requireMatchingMarket(issue, account);
+            }
+            return new RemoteBatchContext(account.id(), executor == null ? requireEnabledConnection(batch) : null,
+                    options(batch), true, batch.getRemoteScheduledPublishAt(), "", batch.getRemotePublishTaskId(), false);
         }));
         try {
-            remoteClient.cancelScheduledPublish(context.connection(), context.publishTaskId());
-        } catch (RemoteGiftCodeBackendClient.RemoteGiftCodeException exception) {
+            if (executor != null) executor.cancelScheduledPublish(context.accountId(), batchId, context.publishTaskId());
+            else remoteClient.cancelScheduledPublish(context.connection(), context.publishTaskId());
+        } catch (RuntimeException exception) {
             String error = limit(exception.getMessage());
             tx().executeWithoutResult(status -> recordCancelFailure(batchId, error));
+            if (exception instanceof ApiException apiException) throw apiException;
+            if (executor != null) throw exception;
             throw ApiException.badRequest("REMOTE_SCHEDULED_PUBLISH_CANCEL_FAILED", error);
         }
         return required(tx().execute(status -> completeCancelScheduledPublish(batchId)));

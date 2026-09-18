@@ -471,7 +471,14 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
     ) -> RemoteCancelPublishResult:
         self._assert_grant(grant, "CANCEL")
         response, request_id = await self._request(
-            "POST", CANCEL_PATH, json={"id": command.remote_publish_task_id}
+            "POST",
+            CANCEL_PATH,
+            json={
+                "id": int(command.remote_publish_task_id)
+                if command.remote_publish_task_id.isascii()
+                and command.remote_publish_task_id.isdecimal()
+                else command.remote_publish_task_id
+            },
         )
         result = _nested(response, "data.ret")
         if str(result) != "1":
