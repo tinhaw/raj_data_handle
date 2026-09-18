@@ -4,7 +4,7 @@ import { Download, Plus, Refresh, Setting } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, TableV2FixedDir } from 'element-plus'
 import type { Columns } from 'element-plus'
 import { api } from '@/api/client'
-import { publicationLabel, acquisitionLabel, type PublicationVerification } from './publicationStatus'
+import { publicationLabel, acquisitionLabel, configurationVerificationSummary, type PublicationVerification } from './publicationStatus'
 import type {
   RedemptionBatchDetail,
   RedemptionCampaign,
@@ -115,6 +115,16 @@ const publicationChecks = ref<Record<string, PublicationVerification>>({})
 const publicationCheckErrors = ref<Record<string, string>>({})
 const verifyingPublicationIds = ref(new Set<string>())
 const publicationRequests = new Map<string, Promise<PublicationVerification | undefined>>()
+const verificationDialogVisible = ref(false)
+const verificationTarget = ref<CodeGroupRow>()
+function showPublicationResult(row: CodeGroupRow) {
+  verificationTarget.value = row
+  verificationDialogVisible.value = true
+}
+async function inspectPublication(row: CodeGroupRow) {
+  showPublicationResult(row)
+  await verifyRemotePublication(row, true)
+}
 function publicationCheck(row: CodeGroupRow) {
   const check = publicationChecks.value[String(row.detail.batch.id)]
   return check?.remotePublishTaskId === row.detail.batch.remotePublishTaskId ? check : undefined
@@ -722,6 +732,7 @@ function isScheduledPublish(row: CodeGroupRow) {
 }
 function canDownloadScheduledCodes(row: CodeGroupRow) {
   return row.detail.batch.status === 'PUBLISHED' && publicationCheck(row)?.publicationState === 'COMPLETED'
+    && row.detail.issues.some(issue => issue.workflowStatus !== 'CODE_IMPORTED' && publicationCheck(row)?.configurations.some(config => config.configurationId === issue.remoteConfigurationId && config.state === 'MATCHED'))
 }
 function publishTime(row: CodeGroupRow) {
   const batch = row.detail.batch
@@ -1339,17 +1350,23 @@ async function submitPublish() {
 async function downloadPublishedCodes(row: CodeGroupRow) {
   let detail = row.detail
   let failed = false
+  let attemptedDownload = false
   markProcessing(detail.batch.id, true)
   try {
     const check = await verifyRemotePublication(row, true)
     if (!check || check.publicationState !== 'COMPLETED') {
-      ElMessage.warning('尚未确认远端发布完成，请查看核验结果')
+      showPublicationResult(row)
       return false
     }
     const pending = detail.issues.filter(item => item.workflowStatus !== 'CODE_IMPORTED')
     const downloadable = pending.filter(item => check.configurations.some(config => config.configurationId === item.remoteConfigurationId && config.state === 'MATCHED'))
+    if (pending.length && !downloadable.length) {
+      showPublicationResult(row)
+      return false
+    }
     failed = downloadable.length !== pending.length
     for (const issue of downloadable) {
+      attemptedDownload = true
       try { detail = await api.redemption.downloadRemoteCode(issue.id) }
       catch (error) { failed = true; ElMessage.error(error instanceof Error ? error.message : '兑换码下载失败') }
     }
@@ -1357,7 +1374,10 @@ async function downloadPublishedCodes(row: CodeGroupRow) {
     const complete = detail.batch.status === 'COMPLETED'
     ElMessage[complete ? 'success' : 'warning'](complete ? '兑换码已全部入库，可下载 Excel' : failed ? '发布已完成，但部分配置待核对或下载异常，请查看任务明细' : '兑换码尚未全部入库')
     return complete
-  } finally { markProcessing(detail.batch.id, false); await loadCodeGroups() }
+  } finally {
+    markProcessing(detail.batch.id, false)
+    if (attemptedDownload) await loadCodeGroups()
+  }
 }
 
 async function cancelScheduledPublish(row: CodeGroupRow) {
@@ -1537,7 +1557,7 @@ onUnmounted(() => {
       <header class="code-group-list__heading">
         <div>
           <h3>批量生成兑换码组任务</h3>
-          <p>状态会显示为生成中、生成失败或生成成功；成功的兑换码组支持下载 Excel。</p>
+          <p>分别显示远端发布结果与兑换码下载状态；兑换码全部入库后可下载 Excel。</p>
         </div>
         <span class="code-group-list__count">共 {{ codeGroupTasks.length }} 个兑换码组任务</span>
       </header>
@@ -1579,7 +1599,7 @@ onUnmounted(() => {
                 <div v-else-if="column.key === 'actions'" class="virtual-actions">
                   <el-button link type="primary" size="small" :loading="row.members.some(isProcessing)" @click="isMultiMarketTask(row) ? openTaskDetail(row) : openGroupDetail(taskPrimary(row))">查看任务</el-button>
                   <template v-if="!isMultiMarketTask(row)">
-                    <el-button v-if="taskPrimary(row).detail.batch.status === 'PUBLISHED'" link type="primary" size="small" :loading="verifyingPublicationIds.has(String(taskPrimary(row).detail.batch.id))" @click="verifyRemotePublication(taskPrimary(row))">核验配置</el-button>
+                    <el-button v-if="taskPrimary(row).detail.batch.status === 'PUBLISHED'" link type="primary" size="small" :loading="verifyingPublicationIds.has(String(taskPrimary(row).detail.batch.id))" @click="inspectPublication(taskPrimary(row))">查看核验结果</el-button>
                     <el-button v-if="hasPendingPublishReservation(taskPrimary(row))" link type="warning" size="small" :loading="recoveringPublishId === taskPrimary(row).detail.batch.id" @click="recoverPublishReservation(taskPrimary(row))">恢复发布</el-button>
                     <el-button v-else-if="taskPrimary(row).detail.batch.status === 'READY_TO_PUBLISH'" link type="primary" size="small" @click="openPublishDialog(taskPrimary(row))">选择发布方式</el-button>
                     <el-button v-if="canCancelScheduledPublish(taskPrimary(row))" link type="danger" size="small" :disabled="!canCancelScheduledPublish(taskPrimary(row))" :loading="cancellingPublishId === taskPrimary(row).detail.batch.id" @click="cancelScheduledPublish(taskPrimary(row))">撤销发布</el-button>
@@ -1754,6 +1774,22 @@ onUnmounted(() => {
       <template #footer><el-button @click="publishDialogVisible = false">取消</el-button><el-button type="primary" :loading="publishing" @click="submitPublish">确认发布</el-button></template>
     </el-dialog>
 
+    <el-dialog v-model="verificationDialogVisible" title="发布与下载检查" width="640px" append-to-body>
+      <template v-if="verificationTarget">
+        <p>任务 {{ verificationTarget.detail.batch.taskNumber || verificationTarget.detail.batch.id }} · {{ remoteMarketLabel(verificationTarget) }}</p>
+        <p v-if="verifyingPublicationIds.has(String(verificationTarget.detail.batch.id))" role="status">正在查询远端状态，请稍候…</p>
+        <template v-else>
+          <el-alert :title="publicationCheckErrors[String(verificationTarget.detail.batch.id)] ? '本次核验未完成' : publicationLabel(publicationCheck(verificationTarget))" :description="configurationVerificationSummary(publicationCheck(verificationTarget), publicationCheckErrors[String(verificationTarget.detail.batch.id)])" type="info" :closable="false" show-icon />
+          <p v-if="publicationCheck(verificationTarget)?.checkedAt" class="field-note">本次核验时间：{{ formatDateTime(publicationCheck(verificationTarget)?.checkedAt) }}</p>
+        </template>
+      </template>
+      <template #footer>
+        <el-button @click="verificationDialogVisible = false">关闭</el-button>
+        <el-button v-if="verificationTarget" :loading="verifyingPublicationIds.has(String(verificationTarget.detail.batch.id))" @click="inspectPublication(verificationTarget)">刷新状态</el-button>
+        <el-button v-if="verificationTarget && canDownloadScheduledCodes(verificationTarget)" type="primary" :loading="isProcessing(verificationTarget)" @click="downloadPublishedCodes(verificationTarget)">下载兑换码</el-button>
+      </template>
+    </el-dialog>
+
     <el-drawer v-model="detailDrawerVisible" :title="selectedTaskMembers.length > 1 ? `任务 ${selectedTaskDisplayId} · 多盘口兑换码组任务明细` : (selectedGroup ? `任务 ${selectedTaskDisplayId} · ${selectedGroup.campaign.name} · 任务明细` : '兑换码组任务明细')" size="720px">
       <template v-if="selectedGroup">
         <el-tabs v-if="selectedTaskMembers.length > 1" v-model="activeTaskBatchId" class="task-market-tabs" @tab-change="selectTaskMember">
@@ -1797,7 +1833,7 @@ onUnmounted(() => {
         <div class="drawer-actions">
           <el-button v-if="hasPendingPublishReservation(selectedGroup)" type="warning" :loading="recoveringPublishId === selectedGroup.detail.batch.id" @click="recoverPublishReservation(selectedGroup)">恢复发布</el-button>
           <el-button v-else-if="selectedGroup.detail.batch.status === 'READY_TO_PUBLISH'" type="primary" @click="openPublishDialog(selectedGroup)">选择发布方式</el-button>
-          <el-button v-if="selectedGroup.detail.batch.status === 'PUBLISHED'" :loading="verifyingPublicationIds.has(String(selectedGroup.detail.batch.id))" @click="verifyRemotePublication(selectedGroup)">核验配置</el-button>
+          <el-button v-if="selectedGroup.detail.batch.status === 'PUBLISHED'" :loading="verifyingPublicationIds.has(String(selectedGroup.detail.batch.id))" @click="inspectPublication(selectedGroup)">查看核验结果</el-button>
           <el-button v-if="canCancelScheduledPublish(selectedGroup)" type="danger" :disabled="!canCancelScheduledPublish(selectedGroup)" :loading="cancellingPublishId === selectedGroup.detail.batch.id" @click="cancelScheduledPublish(selectedGroup)">撤销发布</el-button>
           <el-button v-if="canDownloadScheduledCodes(selectedGroup)" type="primary" :loading="isProcessing(selectedGroup)" @click="downloadPublishedCodes(selectedGroup)">{{ selectedGroup.detail.issues.some(issue => issue.remoteError) ? '重试下载' : '下载兑换码' }}</el-button>
           <el-button v-if="isSuccess(selectedGroup) && canExport" type="primary" :icon="Download" :loading="exportingId === selectedGroup.detail.batch.id" @click="exportGroup(selectedGroup)">下载当前盘口 Excel</el-button>
