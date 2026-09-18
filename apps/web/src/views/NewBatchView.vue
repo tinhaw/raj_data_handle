@@ -31,6 +31,7 @@ const form = reactive({
   businessType: 'payin' as const,
   headerRow: 1,
   selectedChannelCodes: [] as string[],
+  platformOrderNoField: '',
   paymentTimeField: '',
   paymentTimezone: 'Asia/Kolkata',
   remoteTimeField: 'create_time',
@@ -56,9 +57,19 @@ const paymentTimeOptions = computed<string[]>(() => {
   return [...new Set(headers.map((header) => header.trim()).filter(Boolean))]
 })
 
+const availableChannelBindings = computed(() => {
+  const platformKey = detection.value?.template?.platformKey
+  if (!platformKey) return channelBindings.value
+  return channelBindings.value.filter((item) => item.platformKey === platformKey)
+})
+
 const uploadReady = computed(() => Boolean(form.sourceId && file.value))
 const parsingReady = computed(() =>
-  Boolean(detection.value && form.paymentTimeField),
+  Boolean(
+    detection.value &&
+      form.platformOrderNoField &&
+      form.paymentTimeField,
+  ),
 )
 const comparisonReady = computed(() =>
   Boolean(
@@ -71,17 +82,21 @@ const comparisonReady = computed(() =>
 )
 
 const selectedChannelSummary = computed(() => {
-  const selected = channelBindings.value.filter((item) =>
+  const selected = availableChannelBindings.value.filter((item) =>
     form.selectedChannelCodes.includes(item.remoteChannelCode),
   )
   if (!selected.length) return '尚未选择'
   return selected
-    .map((item) => `${item.remoteChannelCode} · ${item.remoteChannelLabel}`)
+    .map(
+      (item) =>
+        `${item.remoteChannelLabel}（pay_method=${item.remoteChannelCode}）`,
+    )
     .join('、')
 })
 
 function resetAfterParsingChange(): void {
   detection.value = null
+  form.platformOrderNoField = ''
   form.paymentTimeField = ''
   timeRange.value = null
   form.selectedChannelCodes = []
@@ -95,6 +110,20 @@ function goToStep(step: number): void {
       block: 'start',
     })
   })
+}
+
+function preferredPlatformOrderField(): string {
+  const configured = detection.value?.template?.columnMapping.platform_order_no
+  if (
+    typeof configured === 'string' &&
+    paymentTimeOptions.value.includes(configured)
+  ) {
+    return configured
+  }
+  const preferredNames = ['平台订单号', '三方订单号', '支付平台订单号']
+  return (
+    preferredNames.find((name) => paymentTimeOptions.value.includes(name)) || ''
+  )
 }
 
 function preferredPaymentTimeField(): string {
@@ -164,6 +193,7 @@ async function parseFile(): Promise<void> {
   parsing.value = true
   try {
     detection.value = await detectPaymentTemplate(file.value, form.headerRow)
+    form.platformOrderNoField = preferredPlatformOrderField()
     form.paymentTimeField = preferredPaymentTimeField()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '文件模板探测失败。'))
@@ -179,6 +209,10 @@ function continueToComparison(): void {
   }
   if (!form.paymentTimeField) {
     ElMessage.warning('请从解析出的表头中选择支付平台时间列。')
+    return
+  }
+  if (!form.platformOrderNoField) {
+    ElMessage.warning('请选择表格中对应管理后台三方订单号的列。')
     return
   }
   goToStep(2)
@@ -221,7 +255,10 @@ async function submit(): Promise<void> {
       headerRow: form.headerRow,
       file: file.value,
       parameters: {
-        selectedChannels: channelBindings.value
+        paymentColumnMapping: {
+          platform_order_no: form.platformOrderNoField,
+        },
+        selectedChannels: availableChannelBindings.value
           .filter((item) => form.selectedChannelCodes.includes(item.remoteChannelCode))
           .map((item) => ({
             code: item.remoteChannelCode,
@@ -257,6 +294,12 @@ async function submit(): Promise<void> {
 onMounted(async () => {
   try {
     sources.value = await fetchEnabledSources()
+    const firstSource = sources.value[0]
+    if (firstSource) {
+      form.sourceId = firstSource.sourceId
+      form.currency = firstSource.currency
+      await loadChannels()
+    }
   } catch {
     sources.value = []
   }
@@ -277,8 +320,8 @@ watch(
   <div class="page-stack narrow-page">
     <header class="page-header">
       <div>
-        <span class="page-eyebrow">New reconciliation</span>
-        <h1>新建比对草稿</h1>
+        <span class="page-eyebrow">COMPARISON TASKS / NEW</span>
+        <h1>新建对比</h1>
         <p>按步骤上传文件、确认解析结果并配置比对口径；创建草稿不会立即请求远端。</p>
       </div>
     </header>
@@ -296,7 +339,7 @@ watch(
       <div class="wizard-progress">
         <el-steps :active="currentStep" finish-status="success" align-center>
           <el-step title="上传文件" description="选择盘口与支付平台文件" />
-          <el-step title="初步解析" description="确认表头与时间列" />
+          <el-step title="初步解析" description="确认表头、订单号与时间列" />
           <el-step title="配置比对" description="确认渠道和时间口径" />
         </el-steps>
       </div>
@@ -345,7 +388,7 @@ watch(
           </el-form-item>
 
           <div class="wizard-actions">
-            <el-button @click="router.push('/batches')">返回批次中心</el-button>
+            <el-button @click="router.push('/batches')">返回对比任务</el-button>
             <el-button
               type="primary"
               :disabled="!uploadReady"
@@ -372,7 +415,7 @@ watch(
           <div class="step-intro">
             <span class="step-kicker">步骤 2 / 3</span>
             <h2>初步解析表格</h2>
-            <p>确认表头所在行后执行解析，再从真实表头中选择支付平台时间列。</p>
+            <p>确认表头所在行后执行解析，再选择支付平台订单号和时间列。</p>
           </div>
 
           <div class="parse-controls">
@@ -453,6 +496,33 @@ watch(
                 </div>
               </div>
 
+              <div class="order-mapping-panel">
+                <div>
+                  <strong>订单号字段映射</strong>
+                  <span>
+                    选择支付平台导出表中的订单号列，与管理后台三方订单号进行精确比对。
+                  </span>
+                </div>
+                <el-form-item label="表格列 → 管理后台三方订单号（out_trade_no）" required>
+                  <el-select
+                    v-model="form.platformOrderNoField"
+                    filterable
+                    placeholder="选择表格中的平台订单号列"
+                    style="width: 100%"
+                  >
+                    <el-option
+                      v-for="field in paymentTimeOptions"
+                      :key="field"
+                      :label="field"
+                      :value="field"
+                    />
+                  </el-select>
+                  <span class="field-help">
+                    管理后台的 out_trade_no 即支付平台订单号；order_num 仅是管理后台内部编号，不参与匹配。
+                  </span>
+                </el-form-item>
+              </div>
+
               <el-form-item label="支付平台时间列" required>
                 <el-select
                   v-model="form.paymentTimeField"
@@ -503,7 +573,7 @@ watch(
                   {{ detection?.template?.platformDisplayName || '未匹配模板' }}
                 </strong>
                 <small>
-                  表头第 {{ detection?.headerRow }} 行 · 时间列 {{ form.paymentTimeField }}
+                  out_trade_no ← {{ form.platformOrderNoField }}
                 </small>
               </div>
               <el-button text type="primary" @click="goToStep(1)">修改</el-button>
@@ -518,7 +588,7 @@ watch(
 
           <div class="comparison-layout">
             <div class="comparison-form">
-              <el-form-item label="远端充值渠道" required>
+              <el-form-item label="远端充值渠道（pay_method 字典）" required>
                 <el-select
                   v-model="form.selectedChannelCodes"
                   multiple
@@ -528,14 +598,21 @@ watch(
                   style="width: 100%"
                 >
                   <el-option
-                    v-for="channel in channelBindings"
+                    v-for="channel in availableChannelBindings"
                     :key="channel.id"
-                    :label="`${channel.remoteChannelCode} · ${channel.remoteChannelLabel}`"
+                    :label="`${channel.remoteChannelLabel} · ID ${channel.remoteChannelCode}`"
                     :value="channel.remoteChannelCode"
                   />
                 </el-select>
-                <span v-if="form.sourceId && !channelBindings.length" class="field-help">
-                  当前盘口尚无已登记渠道；请先完成远端渠道字典同步。
+                <span
+                  v-if="form.sourceId && !availableChannelBindings.length"
+                  class="field-help"
+                >
+                  当前盘口尚无与该支付平台绑定的渠道；请先在盘口配置中重新测试连接并同步渠道字典。
+                </span>
+                <span v-else class="field-help">
+                  名称和 ID 来自盘口连接测试同步的渠道字典；请求充值订单列表时，ID 会作为
+                  pay_method 参数。
                 </span>
               </el-form-item>
 
@@ -600,6 +677,10 @@ watch(
                 <div>
                   <dt>盘口</dt>
                   <dd>{{ selectedSource?.displayName || '—' }}</dd>
+                </div>
+                <div>
+                  <dt>表格列 → out_trade_no</dt>
+                  <dd>{{ form.platformOrderNoField || '—' }}</dd>
                 </div>
                 <div>
                   <dt>支付平台时间列</dt>
@@ -857,6 +938,35 @@ watch(
   max-height: 150px;
   gap: 8px;
   overflow-y: auto;
+}
+
+.order-mapping-panel {
+  display: grid;
+  gap: 18px;
+  padding: 18px;
+  border: 1px solid #dce6ef;
+  border-radius: 12px;
+  background: #f7fafc;
+}
+
+.order-mapping-panel > div:first-child {
+  display: grid;
+  gap: 5px;
+}
+
+.order-mapping-panel > div:first-child strong {
+  color: var(--ink-strong);
+  font-size: 15px;
+}
+
+.order-mapping-panel > div:first-child span {
+  color: var(--ink-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.order-mapping-panel :deep(.el-form-item) {
+  margin-bottom: 0;
 }
 
 .comparison-layout {

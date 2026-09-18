@@ -22,6 +22,7 @@ GIT_PUSH=false
 INIT=false
 SCHEMA_ONLY=false
 UPLOAD_SOURCE=false
+STAGE_ONLY=false
 SOURCE_ARCHIVE=""
 
 usage() {
@@ -43,6 +44,7 @@ Options:
   --branch NAME              Git branch for deployment (default: main).
   --git-push                 Push origin/<branch> before the remote operation.
   --upload-source            Upload a sanitized snapshot of the current local source tree.
+  --stage-only               With --upload-source, stage source/env without starting services.
   --init                     Initialize /opt/raj_data_handle by clone or uploaded source.
   --remote-deploy            Upload .env and run the remote application rollout.
   --schema-only              Run the separately-gated Alembic migration only.
@@ -70,6 +72,7 @@ while [[ "$#" -gt 0 ]]; do
         --branch) require_value "$1" "${2:-}"; BRANCH="$2"; shift 2 ;;
         --git-push) GIT_PUSH=true; shift ;;
         --upload-source) UPLOAD_SOURCE=true; shift ;;
+        --stage-only) STAGE_ONLY=true; shift ;;
         --init) INIT=true; shift ;;
         --remote-deploy) REMOTE_DEPLOY=true; shift ;;
         --schema-only) SCHEMA_ONLY=true; shift ;;
@@ -85,6 +88,10 @@ done
 [[ "$SCHEMA_ONLY" == false || "$INIT" == false ]] || { printf '%s\n' '--schema-only cannot be combined with --init' >&2; exit 2; }
 [[ "$SCHEMA_ONLY" == false || "$UPLOAD_SOURCE" == false ]] || { printf '%s\n' '--schema-only cannot be combined with --upload-source' >&2; exit 2; }
 [[ "$GIT_PUSH" == false || "$UPLOAD_SOURCE" == false ]] || { printf '%s\n' '--git-push cannot be combined with --upload-source' >&2; exit 2; }
+[[ "$STAGE_ONLY" == false || ( "$UPLOAD_SOURCE" == true && "$SCHEMA_ONLY" == false && "$INIT" == false ) ]] || {
+    printf '%s\n' '--stage-only requires --upload-source and cannot use --schema-only or --init' >&2
+    exit 2
+}
 
 DEPLOYMENT_SSH_USER=""
 DEPLOYMENT_SSH_HOST=""
@@ -123,7 +130,14 @@ SSH_TARGET="${SSH_TARGET_OVERRIDE:-$DEPLOYMENT_SSH_USER@$DEPLOYMENT_SSH_HOST}"
 
 umask 077
 RENDERED_ENV="$(mktemp "${TMPDIR:-/tmp}/raj-data-handle-rajluck.XXXXXX")"
+SSH_CONTROL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/raj-data-handle-ssh.XXXXXX")"
+SSH_CONTROL_PATH="$SSH_CONTROL_DIR/control"
 cleanup() {
+    if [[ -S "$SSH_CONTROL_PATH" ]]; then
+        ssh -p "$DEPLOYMENT_SSH_PORT" -o "ControlPath=$SSH_CONTROL_PATH" \
+            -O exit "$SSH_TARGET" >/dev/null 2>&1 || true
+    fi
+    rmdir "$SSH_CONTROL_DIR" >/dev/null 2>&1 || true
     rm -f "$RENDERED_ENV"
     if [[ -n "$SOURCE_ARCHIVE" ]]; then rm -f "$SOURCE_ARCHIVE"; fi
 }
@@ -143,6 +157,11 @@ SSH_OPTIONS=(
     -o KbdInteractiveAuthentication=no
     -o PreferredAuthentications=publickey
     -o StrictHostKeyChecking=yes
+    -o ConnectionAttempts=3
+    -o ConnectTimeout=10
+    -o ControlMaster=auto
+    -o ControlPersist=60
+    -o "ControlPath=$SSH_CONTROL_PATH"
 )
 if [[ -n "$IDENTITY_FILE" ]]; then SSH_OPTIONS+=(-i "$IDENTITY_FILE"); fi
 if [[ -n "$KNOWN_HOSTS_FILE" ]]; then SSH_OPTIONS+=(-o "UserKnownHostsFile=$KNOWN_HOSTS_FILE"); fi
@@ -153,6 +172,11 @@ SCP_OPTIONS=(
     -o KbdInteractiveAuthentication=no
     -o PreferredAuthentications=publickey
     -o StrictHostKeyChecking=yes
+    -o ConnectionAttempts=3
+    -o ConnectTimeout=10
+    -o ControlMaster=auto
+    -o ControlPersist=60
+    -o "ControlPath=$SSH_CONTROL_PATH"
 )
 if [[ -n "$IDENTITY_FILE" ]]; then SCP_OPTIONS+=(-i "$IDENTITY_FILE"); fi
 if [[ -n "$KNOWN_HOSTS_FILE" ]]; then SCP_OPTIONS+=(-o "UserKnownHostsFile=$KNOWN_HOSTS_FILE"); fi
@@ -165,6 +189,7 @@ REMOTE_ARGS=()
 if [[ "$INIT" == true ]]; then REMOTE_ARGS+=(--init); fi
 if [[ "$SCHEMA_ONLY" == true ]]; then REMOTE_ARGS+=(--schema-only); fi
 if [[ "$UPLOAD_SOURCE" == true ]]; then REMOTE_ARGS+=(--upload-source); fi
+if [[ "$STAGE_ONLY" == true ]]; then REMOTE_ARGS+=(--stage-only); fi
 REMOTE_ARG_TEXT="${REMOTE_ARGS[*]:-}"
 
 printf 'Target: raj-data-handle\n'
@@ -203,12 +228,18 @@ if [[ "$INIT" == true && "$UPLOAD_SOURCE" == false ]]; then
 fi
 
 if [[ "$UPLOAD_SOURCE" == true ]]; then
-    SOURCE_ARCHIVE="$(mktemp "${TMPDIR:-/tmp}/raj-data-handle-source.XXXXXX.tar.gz")"
+    # macOS requires the X placeholders at the end of the template.  The
+    # archive format is explicit in tar's flags, so an extension is not needed.
+    SOURCE_ARCHIVE="$(mktemp "${TMPDIR:-/tmp}/raj-data-handle-source.XXXXXX")"
     tar \
         --no-xattrs \
         --no-mac-metadata \
         --exclude='apps/web/node_modules' \
         --exclude='apps/web/dist' \
+        --exclude='apps/erp-compat/web/node_modules' \
+        --exclude='apps/erp-compat/web/dist' \
+        --exclude='apps/erp-compat/server/target' \
+        --exclude='apps/erp-compat/server/var' \
         --exclude='**/__pycache__' \
         --exclude='**/*.pyc' \
         --exclude='__pycache__' \
@@ -234,6 +265,11 @@ fi
 
 scp "${SCP_OPTIONS[@]}" "$RENDERED_ENV" "$SSH_TARGET:$REMOTE_DIR/.env"
 ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" "chmod 600 $(quote_remote "$REMOTE_DIR/.env")"
+
+if [[ "$STAGE_ONLY" == true ]]; then
+    printf '%s\n' 'Source and environment staged. No services started and no migration executed.'
+    exit 0
+fi
 
 REMOTE_COMMAND="cd $(quote_remote "$REMOTE_DIR") && BRANCH=$(quote_remote "$BRANCH") bash deploy/deploy-rajluck.sh"
 if [[ "$SCHEMA_ONLY" == true ]]; then

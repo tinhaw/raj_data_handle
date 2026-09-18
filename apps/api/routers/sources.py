@@ -9,6 +9,7 @@ from packages.domain.models import SourceConfig
 from packages.domain.schemas.source import (
     SourceConnectionTestResponse,
     SourceCreateRequest,
+    SourceOrderRequest,
     SourcePatchRequest,
     SourceResponse,
     SourceUpsertRequest,
@@ -22,6 +23,9 @@ from packages.domain.services.source_service import (
     create_source,
     delete_source,
     list_sources,
+    reorder_sources,
+    source_login_username,
+    test_source_scoring_api_connection,
     upsert_source,
 )
 from packages.domain.services.source_service import (
@@ -31,17 +35,31 @@ from packages.domain.services.source_service import (
 router = APIRouter(tags=["sources"])
 
 
-def _source_response(source: SourceConfig) -> SourceResponse:
+def _source_response(
+    source: SourceConfig,
+    *,
+    include_login_username: bool = False,
+) -> SourceResponse:
     return SourceResponse(
         source_id=source.source_id,
         display_name=source.display_name,
+        display_order=source.display_order,
         base_url=source.base_url,
         enabled=source.enabled,
         business_timezone=source.business_timezone,
         currency=source.currency,
         config_version=source.config_version,
         credential_configured=bool(source.encrypted_credentials),
+        login_username=source_login_username(source) if include_login_username else None,
         credential_updated_at=source.credential_updated_at,
+        scoring_api_base_url=source.scoring_api_base_url,
+        scoring_api_key_configured=bool(source.encrypted_scoring_api_key),
+        scoring_api_key_updated_at=source.scoring_api_key_updated_at,
+        scoring_api_last_tested_at=source.scoring_api_last_tested_at,
+        scoring_api_last_test_status=source.scoring_api_last_test_status,
+        initial_review_v1_api_base_url=source.initial_review_v1_api_base_url,
+        initial_review_v1_api_key_configured=bool(source.encrypted_initial_review_v1_api_key),
+        initial_review_v1_api_key_updated_at=source.initial_review_v1_api_key_updated_at,
         last_tested_at=source.last_tested_at,
         last_test_status=source.last_test_status,
         created_at=source.created_at,
@@ -63,7 +81,9 @@ async def settings_sources(
     _: AuthContext = Depends(require_admin),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[SourceResponse]:
-    return [_source_response(item) for item in await list_sources(session)]
+    return [
+        _source_response(item, include_login_username=True) for item in await list_sources(session)
+    ]
 
 
 @router.post(
@@ -86,7 +106,24 @@ async def post_source(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except SourceValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return _source_response(source)
+    return _source_response(source, include_login_username=True)
+
+
+@router.put("/settings/sources/order", response_model=list[SourceResponse])
+async def put_source_order(
+    payload: SourceOrderRequest,
+    auth: AuthContext = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[SourceResponse]:
+    try:
+        sources = await reorder_sources(
+            session,
+            source_ids=payload.source_ids,
+            actor_user_id=auth.user.id,
+        )
+    except SourceValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return [_source_response(source, include_login_username=True) for source in sources]
 
 
 @router.put("/settings/sources/{source_id}", response_model=SourceResponse)
@@ -105,7 +142,7 @@ async def put_source(
         )
     except SourceValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return _source_response(source)
+    return _source_response(source, include_login_username=True)
 
 
 @router.patch("/settings/sources/{source_id}", response_model=SourceResponse)
@@ -124,7 +161,7 @@ async def patch_source(
         )
     except SourceValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return _source_response(source)
+    return _source_response(source, include_login_username=True)
 
 
 @router.delete(
@@ -164,7 +201,7 @@ async def delete_source_credentials(
         )
     except SourceValidationError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    return _source_response(source)
+    return _source_response(source, include_login_username=True)
 
 
 @router.post(
@@ -189,8 +226,37 @@ async def test_source_connection(
         status=source.last_test_status or "failed",
         request_id=request_id,
         message=(
-            "连接成功，已同步可识别的充值渠道。"
+            "连接成功，已同步支付渠道名称字典和可识别的充值渠道。"
             if source.last_test_status == "passed"
             else "连接失败，请检查 Base URL、账号、密码、TOTP Secret 和远端网络。"
+        ),
+    )
+
+
+@router.post(
+    "/settings/sources/{source_id}/test-scoring-api",
+    response_model=SourceConnectionTestResponse,
+)
+async def test_source_scoring_api(
+    source_id: str,
+    auth: AuthContext = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> SourceConnectionTestResponse:
+    try:
+        source, request_id = await test_source_scoring_api_connection(
+            session,
+            source_id=source_id,
+            actor_user_id=auth.user.id,
+        )
+    except SourceValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return SourceConnectionTestResponse(
+        source_id=source.source_id,
+        status=source.scoring_api_last_test_status or "failed",
+        request_id=request_id,
+        message=(
+            "评分审核 API 连接成功。"
+            if source.scoring_api_last_test_status == "passed"
+            else "评分审核 API 连接失败，请检查 Base URL、API Key、权限和远端网络。"
         ),
     )

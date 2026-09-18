@@ -1,17 +1,166 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, exists, select
+from sqlalchemy import delete, exists, func, select
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.domain.models import (
+    ChargeOrderSnapshot,
+    DataSyncRun,
+    DataSyncRunEvent,
     ReconciliationBatch,
     SecurityAuditLog,
+    SpinOrderSnapshot,
     StoredFileObject,
     StoredFileReference,
+    WithdrawOrderSnapshot,
+    WithdrawScoringSnapshot,
 )
+from packages.domain.services.system_setting_service import get_retention_settings
 from packages.storage.local import LocalFileStorage
+
+
+def _is_missing_order_snapshot_table(error: OperationalError | ProgrammingError) -> bool:
+    message = str(error).lower()
+    return (
+        "withdraw_order_snapshots" in message
+        or "charge_order_snapshots" in message
+        or "spin_order_snapshots" in message
+        or "withdraw_scoring_snapshots" in message
+        or "data_sync_runs" in message
+        or "data_sync_run_events" in message
+    ) and (
+        "does not exist" in message or "no such table" in message
+    )
+
+
+SYNC_RUN_TERMINAL_STATUSES = frozenset(
+    {"succeeded", "partial", "failed", "superseded", "cancelled"}
+)
+
+
+async def _cleanup_expired_sync_runs(
+    session: AsyncSession,
+    *,
+    now: datetime,
+) -> int:
+    """Purge terminal operational logs without dropping active run evidence."""
+
+    retention = await get_retention_settings(session)
+    cutoff = now - timedelta(days=retention.sync_log_retention_days)
+    expired_run_ids = select(DataSyncRun.id).where(
+        DataSyncRun.status.in_(SYNC_RUN_TERMINAL_STATUSES),
+        func.coalesce(DataSyncRun.finished_at, DataSyncRun.requested_at) < cutoff,
+    )
+    try:
+        # The foreign key cascades in production.  Delete explicitly as well
+        # so local SQLite test databases retain no orphaned event rows when
+        # foreign-key enforcement is disabled.
+        await session.execute(
+            delete(DataSyncRunEvent).where(DataSyncRunEvent.run_id.in_(expired_run_ids))
+        )
+        result = await session.execute(
+            delete(DataSyncRun).where(DataSyncRun.id.in_(expired_run_ids))
+        )
+        return int(result.rowcount or 0)
+    except (OperationalError, ProgrammingError) as exc:
+        if not _is_missing_order_snapshot_table(exc):
+            raise
+        await session.rollback()
+        return 0
+
+
+async def _cleanup_expired_withdraw_snapshots(
+    session: AsyncSession,
+    *,
+    now: datetime,
+) -> int:
+    """Remove old local-only withdrawal snapshots after the configured retention.
+
+    This runs before the rest of the retention transaction so a pre-0006
+    deployment can roll back just this optional step and still clean files and
+    reconciliation data normally.
+    """
+
+    retention = await get_retention_settings(session)
+    cutoff = now - timedelta(days=retention.remote_cache_retention_days)
+    try:
+        result = await session.execute(
+            delete(WithdrawOrderSnapshot).where(WithdrawOrderSnapshot.synced_at < cutoff)
+        )
+        return int(result.rowcount or 0)
+    except (OperationalError, ProgrammingError) as exc:
+        if not _is_missing_order_snapshot_table(exc):
+            raise
+        await session.rollback()
+        return 0
+
+
+async def _cleanup_expired_withdraw_scoring_snapshots(
+    session: AsyncSession,
+    *,
+    now: datetime,
+) -> int:
+    """Remove expired scoring supplements without touching primary orders.
+
+    The score cache shares the remote-cache retention policy, but is cleaned
+    independently before master withdrawal snapshots.  This lets a current
+    withdrawal row lose an older score supplement without removing the
+    authoritative order itself.
+    """
+
+    retention = await get_retention_settings(session)
+    cutoff = now - timedelta(days=retention.remote_cache_retention_days)
+    try:
+        result = await session.execute(
+            delete(WithdrawScoringSnapshot).where(WithdrawScoringSnapshot.synced_at < cutoff)
+        )
+        return int(result.rowcount or 0)
+    except (OperationalError, ProgrammingError) as exc:
+        if not _is_missing_order_snapshot_table(exc):
+            raise
+        await session.rollback()
+        return 0
+
+
+async def _cleanup_expired_charge_snapshots(
+    session: AsyncSession,
+    *,
+    now: datetime,
+) -> int:
+    retention = await get_retention_settings(session)
+    cutoff = now - timedelta(days=retention.remote_cache_retention_days)
+    try:
+        result = await session.execute(
+            delete(ChargeOrderSnapshot).where(ChargeOrderSnapshot.synced_at < cutoff)
+        )
+        return int(result.rowcount or 0)
+    except (OperationalError, ProgrammingError) as exc:
+        if not _is_missing_order_snapshot_table(exc):
+            raise
+        await session.rollback()
+        return 0
+
+
+async def _cleanup_expired_spin_snapshots(
+    session: AsyncSession,
+    *,
+    now: datetime,
+) -> int:
+    retention = await get_retention_settings(session)
+    cutoff = now - timedelta(days=retention.remote_cache_retention_days)
+    try:
+        result = await session.execute(
+            delete(SpinOrderSnapshot).where(SpinOrderSnapshot.synced_at < cutoff)
+        )
+        return int(result.rowcount or 0)
+    except (OperationalError, ProgrammingError) as exc:
+        if not _is_missing_order_snapshot_table(exc):
+            raise
+        await session.rollback()
+        return 0
 
 
 async def cleanup_expired_data(
@@ -21,6 +170,23 @@ async def cleanup_expired_data(
     now: datetime | None = None,
 ) -> dict[str, int]:
     cleanup_time = now or datetime.now(UTC)
+    deleted_withdraw_scoring_snapshots = await _cleanup_expired_withdraw_scoring_snapshots(
+        session,
+        now=cleanup_time,
+    )
+    deleted_withdraw_order_snapshots = await _cleanup_expired_withdraw_snapshots(
+        session,
+        now=cleanup_time,
+    )
+    deleted_charge_order_snapshots = await _cleanup_expired_charge_snapshots(
+        session,
+        now=cleanup_time,
+    )
+    deleted_spin_order_snapshots = await _cleanup_expired_spin_snapshots(
+        session,
+        now=cleanup_time,
+    )
+    deleted_sync_runs = await _cleanup_expired_sync_runs(session, now=cleanup_time)
     expired_references = list(
         await session.scalars(
             select(StoredFileReference).where(StoredFileReference.expires_at <= cleanup_time)
@@ -64,6 +230,11 @@ async def cleanup_expired_data(
         "expiredFileReferences": len(expired_references),
         "deletedFileObjects": deleted_files,
         "deletedBatches": len(expired_batch_ids),
+        "deletedWithdrawScoringSnapshots": deleted_withdraw_scoring_snapshots,
+        "deletedWithdrawOrderSnapshots": deleted_withdraw_order_snapshots,
+        "deletedChargeOrderSnapshots": deleted_charge_order_snapshots,
+        "deletedSpinOrderSnapshots": deleted_spin_order_snapshots,
+        "deletedSyncRuns": deleted_sync_runs,
     }
     if any(counts.values()):
         session.add(
