@@ -1423,6 +1423,7 @@ function selectTaskMember(batchId: string | number) {
 
 function replaceCodeGroup(replacement: CodeGroupRow) {
   codeGroups.value = codeGroups.value.map((item) => item.detail.batch.id === replacement.detail.batch.id ? replacement : item)
+  if (verificationTarget.value?.detail.batch.id === replacement.detail.batch.id) verificationTarget.value = replacement
   selectedTaskMembers.value = selectedTaskMembers.value.map((item) => item.detail.batch.id === replacement.detail.batch.id ? replacement : item)
   if (selectedGroup.value?.detail.batch.id === replacement.detail.batch.id) {
     selectedGroup.value = replacement
