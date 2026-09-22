@@ -1284,6 +1284,51 @@ function openPublishDialog(target: CodeGroupRow | CodeGroupTask) {
   publishDialogVisible.value = true
 }
 
+function earliestUnpublishedExpiry(row: CodeGroupRow) {
+  return row.detail.issues.filter(issue => issue.workflowStatus === 'CREATED')
+    .map(issue => `${shiftDate(issue.claimDate, row.detail.batch.validToDayOffset ?? 0)} 23:59:59`).sort()[0]
+}
+
+async function publishWithSelectedOptions(row: CodeGroupRow, mode: 'IMMEDIATE' | 'SCHEDULED', scheduledTime: string | undefined, offerScheduledFallback: boolean) {
+  const expiry = earliestUnpublishedExpiry(row)
+  if (mode === 'SCHEDULED') {
+    if (isRepairing(row) && (!expiry || !scheduledTime || scheduledTime >= expiry)) {
+      throw new Error(`补齐配置必须在 ${expiry || '未知到期时间'}（印度时间）之前发布`)
+    }
+    return api.redemption.publishRemoteBatch(row.detail.batch.id, row.detail.batch.rowVersion, mode, scheduledTime, false)
+  }
+  try {
+    // Both initial and supplemental publication use the same explicit fallback flow.
+    // A remote rejection is known before proposing a scheduled write to the operator.
+    return await api.redemption.publishRemoteBatch(row.detail.batch.id, row.detail.batch.rowVersion, 'IMMEDIATE', undefined, false)
+  } catch (error) {
+    if (!offerScheduledFallback || !(error instanceof Error) || !hasPendingScheduledConflict(error.message)) throw error
+    let latestError: Error = error
+    const candidateTimes = [15, 30, 60].map(minutes => indiaNowText(new Date(Date.now() + minutes * 60_000)))
+    candidateTimes.push(`${row.detail.batch.claimDateFrom} 00:00:00`)
+    for (const time of [...new Set(candidateTimes)]) {
+      if (time <= indiaNowText()) continue
+      if (expiry && time >= expiry) continue
+      await ElMessageBox.confirm(
+        `立即发布被远端已有定时任务阻止。是否改为 ${time}（印度时间）定时发布？${expiry ? `待发布配置最早于 ${expiry} 到期。` : ''}远端会发布该账号届时所有尚未发布的兑换码，只有执行完成并核验通过后才能下载。`,
+        '确认定时发布时间', { type: 'warning', confirmButtonText: '按此时间发布', cancelButtonText: '暂不发布' },
+      )
+      if (time <= indiaNowText()) throw new Error('确认时定时时间已过，请重新选择发布方式')
+      const current = await api.redemption.batch(row.detail.batch.id)
+      if (current.batch.status !== row.detail.batch.status || current.issues.some(issue => issue.workflowStatus === 'PENDING_CREATION')) {
+        throw new Error('配置状态已变化，请刷新后重新选择发布方式')
+      }
+      try {
+        return await api.redemption.publishRemoteBatch(current.batch.id, current.batch.rowVersion, 'SCHEDULED', time, false)
+      } catch (scheduledError) {
+        if (!(scheduledError instanceof Error) || !hasPendingScheduledConflict(scheduledError.message)) throw scheduledError
+        latestError = scheduledError
+      }
+    }
+    throw new Error(`可用的定时时间均未被远端接受，未安排发布：${latestError.message}`)
+  }
+}
+
 function hasPendingPublishReservation(row: CodeGroupRow) {
   return (row.detail.batch.status === 'READY_TO_PUBLISH' || isRepairing(row)) && Boolean(row.detail.batch.remotePublishTaskId?.startsWith('PENDING:'))
 }
@@ -1318,8 +1363,10 @@ async function submitPublish() {
   if (!target) return
   if (publishForm.value.mode === 'SCHEDULED' && !publishForm.value.scheduledTime) { ElMessage.warning('请选择定时发布时间（印度时间）'); return }
   const rows = publishRows(target)
-  if (rows.some((row) => row.detail.batch.status !== 'READY_TO_PUBLISH')) {
-    ElMessage.warning('仍有盘口尚未完成远端配置，请先处理完成后再统一发布')
+  if (rows.some((row) => row.detail.batch.status !== 'READY_TO_PUBLISH'
+    && !(isRepairing(row) && row.detail.issues.some(issue => issue.workflowStatus === 'CREATED')
+      && row.detail.issues.every(issue => ['CREATED', 'PUBLISHED', 'CODE_IMPORTED'].includes(issue.workflowStatus || ''))))) {
+    ElMessage.warning('仍有配置尚未创建完成，请先处理完成后再发布')
     return
   }
   // Keep the submitted options after the dialog is destroyed.  A multi-market
@@ -1335,20 +1382,24 @@ async function submitPublish() {
     const failures: string[] = []
     for (const row of rows) {
       try {
-        const detail = await api.redemption.publishRemoteBatch(row.detail.batch.id, row.detail.batch.rowVersion, mode, scheduledTime, fallbackToScheduled)
+        const detail = await publishWithSelectedOptions(row, mode, scheduledTime, fallbackToScheduled)
         const replacement = { campaign: row.campaign, detail }
         replaceCodeGroup(replacement)
+        if (detail.batch.remotePublishMode === 'SCHEDULED') {
+          ElMessage.info(`远端已接受定时发布（印度时间 ${formatIndiaDateTime(detail.batch.remoteScheduledPublishAt)}）；待执行完成并核验后再下载`)
+        }
         const checked = await verifyRemotePublication(replacement, true)
         if (checked?.publicationState === 'COMPLETED' && checked.configurations.some(item => item.state === 'MATCHED')) {
-          await downloadPublishedCodes(replacement)
+          const complete = await downloadPublishedCodes(replacement)
+          if (complete && isRepairing(row)) await exportGroup({ campaign: row.campaign, detail: await api.redemption.batch(detail.batch.id) })
         }
       } catch (error) {
-        failures.push(`${remoteMarketLabel(row)}：${error instanceof Error ? error.message : '发布失败'}`)
+        failures.push(`${remoteMarketLabel(row)}：${error === 'cancel' || error === 'close' ? '已取消转定时发布' : error instanceof Error ? error.message : '发布失败'}`)
       }
     }
     const scheduled = mode === 'SCHEDULED'
     ElMessage[failures.length ? 'warning' : 'success'](failures.length
-      ? `${scheduled ? '定时发布' : '立即发布'}部分失败：${failures.join('；')}`
+      ? `${scheduled ? '定时发布' : '发布'}部分失败：${failures.join('；')}`
       : rows.length > 1
         ? `已提交 ${rows.length} 个盘口的发布请求，请查看各盘口核验结果`
       : '已提交发布请求，请查看实际发布方式和远端核验结果')
@@ -1559,25 +1610,9 @@ function hasPendingScheduledConflict(message?: string) {
   return Boolean(message?.includes('同个配置有等待发布的定时任务'))
 }
 
-async function scheduleMissingConfigurationRepair(batchId: string | number) {
-  const detail = await api.redemption.batch(batchId)
-  const expiry = detail.issues.filter(issue => issue.workflowStatus === 'CREATED')
-    .map(issue => `${shiftDate(issue.claimDate, detail.batch.validToDayOffset ?? 0)} 23:59:59`).sort()[0]
-  const scheduledTime = indiaNowText(new Date(Date.now() + 15 * 60_000))
-  if (!expiry || scheduledTime >= expiry) {
-    throw new Error(`立即发布被现有定时任务阻止，且补齐配置最早于 ${expiry || '未知时间'} 到期；不能安全安排新的定时发布`)
-  }
-  await ElMessageBox.confirm(
-    `远端已有待执行的兑换码定时任务，拒绝立即发布。是否改为 ${scheduledTime}（印度时间）定时发布？补齐配置最早于 ${expiry} 到期。新任务仍会发布该账号届时所有尚未发布的兑换码；只有远端执行完成并核验通过后才能下载。`,
-    '确认补齐定时发布', { type: 'warning', confirmButtonText: '按此时间发布', cancelButtonText: '暂不发布' },
-  )
-  return api.redemption.publishRemoteBatch(detail.batch.id, detail.batch.rowVersion, 'SCHEDULED', scheduledTime, false)
-}
-
 async function continueMissingConfigurationRepair(row: CodeGroupRow) {
   resolvingMissingBatchId.value = row.detail.batch.id
   let detail = row.detail
-  let publishAccepted = false
   try {
     // Each POST is separately recorded. A failed or uncertain create stops before any publish call.
     const pending = detail.issues.filter(item => item.workflowStatus === 'PENDING_CREATION')
@@ -1587,43 +1622,16 @@ async function continueMissingConfigurationRepair(row: CodeGroupRow) {
       replaceCodeGroup({ campaign: row.campaign, detail })
       if (index < pending.length - 1) await new Promise(resolve => window.setTimeout(resolve, Math.max(1, detail.batch.remoteOptions?.creationIntervalSeconds ?? 5) * 1000))
     }
-    if (detail.issues.some(item => !['CREATED', 'PUBLISHED', 'CODE_IMPORTED'].includes(item.workflowStatus || ''))) {
+    if (!detail.issues.some(item => item.workflowStatus === 'CREATED')
+      || detail.issues.some(item => !['CREATED', 'PUBLISHED', 'CODE_IMPORTED'].includes(item.workflowStatus || ''))) {
       ElMessage.warning('仍有配置待创建或待核对，暂不能重新发布')
       return
     }
-    if (hasPendingScheduledConflict(detail.batch.remotePublishError)) {
-      detail = await scheduleMissingConfigurationRepair(detail.batch.id)
-    } else {
-      await ElMessageBox.confirm(
-        `${detail.batch.remotePublishError ? '上次发布结果可能不确定，请先在 RAJACE 后台确认没有已完成的补齐发布任务。' : ''}缺失配置已重建。本次将再次发布该账号下所有尚未发布的兑换码配置，之前已发布的配置不会重新下载。确认先尝试立即发布吗？`,
-        '确认补齐发布范围', { type: 'warning', confirmButtonText: '确认发布', cancelButtonText: '暂不发布' },
-      )
-      try {
-        detail = await api.redemption.publishRemoteBatch(detail.batch.id, detail.batch.rowVersion, 'IMMEDIATE', undefined, false)
-      } catch (error) {
-        if (!(error instanceof Error) || !hasPendingScheduledConflict(error.message)) throw error
-        // A known rejection did not create a publish task. Refresh the row
-        // version before the user explicitly confirms a scheduled retry.
-        detail = await scheduleMissingConfigurationRepair(detail.batch.id)
-      }
-    }
-    publishAccepted = true
     const replacement = { campaign: row.campaign, detail }
     replaceCodeGroup(replacement)
-    const checked = await verifyRemotePublication(replacement, true)
-    if (checked?.publicationState !== 'COMPLETED') {
-      ElMessage.info(detail.batch.remotePublishMode === 'SCHEDULED'
-        ? `远端已接受补齐定时发布（印度时间 ${formatIndiaDateTime(detail.batch.remoteScheduledPublishAt)}）；待执行完成并核验后继续下载`
-        : '远端已接受补齐发布；待发布完成并核验后继续下载')
-      return
-    }
-    const complete = await downloadPublishedCodes(replacement)
-    if (complete) await exportGroup({ campaign: row.campaign, detail: await api.redemption.batch(detail.batch.id) })
-    else showPublicationResult({ campaign: row.campaign, detail: await api.redemption.batch(detail.batch.id) })
+    openPublishDialog(replacement)
   } catch (error) {
-    if (error !== 'cancel' && error !== 'close') ElMessage.error(publishAccepted
-      ? `远端已接受发布，但后续核验或下载未完成：${error instanceof Error ? error.message : '请在任务明细中继续核验'}`
-      : error instanceof Error ? error.message : '补齐配置失败；任务已保留当前进度，可在明细中继续处理')
+    ElMessage.error(error instanceof Error ? error.message : '补齐配置失败；任务已保留当前进度，可在明细中继续处理')
   } finally {
     resolvingMissingBatchId.value = undefined
     await loadCodeGroups()
@@ -1885,15 +1893,16 @@ onUnmounted(() => {
     </el-dialog>
 
     <el-dialog v-model="publishDialogVisible" title="选择发布方式" width="560px" destroy-on-close>
-      <p class="field-note publish-dialog__intro">{{ isMultiMarketPublishTarget(publishTarget) ? '将按盘口顺序串行执行；每个盘口仍仅发布其远端后台的待发布配置。' : '默认会立即发布，并在失败时自动回退为定时发布；如需调整，请展开下方设置。' }}</p>
+      <p class="field-note publish-dialog__intro">{{ isMultiMarketPublishTarget(publishTarget) ? '将按盘口顺序串行执行；每个盘口仅发布其远端账号下尚未发布的配置。' : '默认先尝试立即发布；若被已有定时任务阻止，会先显示具体印度时间，确认后才转为定时发布。' }}</p>
+      <el-alert v-if="publishTarget && publishRows(publishTarget).some(isRepairing)" type="warning" :closable="false" title="补齐发布会发布该账号下所有尚未发布的兑换码；已发布的配置不会重新下载。若上次发布结果不确定，请先到远端后台核对。" />
       <el-collapse v-model="publishOptionsOpen" class="advanced-options publish-options">
         <el-collapse-item name="publish">
-          <template #title><el-icon><Setting /></el-icon><span>发布相关设置（默认：立即发布，开启自动回退）</span></template>
+          <template #title><el-icon><Setting /></el-icon><span>发布相关设置（默认：立即发布，冲突时提示定时发布）</span></template>
           <el-form label-width="112px">
             <el-form-item label="发布方式"><el-radio-group v-model="publishForm.mode"><el-radio value="IMMEDIATE">立即发布（默认）</el-radio><el-radio value="SCHEDULED">定时发布</el-radio></el-radio-group></el-form-item>
             <el-form-item v-if="publishForm.mode === 'SCHEDULED'" label="发布时间" required><el-date-picker v-model="publishForm.scheduledTime" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" placeholder="选择印度时间" style="width: 100%" /><p class="field-note">远端按印度时间（Asia/Kolkata）执行；撤销必须早于该时间。</p></el-form-item>
-            <el-form-item v-if="publishForm.mode === 'IMMEDIATE'" label="失败自动回退"><el-switch v-model="publishForm.fallbackToScheduled" inline-prompt active-text="开" inactive-text="关" /><p class="field-note">默认开启。关闭后，立即发布失败将直接记录失败原因，不再创建定时发布任务。</p></el-form-item>
-            <el-alert v-if="publishForm.mode === 'IMMEDIATE' && publishForm.fallbackToScheduled" type="info" :closable="false" title="立即发布冲突时，系统会依次尝试 15、30、60 分钟后的定时发布，再尝试最早领取日期 00:00:00（印度时间）。" />
+            <el-form-item v-if="publishForm.mode === 'IMMEDIATE'" label="失败后转定时"><el-switch v-model="publishForm.fallbackToScheduled" inline-prompt active-text="开" inactive-text="关" /><p class="field-note">默认开启。仅在远端明确拒绝立即发布且提示已有定时任务时，才会逐次提示定时时间；每次均须确认。</p></el-form-item>
+            <el-alert v-if="publishForm.mode === 'IMMEDIATE' && publishForm.fallbackToScheduled" type="info" :closable="false" title="发生定时任务冲突时，依次提供约 15、30、60 分钟后的印度时间及最早领取日 00:00:00；到期前无法执行的时间会跳过。" />
           </el-form>
         </el-collapse-item>
       </el-collapse>

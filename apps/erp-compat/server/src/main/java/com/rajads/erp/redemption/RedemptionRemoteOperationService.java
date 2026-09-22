@@ -146,7 +146,7 @@ public class RedemptionRemoteOperationService {
                 return scheduleFallbackThroughUnifiedExecutor(batchId, context, exception.getMessage(), executor);
             }
             String error = limit(exception.getMessage());
-            String note = context.scheduled() ? "人工定时发布失败：" + error : "立即发布失败（未开启自动回退）：" + error;
+            String note = context.scheduled() ? "人工定时发布失败：" + error : "立即发布失败（未提交定时发布）：" + error;
             tx().executeWithoutResult(status -> failPublish(batchId, context.scheduled() ? "SCHEDULED" : "IMMEDIATE", context.scheduledTime(), note, error));
             throw exception;
         } catch (RuntimeException exception) {
@@ -172,7 +172,7 @@ public class RedemptionRemoteOperationService {
                 return scheduleFallback(batchId, context, connection, exception.getMessage());
             }
             String error = limit(exception.getMessage());
-            String note = context.scheduled() ? "人工定时发布失败：" + error : "立即发布失败（未开启自动回退）：" + error;
+            String note = context.scheduled() ? "人工定时发布失败：" + error : "立即发布失败（未提交定时发布）：" + error;
             tx().executeWithoutResult(status -> failPublish(batchId, context.scheduled() ? "SCHEDULED" : "IMMEDIATE", context.scheduledTime(), note, error));
             throw ApiException.badRequest("REMOTE_PUBLISH_FAILED", error);
         } catch (RuntimeException exception) {
