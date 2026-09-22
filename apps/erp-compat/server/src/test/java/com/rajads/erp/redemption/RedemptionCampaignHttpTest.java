@@ -17,6 +17,7 @@ import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -47,6 +48,8 @@ class RedemptionCampaignHttpTest {
     @Autowired private ObjectMapper objectMapper;
     @MockBean private RemoteGiftCodeBackendClient remoteGiftCodeBackendClient;
     @MockBean private RemoteOperationGate remoteOperationGate;
+    @Autowired private RedemptionCodeIssueRepository issueRepository;
+    @Autowired private TransactionTemplate transactionTemplate;
 
     @Test
     void adminCanCreateTieredCampaign() throws Exception {
@@ -132,6 +135,28 @@ class RedemptionCampaignHttpTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].code").value("GROUP_CREATE_AUG"))
                 .andExpect(jsonPath("$.data[0].status").value("ACTIVE"));
+
+        transactionTemplate.executeWithoutResult(status -> {
+            var storedIssue = issueRepository.findById(allUsersIssueId).orElseThrow();
+            storedIssue.setCodes(List.of("GROUP-CREATE-OVERVIEW-CODE"));
+            storedIssue.setWorkflowStatus("CODE_IMPORTED");
+            issueRepository.saveAndFlush(storedIssue);
+        });
+        long batchId = data(groupResult).at("/batch/id").asLong();
+        JsonNode overviews = data(mockMvc.perform(get("/api/v1/redemption-campaigns/batches/overview").session(session))
+                .andExpect(status().isOk()).andReturn());
+        JsonNode overview = null;
+        for (JsonNode item : overviews) if (item.path("batch").path("id").asLong() == batchId) overview = item;
+        assertThat(overview).isNotNull();
+        assertThat(overview.path("batch").path("importedCount").asInt()).isEqualTo(1);
+        JsonNode overviewIssue = null;
+        for (JsonNode item : overview.path("issues")) if (item.path("id").asLong() == allUsersIssueId) overviewIssue = item;
+        assertThat(overviewIssue).isNotNull();
+        assertThat(overviewIssue.path("redemptionCode").asText("")).isEmpty();
+        assertThat(overviewIssue.path("redemptionCodes").size()).isZero();
+        mockMvc.perform(get("/api/v1/redemption-campaigns/batches/" + batchId).session(session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.issues[1].redemptionCode").value("GROUP-CREATE-OVERVIEW-CODE"));
     }
 
     @Test

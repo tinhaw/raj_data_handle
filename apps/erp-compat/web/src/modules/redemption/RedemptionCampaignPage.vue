@@ -874,11 +874,13 @@ async function loadMarketTierConfiguration() {
 async function loadCodeGroups() {
   loading.value = true
   try {
-    campaigns.value = await api.redemption.list()
-    const groups = (await Promise.all(campaigns.value.filter((campaign) => campaign.id !== undefined).map(async (campaign) => {
-      const batches = await api.redemption.batches(campaign.id!)
-      return Promise.all(batches.map(async (batch) => ({ campaign, detail: await api.redemption.batch(batch.id) })))
-    }))).flat()
+    const [loadedCampaigns, details] = await Promise.all([api.redemption.list(), api.redemption.batchOverviews()])
+    const campaignById = new Map(loadedCampaigns.map(campaign => [String(campaign.id), campaign]))
+    const groups = details.flatMap(detail => {
+      const campaign = campaignById.get(String(detail.batch.campaignId))
+      return campaign ? [{ campaign, detail }] : []
+    })
+    campaigns.value = loadedCampaigns
     codeGroups.value = groups.sort((left, right) => String(right.detail.batch.createdAt || '').localeCompare(String(left.detail.batch.createdAt || '')))
     void verifyPendingPublications()
   } catch (error) {
@@ -1710,7 +1712,7 @@ onUnmounted(() => {
           <h3>批量生成兑换码组任务</h3>
           <p>分别显示远端发布结果与兑换码下载状态；兑换码全部入库后可下载 Excel。</p>
         </div>
-        <span class="code-group-list__count">共 {{ codeGroupTasks.length }} 个兑换码组任务</span>
+        <span class="code-group-list__count">{{ loading && !codeGroupTasks.length ? '正在加载任务…' : `共 ${codeGroupTasks.length} 个兑换码组任务` }}</span>
       </header>
 
       <div v-if="codeGroupTasks.length" v-loading="loading" class="code-group-virtual-table">
@@ -1778,7 +1780,8 @@ onUnmounted(() => {
           @size-change="changeCodeGroupTaskPageSize"
         />
       </div>
-      <el-empty v-else v-loading="loading" :image-size="68" description="还没有兑换码组，点击右上角“批量生成兑换码组”开始创建" />
+      <div v-else-if="loading" v-loading="loading" class="code-group-loading" />
+      <el-empty v-else :image-size="68" description="还没有兑换码组，点击右上角“批量生成兑换码组”开始创建" />
     </article>
 
     <el-dialog v-model="codeGroupDialogVisible" title="批量生成兑换码组" width="1040px" destroy-on-close>
@@ -2022,6 +2025,7 @@ onUnmounted(() => {
 .code-group-list__heading p { margin: 5px 0 0; color: #667085; font-size: 12px; }
 .code-group-list__count { padding-top: 3px; color: #667085; font-size: 12px; white-space: nowrap; }
 .code-group-virtual-table { height: clamp(360px, calc(100vh - 320px), 640px); min-width: 0; }
+.code-group-loading { min-height: 190px; }
 .code-group-table { --el-table-header-bg-color: #f9fafb; --el-table-border-color: #eaecf0; --el-table-row-hover-bg-color: #f8fbff; }
 .code-group-table :deep(.el-table-v2__header-cell) { color: #667085; font-size: 12px; font-weight: 600; }
 .code-group-table :deep(.el-table-v2__row-cell) { padding: 0 12px; color: #475467; font-size: 12px; }

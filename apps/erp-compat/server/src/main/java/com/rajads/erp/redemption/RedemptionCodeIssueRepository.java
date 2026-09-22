@@ -24,6 +24,7 @@ public interface RedemptionCodeIssueRepository extends JpaRepository<RedemptionC
     long countImportedCodesByCampaignId(@Param("campaignId") Long campaignId);
     long countByBatchIdAndWorkflowStatus(Long batchId, String workflowStatus);
     List<RedemptionCodeIssue> findByBatchIdOrderByClaimDateAscCampaignTierIdAsc(Long batchId);
+    List<RedemptionCodeIssue> findByBatchIdInOrderByBatchIdAscClaimDateAscCampaignTierIdAsc(Collection<Long> batchIds);
     List<RedemptionCodeIssue> findByBatchIdAndRemoteConfigurationIdIn(Long batchId, Collection<String> remoteConfigurationIds);
     List<RedemptionCodeIssue> findByCampaignIdInAndClaimDateBetweenOrderByClaimDateAscCampaignTierIdAsc(Collection<Long> campaignIds, LocalDate from, LocalDate to);
 }

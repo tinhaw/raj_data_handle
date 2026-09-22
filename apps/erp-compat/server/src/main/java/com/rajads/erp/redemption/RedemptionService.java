@@ -109,6 +109,27 @@ public class RedemptionService {
         return batchRepository.findByCampaignIdOrderByCreatedAtDesc(campaignId).stream().map(this::batchResponse).toList();
     }
 
+    /** One lightweight list read: no per-batch HTTP requests and no stored code values. */
+    @Transactional(readOnly = true)
+    public List<RedemptionDtos.BatchDetailResponse> batchOverviews() {
+        List<RedemptionCodeBatch> batches = batchRepository.findAllByOrderByCreatedAtDesc();
+        if (batches.isEmpty()) return List.of();
+        Map<Long, List<RedemptionCodeIssue>> byBatch = new HashMap<>();
+        for (RedemptionCodeIssue issue : issueRepository.findByBatchIdInOrderByBatchIdAscClaimDateAscCampaignTierIdAsc(
+                batches.stream().map(RedemptionCodeBatch::getId).toList())) {
+            byBatch.computeIfAbsent(issue.getBatchId(), ignored -> new ArrayList<>()).add(issue);
+        }
+        return batches.stream().map(batch -> {
+            List<RedemptionCodeIssue> issues = byBatch.getOrDefault(batch.getId(), List.of());
+            Map<String, Integer> counts = new HashMap<>();
+            for (RedemptionCodeIssue issue : issues) counts.merge(issue.getWorkflowStatus(), 1, Integer::sum);
+            return new RedemptionDtos.BatchDetailResponse(
+                    batchResponse(batch, counts.getOrDefault("PENDING_CREATION", 0), counts.getOrDefault("CREATED", 0),
+                            counts.getOrDefault("PUBLISHED", 0), counts.getOrDefault("CODE_IMPORTED", 0)),
+                    issues.stream().map(issue -> issueResponse(issue, batch, false)).toList());
+        }).toList();
+    }
+
     @Transactional(readOnly = true)
     public RedemptionDtos.BatchDetailResponse batch(Long batchId) {
         RedemptionCodeBatch batch = requireBatch(batchId);
@@ -388,11 +409,16 @@ public class RedemptionService {
     }
 
     private RedemptionDtos.CodeIssueResponse issueResponse(RedemptionCodeIssue issue, RedemptionCodeBatch batch) {
+        return issueResponse(issue, batch, true);
+    }
+
+    private RedemptionDtos.CodeIssueResponse issueResponse(RedemptionCodeIssue issue, RedemptionCodeBatch batch, boolean includeCodes) {
         List<Long> labels = parseLabelIds(issue.getRemoteLabelIdsJson());
         String description = batch == null ? null : RedemptionRemoteDescription.forIssue(batch, issue, labels);
         return new RedemptionDtos.CodeIssueResponse(issue.getId(), issue.getCampaignId(), issue.getCampaignTierId(), issue.getTierName(),
                 issue.getMinDepositAmount(), issue.getBonusAmount(), issue.getClaimDate(), issue.getDepositWindowStart(),
-                issue.getDepositWindowEnd(), issue.getCodes().isEmpty() ? null : String.join("\n", issue.getCodes()), issue.getState(), issue.getRemoteReferenceId(),
+                issue.getDepositWindowEnd(), includeCodes && !issue.getCodes().isEmpty() ? String.join("\n", issue.getCodes()) : null,
+                issue.getState(), issue.getRemoteReferenceId(),
                 issue.getRemoteError(), issue.getGeneratedAt(), issue.getRowVersion(), issue.getBonusMaxAmount(), issue.getBatchId(),
                 issue.getWorkflowStatus(), issue.getRemoteConfigurationId(), issue.getRemoteGroupKey(), labels, description, description);
     }
@@ -446,6 +472,14 @@ public class RedemptionService {
     }
 
     private RedemptionDtos.BatchResponse batchResponse(RedemptionCodeBatch batch) {
+        return batchResponse(batch,
+                Math.toIntExact(issueRepository.countByBatchIdAndWorkflowStatus(batch.getId(), "PENDING_CREATION")),
+                Math.toIntExact(issueRepository.countByBatchIdAndWorkflowStatus(batch.getId(), "CREATED")),
+                Math.toIntExact(issueRepository.countByBatchIdAndWorkflowStatus(batch.getId(), "PUBLISHED")),
+                Math.toIntExact(issueRepository.countByBatchIdAndWorkflowStatus(batch.getId(), "CODE_IMPORTED")));
+    }
+
+    private RedemptionDtos.BatchResponse batchResponse(RedemptionCodeBatch batch, int pending, int created, int published, int imported) {
         RedemptionRemoteDirectory.Account connection = batch.getRemoteConnectionId() == null ? null
                 : remoteDirectory.find(batch.getRemoteConnectionId()).orElse(null);
         String connectionName = batch.getRemoteConnectionId() == null ? null
@@ -456,10 +490,7 @@ public class RedemptionService {
         return new RedemptionDtos.BatchResponse(batch.getId(), batch.getCampaignId(), batch.getClaimDateFrom(), batch.getClaimDateTo(),
                 batch.getValidFromDayOffset(), batch.getValidToDayOffset(),
                 batch.getLookbackDays(), batch.getRedemptionType(), batch.getExpectedCodeCount(), batch.getStatus(),
-                Math.toIntExact(issueRepository.countByBatchIdAndWorkflowStatus(batch.getId(), "PENDING_CREATION")),
-                Math.toIntExact(issueRepository.countByBatchIdAndWorkflowStatus(batch.getId(), "CREATED")),
-                Math.toIntExact(issueRepository.countByBatchIdAndWorkflowStatus(batch.getId(), "PUBLISHED")),
-                Math.toIntExact(issueRepository.countByBatchIdAndWorkflowStatus(batch.getId(), "CODE_IMPORTED")),
+                pending, created, published, imported,
                 batch.getPublishedAt(), batch.getRowVersion(), batch.getCreatedAt(), batch.getRemoteConnectionId(), connectionName, marketCode, marketName,
                 batch.getExportGroupKey(),
                 batch.getRemotePublishTaskId(), batch.getRemotePublishError(), batch.getRemotePublishMode(),

@@ -60,6 +60,10 @@ public class RedemptionController {
     @PreAuthorize("hasAuthority('REDEMPTION_VIEW')")
     public List<RedemptionDtos.BatchResponse> batches(@RequestParam Long campaignId) { return service.batches(campaignId); }
 
+    @GetMapping("/batches/overview")
+    @PreAuthorize("hasAuthority('REDEMPTION_VIEW')")
+    public List<RedemptionDtos.BatchDetailResponse> batchOverviews() { return service.batchOverviews(); }
+
     @GetMapping("/batches/{batchId}")
     @PreAuthorize("hasAuthority('REDEMPTION_VIEW')")
     public RedemptionDtos.BatchDetailResponse batch(@PathVariable Long batchId) { return service.batch(batchId); }

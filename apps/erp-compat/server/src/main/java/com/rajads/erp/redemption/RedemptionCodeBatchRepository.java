@@ -8,6 +8,7 @@ import java.util.Optional;
 
 public interface RedemptionCodeBatchRepository extends JpaRepository<RedemptionCodeBatch, Long> {
     List<RedemptionCodeBatch> findByCampaignIdOrderByCreatedAtDesc(Long campaignId);
+    List<RedemptionCodeBatch> findAllByOrderByCreatedAtDesc();
     List<RedemptionCodeBatch> findByExportGroupKeyOrderByCreatedAtAsc(String exportGroupKey);
     Optional<RedemptionCodeBatch> findFirstBySubtaskDateOrderBySubtaskDailySequenceDesc(LocalDate subtaskDate);
     long countByRemoteConnectionId(Long remoteConnectionId);
