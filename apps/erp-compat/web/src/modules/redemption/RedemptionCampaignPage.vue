@@ -1333,6 +1333,25 @@ function hasPendingPublishReservation(row: CodeGroupRow) {
   return (row.detail.batch.status === 'READY_TO_PUBLISH' || isRepairing(row)) && Boolean(row.detail.batch.remotePublishTaskId?.startsWith('PENDING:'))
 }
 
+function repairReadyForPublish(row: CodeGroupRow) {
+  return isRepairing(row) && row.detail.issues.some(issue => issue.workflowStatus === 'CREATED')
+    && row.detail.issues.every(issue => ['CREATED', 'PUBLISHED', 'CODE_IMPORTED'].includes(issue.workflowStatus || ''))
+}
+
+function canContinueRepair(row: CodeGroupRow) {
+  return isRepairing(row) && !hasPendingPublishReservation(row)
+    && (repairReadyForPublish(row) || row.detail.issues.some(issue => issue.workflowStatus === 'PENDING_CREATION'))
+}
+
+function repairActionLabel(row: CodeGroupRow) {
+  return repairReadyForPublish(row) ? '选择发布方式' : '继续补齐配置'
+}
+
+function handleRepairAction(row: CodeGroupRow) {
+  if (repairReadyForPublish(row)) openPublishDialog(row)
+  else void continueMissingConfigurationRepair(row)
+}
+
 function remoteMarketLabel(row: CodeGroupRow) {
   const { remoteMarketCode, remoteMarketName } = row.detail.batch
   if (remoteMarketCode && remoteMarketName) return `${remoteMarketCode} · ${remoteMarketName}`
@@ -1363,9 +1382,7 @@ async function submitPublish() {
   if (!target) return
   if (publishForm.value.mode === 'SCHEDULED' && !publishForm.value.scheduledTime) { ElMessage.warning('请选择定时发布时间（印度时间）'); return }
   const rows = publishRows(target)
-  if (rows.some((row) => row.detail.batch.status !== 'READY_TO_PUBLISH'
-    && !(isRepairing(row) && row.detail.issues.some(issue => issue.workflowStatus === 'CREATED')
-      && row.detail.issues.every(issue => ['CREATED', 'PUBLISHED', 'CODE_IMPORTED'].includes(issue.workflowStatus || ''))))) {
+  if (rows.some((row) => row.detail.batch.status !== 'READY_TO_PUBLISH' && !repairReadyForPublish(row))) {
     ElMessage.warning('仍有配置尚未创建完成，请先处理完成后再发布')
     return
   }
@@ -1736,6 +1753,7 @@ onUnmounted(() => {
                     <el-button v-if="taskPrimary(row).detail.batch.status === 'PUBLISHED'" link type="primary" size="small" :loading="verifyingPublicationIds.has(String(taskPrimary(row).detail.batch.id))" @click="inspectPublication(taskPrimary(row))">{{ missingConfigurations(taskPrimary(row)).length ? '处理缺失配置' : '查看核验结果' }}</el-button>
                     <el-button v-if="hasPendingPublishReservation(taskPrimary(row))" link type="warning" size="small" :loading="recoveringPublishId === taskPrimary(row).detail.batch.id" @click="recoverPublishReservation(taskPrimary(row))">恢复发布</el-button>
                     <el-button v-else-if="taskPrimary(row).detail.batch.status === 'READY_TO_PUBLISH'" link type="primary" size="small" @click="openPublishDialog(taskPrimary(row))">选择发布方式</el-button>
+                    <el-button v-if="canContinueRepair(taskPrimary(row))" link type="warning" size="small" :loading="resolvingMissingBatchId === taskPrimary(row).detail.batch.id || publishing" @click="handleRepairAction(taskPrimary(row))">{{ repairActionLabel(taskPrimary(row)) }}</el-button>
                     <el-button v-if="canCancelScheduledPublish(taskPrimary(row))" link type="danger" size="small" :disabled="!canCancelScheduledPublish(taskPrimary(row))" :loading="cancellingPublishId === taskPrimary(row).detail.batch.id" @click="cancelScheduledPublish(taskPrimary(row))">撤销发布</el-button>
                     <el-button v-if="canDownloadScheduledCodes(taskPrimary(row))" link type="primary" size="small" :loading="isProcessing(taskPrimary(row))" @click="downloadPublishedCodes(taskPrimary(row))">{{ taskPrimary(row).detail.issues.some((issue: RedemptionCodeIssue) => issue.remoteError) ? '重试下载' : '下载兑换码' }}</el-button>
                     <el-button v-if="isSuccess(taskPrimary(row)) && canExport" link type="primary" size="small" :icon="Download" :loading="exportingId === taskPrimary(row).detail.batch.id" @click="exportGroup(taskPrimary(row))">下载 Excel</el-button>
@@ -1942,6 +1960,10 @@ onUnmounted(() => {
           <el-tab-pane v-for="member in selectedTaskMembers" :key="member.detail.batch.id" :name="String(member.detail.batch.id)" :label="taskMemberLabel(member)" />
         </el-tabs>
         <p v-if="selectedTaskMembers.length > 1" class="field-note task-detail-note">各盘口保留独立的远端创建、发布与下载进度；系统会按盘口顺序完成创建，所有盘口完成后可在任务列表下载同一份多 Sheet Excel。</p>
+        <div v-if="isRepairing(selectedGroup)" class="repair-action-strip" role="status">
+          <span>{{ repairReadyForPublish(selectedGroup) ? '补齐配置已创建，尚未再次发布；请选择发布方式。' : '缺失配置仍在补齐；完成后再选择发布方式。' }}</span>
+          <el-button v-if="canContinueRepair(selectedGroup)" type="warning" :loading="resolvingMissingBatchId === selectedGroup.detail.batch.id || publishing" @click="handleRepairAction(selectedGroup)">{{ repairActionLabel(selectedGroup) }}</el-button>
+        </div>
         <el-descriptions :column="2" border class="group-detail-summary">
           <el-descriptions-item label="任务编号">{{ selectedTaskDisplayId }}</el-descriptions-item>
           <el-descriptions-item label="操作人">{{ selectedGroup.detail.batch.operatorUsername || '—' }}</el-descriptions-item>
@@ -1980,7 +2002,6 @@ onUnmounted(() => {
           <el-button v-if="hasPendingPublishReservation(selectedGroup)" type="warning" :loading="recoveringPublishId === selectedGroup.detail.batch.id" @click="recoverPublishReservation(selectedGroup)">恢复发布</el-button>
           <el-button v-else-if="selectedGroup.detail.batch.status === 'READY_TO_PUBLISH'" type="primary" @click="openPublishDialog(selectedGroup)">选择发布方式</el-button>
           <el-button v-if="selectedGroup.detail.batch.status === 'PUBLISHED'" :loading="verifyingPublicationIds.has(String(selectedGroup.detail.batch.id))" @click="inspectPublication(selectedGroup)">{{ missingConfigurations(selectedGroup).length ? '处理缺失配置' : '查看核验结果' }}</el-button>
-          <el-button v-if="isRepairing(selectedGroup) && !hasPendingPublishReservation(selectedGroup)" type="warning" :loading="resolvingMissingBatchId === selectedGroup.detail.batch.id" @click="continueMissingConfigurationRepair(selectedGroup)">继续补齐并核验</el-button>
           <el-button v-if="(missingConfigurations(selectedGroup).length || isRepairing(selectedGroup)) && selectedGroup.detail.batch.importedCount > 0 && canExport" :loading="resolvingMissingBatchId === selectedGroup.detail.batch.id" @click="acceptAvailableCodes(selectedGroup)">仅下载已有兑换码</el-button>
           <el-button v-if="canCancelScheduledPublish(selectedGroup)" type="danger" :disabled="!canCancelScheduledPublish(selectedGroup)" :loading="cancellingPublishId === selectedGroup.detail.batch.id" @click="cancelScheduledPublish(selectedGroup)">撤销发布</el-button>
           <el-button v-if="canDownloadScheduledCodes(selectedGroup)" type="primary" :loading="isProcessing(selectedGroup)" @click="downloadPublishedCodes(selectedGroup)">{{ selectedGroup.detail.issues.some(issue => issue.remoteError) ? '重试下载' : '下载兑换码' }}</el-button>
@@ -2053,6 +2074,7 @@ onUnmounted(() => {
 .advanced-options__toggle-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
 .submit-hint { margin: 0; color: #667085; font-size: 12px; }
 .group-detail-summary { margin-bottom: 18px; }
+.repair-action-strip { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; padding: 12px 14px; border: 1px solid #fed7aa; border-radius: 8px; background: #fffbeb; color: #9a3412; font-size: 13px; }
 .group-detail-error { margin-bottom: 14px; }
 .group-detail-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; color: #667085; font-size: 13px; }
 .group-detail-table { --el-table-header-bg-color: #f9fafb; --el-table-border-color: #eaecf0; }
