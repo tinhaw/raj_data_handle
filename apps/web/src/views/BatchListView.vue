@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import type { EChartsOption } from 'echarts'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref } from 'vue'
@@ -8,11 +7,13 @@ import { useRouter } from 'vue-router'
 import { fetchBatches, fetchOperationalSummary } from '../api/batches'
 import { apiErrorMessage } from '../api/client'
 import { fetchEnabledSources } from '../api/sources'
-import ChartPanel from '../components/ChartPanel.vue'
+import ChargeChannelSummary from '../components/ChargeChannelSummary.vue'
+import ChargeOrderDetails from '../components/ChargeOrderDetails.vue'
 import type { BatchRecord, OperationalSummary, SourceConfig } from '../types'
 import { formatDateTime, statusLabel, statusTagType } from '../ui'
 
 const router = useRouter()
+const activeTab = ref('comparison')
 const loading = ref(false)
 const batches = ref<BatchRecord[]>([])
 const sources = ref<SourceConfig[]>([])
@@ -30,59 +31,48 @@ const filters = reactive({
   batchStatus: '',
 })
 
-const chartBase = {
-  textStyle: { fontFamily: 'Inter, "PingFang SC", sans-serif' },
-  tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-  grid: { left: 42, right: 18, top: 24, bottom: 34, containLabel: true },
-} satisfies EChartsOption
+const activeStatuses = new Set([
+  'queued',
+  'validating',
+  'fetching_remote',
+  'comparing',
+  'rechecking',
+  'cancelling',
+])
+const issueStatuses = new Set(['failed', 'comparison_incomplete'])
 
-const statusOption = computed<EChartsOption>(() => ({
-  ...chartBase,
-  xAxis: { type: 'category', data: summary.value.executionStatusDistribution.map((item) => statusLabel(item.status)) },
-  yAxis: { type: 'value', minInterval: 1 },
-  series: [{
-    type: 'bar',
-    data: summary.value.executionStatusDistribution.map((item) => item.count),
-    itemStyle: { color: '#2a9d8f', borderRadius: [6, 6, 0, 0] },
-  }],
-}))
+function countStatuses(statuses: Set<string>): number {
+  return summary.value.executionStatusDistribution
+    .filter((item) => statuses.has(item.status))
+    .reduce((sum, item) => sum + item.count, 0)
+}
 
-const trendOption = computed<EChartsOption>(() => ({
-  ...chartBase,
-  xAxis: { type: 'category', data: summary.value.executionCreatedTimeSeries.map((item) => item.date) },
-  yAxis: { type: 'value', minInterval: 1 },
-  series: [{
-    type: 'line',
-    smooth: true,
-    symbolSize: 8,
-    data: summary.value.executionCreatedTimeSeries.map((item) => item.count),
-    lineStyle: { color: '#1d4e89', width: 3 },
-    itemStyle: { color: '#1d4e89' },
-    areaStyle: { color: 'rgba(29, 78, 137, .12)' },
-  }],
-}))
+const awaitingCount = computed(() => countStatuses(new Set(['awaiting_confirmation'])))
+const activeCount = computed(() => countStatuses(activeStatuses))
+const issueCount = computed(() => countStatuses(issueStatuses))
 
-const durationOption = computed<EChartsOption>(() => ({
-  ...chartBase,
-  xAxis: { type: 'category', data: summary.value.executionDurationBuckets.map((item) => item.bucket) },
-  yAxis: { type: 'value', minInterval: 1 },
-  series: [{
-    type: 'bar',
-    data: summary.value.executionDurationBuckets.map((item) => item.count),
-    itemStyle: { color: '#e9c46a', borderRadius: [6, 6, 0, 0] },
-  }],
-}))
+const statusPriority: Record<string, number> = {
+  failed: 0,
+  comparison_incomplete: 0,
+  awaiting_confirmation: 1,
+  queued: 2,
+  validating: 2,
+  fetching_remote: 2,
+  comparing: 2,
+  rechecking: 2,
+  cancelling: 2,
+  completed: 3,
+  cancelled: 4,
+}
 
-const failureOption = computed<EChartsOption>(() => ({
-  ...chartBase,
-  xAxis: { type: 'value', minInterval: 1 },
-  yAxis: { type: 'category', data: summary.value.failureCategoryDistribution.map((item) => item.category) },
-  series: [{
-    type: 'bar',
-    data: summary.value.failureCategoryDistribution.map((item) => item.count),
-    itemStyle: { color: '#e76f51', borderRadius: [0, 6, 6, 0] },
-  }],
-}))
+const sortedBatches = computed(() =>
+  [...batches.value].sort((left, right) => {
+    const priorityDelta =
+      (statusPriority[left.status] ?? 5) - (statusPriority[right.status] ?? 5)
+    if (priorityDelta !== 0) return priorityDelta
+    return new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+  }),
+)
 
 function queryParams(): Record<string, string> {
   const params: Record<string, string> = {}
@@ -112,6 +102,7 @@ async function load(): Promise<void> {
 onMounted(async () => {
   try {
     sources.value = await fetchEnabledSources()
+    if (sources.value[0]) filters.sourceId = sources.value[0].sourceId
   } catch {
     sources.value = []
   }
@@ -123,102 +114,266 @@ onMounted(async () => {
   <div class="page-stack">
     <header class="page-header">
       <div>
-        <span class="page-eyebrow">Shared workspace</span>
-        <h1>比对批次中心</h1>
-        <p>团队共享查看所有执行版本；这里的图表只统计运行状态，不跨批次累加订单。</p>
-      </div>
-      <div class="header-actions">
-        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
-        <el-button type="primary" :icon="Plus" @click="router.push('/batches/new')">
-          新建比对
-        </el-button>
+        <span class="page-eyebrow">PAYIN ORDERS</span>
+        <h1>充值订单</h1>
+        <p>集中查看充值订单的对比任务、运行状态和处理结果。</p>
       </div>
     </header>
 
-    <section class="filter-bar surface-card">
-      <el-select v-model="filters.sourceId" clearable placeholder="全部盘口" @change="load">
-        <el-option
-          v-for="source in sources"
-          :key="source.sourceId"
-          :label="source.displayName"
-          :value="source.sourceId"
-        />
-      </el-select>
-      <el-select v-model="filters.businessType" clearable placeholder="全部业务" @change="load">
-        <el-option label="充值 / 代收" value="payin" />
-        <el-option label="提现 / 代付" value="payout" />
-      </el-select>
-      <el-select v-model="filters.batchStatus" clearable placeholder="全部状态" @change="load">
-        <el-option label="待确认" value="awaiting_confirmation" />
-        <el-option label="执行中" value="validating" />
-        <el-option label="已完成" value="completed" />
-        <el-option label="失败" value="failed" />
-        <el-option label="已取消" value="cancelled" />
-      </el-select>
-      <span class="filter-total">共 {{ total }} 个执行版本</span>
-    </section>
+    <el-tabs v-model="activeTab" class="payin-tabs">
+      <el-tab-pane label="对比任务" name="comparison">
+        <div class="tab-stack">
+          <header class="tab-pane-header">
+            <div>
+              <h2>对比任务</h2>
+              <p>集中查看历史任务、运行状态和处理结果，并从这里发起新的数据对比。</p>
+            </div>
+            <div class="header-actions">
+              <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+              <el-button type="primary" :icon="Plus" @click="router.push('/batches/new')">
+                新建比对
+              </el-button>
+            </div>
+          </header>
 
-    <div class="chart-grid">
-      <ChartPanel
-        title="执行状态分布"
-        :option="statusOption"
-        :empty="!summary.executionStatusDistribution.length"
-      />
-      <ChartPanel
-        title="执行数量趋势"
-        :option="trendOption"
-        :empty="!summary.executionCreatedTimeSeries.length"
-      />
-      <ChartPanel
-        title="完成耗时分布"
-        :option="durationOption"
-        :empty="!summary.executionDurationBuckets.length"
-      />
-      <ChartPanel
-        title="失败 / 不完整原因"
-        :option="failureOption"
-        :empty="!summary.failureCategoryDistribution.length"
-      />
-    </div>
+          <section class="filter-bar surface-card">
+            <el-select v-model="filters.sourceId" clearable placeholder="全部盘口" @change="load">
+              <el-option
+                v-for="source in sources"
+                :key="source.sourceId"
+                :label="source.displayName"
+                :value="source.sourceId"
+              />
+            </el-select>
+            <el-select v-model="filters.businessType" clearable placeholder="全部业务" @change="load">
+              <el-option label="充值 / 代收" value="payin" />
+              <el-option label="提现 / 代付" value="payout" />
+            </el-select>
+            <el-select v-model="filters.batchStatus" clearable placeholder="全部状态" @change="load">
+              <el-option label="待确认" value="awaiting_confirmation" />
+              <el-option label="执行中" value="validating" />
+              <el-option label="已完成" value="completed" />
+              <el-option label="失败" value="failed" />
+              <el-option label="已取消" value="cancelled" />
+            </el-select>
+            <span class="filter-total">共 {{ total }} 条任务记录</span>
+          </section>
 
-    <section class="surface-card table-card">
-      <div class="section-heading">
-        <div>
-          <h2>执行版本</h2>
-          <p>重新比对会作为新版本显示，但仍归属于原比较系列。</p>
+          <section class="task-summary surface-card" aria-label="任务状态摘要">
+            <article class="task-summary__item">
+              <span>任务总数</span>
+              <strong>{{ total }}</strong>
+              <small>当前筛选结果</small>
+            </article>
+            <article class="task-summary__item task-summary__item--warning">
+              <span>待确认</span>
+              <strong>{{ awaitingCount }}</strong>
+              <small>确认后才会开始执行</small>
+            </article>
+            <article class="task-summary__item task-summary__item--active">
+              <span>执行中</span>
+              <strong>{{ activeCount }}</strong>
+              <small>正在查询或比对</small>
+            </article>
+            <article class="task-summary__item task-summary__item--danger">
+              <span>失败 / 不完整</span>
+              <strong>{{ issueCount }}</strong>
+              <small>需要优先处理</small>
+            </article>
+          </section>
+
+          <section class="surface-card table-card">
+            <div class="section-heading">
+              <div>
+                <h2>任务记录</h2>
+                <p>异常、待确认与执行中的任务优先展示；每次重新比对都会保留执行版本。</p>
+              </div>
+            </div>
+            <el-table
+              v-loading="loading"
+              :data="sortedBatches"
+              empty-text="暂无对比任务，请点击右上角“新建对比”"
+              @row-click="(row: BatchRecord) => router.push(`/batches/${row.id}`)"
+            >
+              <el-table-column label="盘口" min-width="130" prop="sourceDisplayName" />
+              <el-table-column label="业务类型" width="120">
+                <template #default="{ row }">
+                  {{ row.businessType === 'payin' ? '充值 / 代收' : '提现 / 代付' }}
+                </template>
+              </el-table-column>
+              <el-table-column label="文件" min-width="220" prop="uploadedFileName" show-overflow-tooltip />
+              <el-table-column label="版本" width="90">
+                <template #default="{ row }">
+                  V{{ row.runVersion }}
+                  <el-tag v-if="row.rerunOfBatchId" size="small" type="info">重跑</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="120">
+                <template #default="{ row }">
+                  <el-tag :type="statusTagType(row.status)">{{ statusLabel(row.status) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="创建时间" min-width="180">
+                <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
+              </el-table-column>
+              <el-table-column label="结果到期" min-width="180">
+                <template #default="{ row }">{{ formatDateTime(row.resultExpiresAt) }}</template>
+              </el-table-column>
+            </el-table>
+          </section>
         </div>
-      </div>
-      <el-table
-        v-loading="loading"
-        :data="batches"
-        empty-text="暂无批次，请先创建一个比对草稿"
-        @row-click="(row: BatchRecord) => router.push(`/batches/${row.id}`)"
-      >
-        <el-table-column label="盘口" min-width="130" prop="sourceDisplayName" />
-        <el-table-column label="业务类型" width="120">
-          <template #default="{ row }">
-            {{ row.businessType === 'payin' ? '充值 / 代收' : '提现 / 代付' }}
-          </template>
-        </el-table-column>
-        <el-table-column label="文件" min-width="220" prop="uploadedFileName" show-overflow-tooltip />
-        <el-table-column label="版本" width="90">
-          <template #default="{ row }">
-            V{{ row.runVersion }}
-            <el-tag v-if="row.rerunOfBatchId" size="small" type="info">重跑</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="120">
-          <template #default="{ row }">
-            <el-tag :type="statusTagType(row.status)">{{ statusLabel(row.status) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="创建时间" min-width="180">
-          <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
-        </el-table-column>
-        <el-table-column label="结果到期" min-width="180">
-          <template #default="{ row }">{{ formatDateTime(row.resultExpiresAt) }}</template>
-        </el-table-column>
-      </el-table>
-    </section>
+      </el-tab-pane>
+      <el-tab-pane label="充值订单明细" name="orders" lazy>
+        <ChargeOrderDetails />
+      </el-tab-pane>
+      <el-tab-pane label="支付渠道汇总" name="channels" lazy>
+        <ChargeChannelSummary />
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
+
+<style scoped>
+.task-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  overflow: hidden;
+}
+
+.task-summary__item {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 18px 20px;
+}
+
+.task-summary__item + .task-summary__item {
+  border-left: 1px solid var(--border);
+}
+
+.task-summary__item span,
+.task-summary__item small {
+  color: var(--ink-muted);
+}
+
+.task-summary__item span {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.task-summary__item strong {
+  color: var(--ink-strong);
+  font-size: 30px;
+  line-height: 1.1;
+}
+
+.task-summary__item small {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-summary__item--warning strong {
+  color: #b7791f;
+}
+
+.task-summary__item--active strong {
+  color: var(--primary);
+}
+
+.task-summary__item--danger strong {
+  color: var(--danger);
+}
+
+.payin-tabs :deep(.el-tabs__header) {
+  margin: 0;
+}
+
+.payin-tabs :deep(.el-tabs__item) {
+  height: 52px;
+  padding: 0 18px;
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.payin-tabs :deep(.el-tabs__item.is-active) {
+  color: var(--teal);
+}
+
+.payin-tabs :deep(.el-tabs__active-bar) {
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--teal);
+}
+
+.payin-tabs :deep(.el-tabs__nav-wrap::after) {
+  height: 1px;
+  background: var(--border);
+}
+
+.payin-tabs :deep(.el-tabs__content) {
+  padding-top: 20px;
+}
+
+.tab-stack {
+  display: grid;
+  min-width: 0;
+  gap: 20px;
+}
+
+.tab-pane-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.tab-pane-header h2 {
+  margin: 0;
+  color: var(--ink-strong);
+  font-size: 20px;
+}
+
+.tab-pane-header p {
+  margin: 6px 0 0;
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+@media (max-width: 980px) {
+  .tab-pane-header,
+  .header-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .task-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .task-summary__item:nth-child(3) {
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+
+  .task-summary__item:nth-child(4) {
+    border-top: 1px solid var(--border);
+  }
+}
+
+@media (max-width: 640px) {
+  .payin-tabs :deep(.el-tabs__item) {
+    padding: 0 12px;
+  }
+
+  .task-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .task-summary__item + .task-summary__item {
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+}
+</style>

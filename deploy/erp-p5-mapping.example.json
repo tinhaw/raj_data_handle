@@ -1,0 +1,19 @@
+{
+  "legacy_users": {
+    "101": {
+      "target_user_id": 1,
+      "target_role_grants": [
+        "ERP_SYSTEM_ADMIN"
+      ]
+    }
+  },
+  "ignored_legacy_user_ids": [
+    102
+  ],
+  "legacy_markets": {
+    "201": "rajwin"
+  },
+  "legacy_remote_accounts": {
+    "301": "00000000-0000-0000-0000-000000000001"
+  }
+}

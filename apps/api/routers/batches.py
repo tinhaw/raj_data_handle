@@ -283,6 +283,7 @@ async def batch_results(
 @router.get("/batches/{batch_id}/export.csv")
 async def download_csv(
     batch_id: str,
+    result_status: str | None = None,
     _: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_db_session),
 ) -> Response:
@@ -293,7 +294,7 @@ async def download_csv(
     if not batch.is_final:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="批次尚无最终结果。")
     return Response(
-        export_csv(await all_results(session, batch.id)),
+        export_csv(await all_results(session, batch.id, result_status=result_status)),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{batch.id}.csv"'},
     )
@@ -302,6 +303,7 @@ async def download_csv(
 @router.get("/batches/{batch_id}/export.xlsx")
 async def download_excel(
     batch_id: str,
+    result_status: str | None = None,
     _: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_db_session),
 ) -> Response:
@@ -312,7 +314,10 @@ async def download_excel(
     if not batch.is_final:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="批次尚无最终结果。")
     return Response(
-        export_excel(batch, await all_results(session, batch.id)),
+        export_excel(
+            batch,
+            await all_results(session, batch.id, result_status=result_status),
+        ),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{batch.id}.xlsx"'},
     )

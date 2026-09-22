@@ -82,15 +82,21 @@ export async function cancelBatch(batchId: string, reason?: string): Promise<Bat
 export async function downloadBatchExport(
   batchId: string,
   format: 'csv' | 'xlsx',
+  resultStatus?: string,
 ): Promise<void> {
   const response = await api.get<Blob>(
     `/order-reconciliation/batches/${batchId}/export.${format}`,
-    { responseType: 'blob' },
+    {
+      params: resultStatus ? { result_status: resultStatus } : undefined,
+      responseType: 'blob',
+    },
   )
   const url = URL.createObjectURL(response.data)
   const anchor = document.createElement('a')
   anchor.href = url
-  anchor.download = `${batchId}.${format}`
+  anchor.download = resultStatus
+    ? `${batchId}-differences.${format}`
+    : `${batchId}.${format}`
   anchor.click()
   URL.revokeObjectURL(url)
 }
