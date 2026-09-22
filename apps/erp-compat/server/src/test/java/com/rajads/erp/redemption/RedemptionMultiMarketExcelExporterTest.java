@@ -126,6 +126,19 @@ class RedemptionMultiMarketExcelExporterTest {
         }
     }
 
+    @Test
+    void namesRajRaceAgentExportRajaceInBothWorksheets() throws Exception {
+        LocalDate date = LocalDate.of(2026, 9, 22);
+        byte[] file = exporter.exportMultiMarket(List.of(
+                new RedemptionCodeExcelExporter.MarketSheet("RajRace", campaign("RACE"),
+                        RedemptionCodeType.AGENT, List.of(), date, date)));
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(file))) {
+            assertThat(workbook.getSheet("全部盘口").getRow(0).getCell(0).getStringCellValue()).isEqualTo("rajace");
+            assertThat(workbook.getSheet("RajRace").getRow(0).getCell(0).getStringCellValue()).isEqualTo("rajace");
+        }
+    }
+
     private RedemptionDtos.CampaignResponse campaign(String code) {
         RedemptionDtos.TierResponse tier = new RedemptionDtos.TierResponse(7L, "首档", new BigDecimal("100"),
                 new BigDecimal("5"), new BigDecimal("17"), 1, 0L);

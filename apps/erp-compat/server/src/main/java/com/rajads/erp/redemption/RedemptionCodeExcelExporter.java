@@ -457,6 +457,7 @@ public class RedemptionCodeExcelExporter {
 
     private String dailyMarketTitle(String sheetName) {
         String value = sheetName == null ? "" : sheetName.trim();
+        if ("RajRace".equalsIgnoreCase(value)) return "rajace";
         return value.replaceFirst("(?i)^raj", "").toLowerCase();
     }
 
