@@ -32,12 +32,13 @@ class RedemptionRemoteIdentityHttpTest {
     @MockBean RemoteOperationGate gate;
     @MockBean UnifiedRedemptionRemoteExecutorClient executor;
 
-    @Test
-    void missingConfigurationRepairRequiresFreshAbsenceAndNewPublicationBeforeDownload() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void missingConfigurationRepairRequiresFreshAbsenceAndNewPublicationBeforeDownload(boolean scheduled) throws Exception {
         var session = login();
-        long market = market(session, "REPAIR_MARKET");
+        long market = market(session, "REPAIR_MARKET_" + scheduled);
         long accountId = account(session, market, "repair-account");
-        var group = group(session, market, "REPAIR_GROUP");
+        var group = group(session, market, "REPAIR_GROUP_" + scheduled);
         register(session, group).andExpect(status().isOk());
         long batchId = group.at("/batch/id").asLong();
         long issueId = group.at("/issues/0/id").asLong();
@@ -62,14 +63,38 @@ class RedemptionRemoteIdentityHttpTest {
         create(session, issueId, false).andExpect(status().isOk());
         assertThat(jdbc.queryForMap("select status,remote_publish_task_id from erp_compat_redemption_code_batches where id=?", batchId))
                 .containsEntry("status", "CREATING").containsEntry("remote_publish_task_id", "old-task");
-        when(executor.publish(eq(accountId), eq(batchId), eq("test"), eq(false), isNull(), eq(false)))
+        java.time.LocalDateTime scheduledTime = null;
+        if (scheduled) {
+            // The fixture's fixed claim date is in the past. Extend only this fixture's
+            // validity so both the expiry rejection and the valid schedule are testable.
+            jdbc.update("update erp_compat_redemption_code_batches set valid_to_day_offset=365 where id=?", batchId);
+            var tooLate = java.time.LocalDateTime.of(2027, 9, 6, 0, 0);
+            version = jdbc.queryForObject("select row_version from erp_compat_redemption_code_batches where id=?", Long.class, batchId);
+            mvc.perform(post("/api/v1/redemption-campaigns/batches/" + batchId + "/remote-publish")
+                    .session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                    .content(mapper.writeValueAsString(java.util.Map.of("rowVersion", version, "mode", "SCHEDULED",
+                            "scheduledTime", tooLate.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")),
+                            "fallbackToScheduled", false))))
+                    .andExpect(status().isBadRequest());
+            verify(executor, never()).publish(anyLong(), anyLong(), anyString(), anyBoolean(), any(), anyBoolean());
+            scheduledTime = java.time.LocalDateTime.now(java.time.ZoneId.of("Asia/Kolkata")).plusMinutes(30).withNano(0);
+        }
+        when(executor.publish(eq(accountId), eq(batchId), eq("test"), eq(scheduled),
+                scheduled ? eq(scheduledTime) : isNull(), eq(false)))
                 .thenReturn(new UnifiedRedemptionRemoteExecutorClient.PublishedBatch("new-task", null));
         version = jdbc.queryForObject("select row_version from erp_compat_redemption_code_batches where id=?", Long.class, batchId);
+        var publishRequest = new java.util.HashMap<String, Object>();
+        publishRequest.put("rowVersion", version);
+        publishRequest.put("mode", scheduled ? "SCHEDULED" : "IMMEDIATE");
+        publishRequest.put("fallbackToScheduled", false);
+        if (scheduled) publishRequest.put("scheduledTime", scheduledTime.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
         var published = send(session, "/api/v1/redemption-campaigns/batches/" + batchId + "/remote-publish",
-                "{\"rowVersion\":" + version + ",\"mode\":\"IMMEDIATE\",\"fallbackToScheduled\":false}");
+                mapper.writeValueAsString(publishRequest));
         assertThat(published.at("/batch/remotePublishTaskId").asText()).isEqualTo("new-task");
         assertThat(published.at("/issues/0/remoteConfigurationId").asText()).isEqualTo("new-repair-id");
-        assertThat(published.at("/issues/0/workflowStatus").asText()).isEqualTo("PUBLISHED");
+        assertThat(published.at("/issues/0/workflowStatus").asText()).isEqualTo(scheduled ? "CREATED" : "PUBLISHED");
+        verify(executor, times(1)).publish(eq(accountId), eq(batchId), eq("test"), eq(scheduled),
+                scheduled ? eq(scheduledTime) : isNull(), eq(false));
         verifyNoInteractions(standalone);
     }
 

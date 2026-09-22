@@ -555,11 +555,11 @@ function formatDateTime(value?: string) {
 function formatIndiaDateTime(value?: string) {
   return value ? value.replace('T', ' ') : '—'
 }
-function indiaNowText() {
+function indiaNowText(at: Date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
-  }).formatToParts(new Date()).reduce<Record<string, string>>((result, part) => {
+  }).formatToParts(at).reduce<Record<string, string>>((result, part) => {
     if (part.type !== 'literal') result[part.type] = part.value
     return result
   }, {})
@@ -1555,9 +1555,29 @@ async function acceptAvailableCodes(row: CodeGroupRow) {
   finally { resolvingMissingBatchId.value = undefined }
 }
 
+function hasPendingScheduledConflict(message?: string) {
+  return Boolean(message?.includes('同个配置有等待发布的定时任务'))
+}
+
+async function scheduleMissingConfigurationRepair(batchId: string | number) {
+  const detail = await api.redemption.batch(batchId)
+  const expiry = detail.issues.filter(issue => issue.workflowStatus === 'CREATED')
+    .map(issue => `${shiftDate(issue.claimDate, detail.batch.validToDayOffset ?? 0)} 23:59:59`).sort()[0]
+  const scheduledTime = indiaNowText(new Date(Date.now() + 15 * 60_000))
+  if (!expiry || scheduledTime >= expiry) {
+    throw new Error(`立即发布被现有定时任务阻止，且补齐配置最早于 ${expiry || '未知时间'} 到期；不能安全安排新的定时发布`)
+  }
+  await ElMessageBox.confirm(
+    `远端已有待执行的兑换码定时任务，拒绝立即发布。是否改为 ${scheduledTime}（印度时间）定时发布？补齐配置最早于 ${expiry} 到期。新任务仍会发布该账号届时所有尚未发布的兑换码；只有远端执行完成并核验通过后才能下载。`,
+    '确认补齐定时发布', { type: 'warning', confirmButtonText: '按此时间发布', cancelButtonText: '暂不发布' },
+  )
+  return api.redemption.publishRemoteBatch(detail.batch.id, detail.batch.rowVersion, 'SCHEDULED', scheduledTime, false)
+}
+
 async function continueMissingConfigurationRepair(row: CodeGroupRow) {
   resolvingMissingBatchId.value = row.detail.batch.id
   let detail = row.detail
+  let publishAccepted = false
   try {
     // Each POST is separately recorded. A failed or uncertain create stops before any publish call.
     const pending = detail.issues.filter(item => item.workflowStatus === 'PENDING_CREATION')
@@ -1571,23 +1591,39 @@ async function continueMissingConfigurationRepair(row: CodeGroupRow) {
       ElMessage.warning('仍有配置待创建或待核对，暂不能重新发布')
       return
     }
-    await ElMessageBox.confirm(
-      `${detail.batch.remotePublishError ? '上次发布结果可能不确定，请先在 RAJACE 后台确认没有已完成的补齐发布任务。' : ''}缺失配置已重建。RAJACE 发布接口会发布当前环境中整个“兑换码”类型的待发布配置，可能包含其他任务。确认立即整体发布并关闭自动定时回退吗？`,
-      '确认补齐发布范围', { type: 'warning', confirmButtonText: '确认整体发布', cancelButtonText: '暂不发布' },
-    )
-    detail = await api.redemption.publishRemoteBatch(detail.batch.id, detail.batch.rowVersion, 'IMMEDIATE', undefined, false)
+    if (hasPendingScheduledConflict(detail.batch.remotePublishError)) {
+      detail = await scheduleMissingConfigurationRepair(detail.batch.id)
+    } else {
+      await ElMessageBox.confirm(
+        `${detail.batch.remotePublishError ? '上次发布结果可能不确定，请先在 RAJACE 后台确认没有已完成的补齐发布任务。' : ''}缺失配置已重建。本次将再次发布该账号下所有尚未发布的兑换码配置，之前已发布的配置不会重新下载。确认先尝试立即发布吗？`,
+        '确认补齐发布范围', { type: 'warning', confirmButtonText: '确认发布', cancelButtonText: '暂不发布' },
+      )
+      try {
+        detail = await api.redemption.publishRemoteBatch(detail.batch.id, detail.batch.rowVersion, 'IMMEDIATE', undefined, false)
+      } catch (error) {
+        if (!(error instanceof Error) || !hasPendingScheduledConflict(error.message)) throw error
+        // A known rejection did not create a publish task. Refresh the row
+        // version before the user explicitly confirms a scheduled retry.
+        detail = await scheduleMissingConfigurationRepair(detail.batch.id)
+      }
+    }
+    publishAccepted = true
     const replacement = { campaign: row.campaign, detail }
     replaceCodeGroup(replacement)
     const checked = await verifyRemotePublication(replacement, true)
     if (checked?.publicationState !== 'COMPLETED') {
-      ElMessage.info('远端已接受补齐发布；待发布完成后，在核验结果中继续下载')
+      ElMessage.info(detail.batch.remotePublishMode === 'SCHEDULED'
+        ? `远端已接受补齐定时发布（印度时间 ${formatIndiaDateTime(detail.batch.remoteScheduledPublishAt)}）；待执行完成并核验后继续下载`
+        : '远端已接受补齐发布；待发布完成并核验后继续下载')
       return
     }
     const complete = await downloadPublishedCodes(replacement)
     if (complete) await exportGroup({ campaign: row.campaign, detail: await api.redemption.batch(detail.batch.id) })
     else showPublicationResult({ campaign: row.campaign, detail: await api.redemption.batch(detail.batch.id) })
   } catch (error) {
-    if (error !== 'cancel' && error !== 'close') ElMessage.error(error instanceof Error ? error.message : '补齐配置失败；任务已保留当前进度，可在明细中继续处理')
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(publishAccepted
+      ? `远端已接受发布，但后续核验或下载未完成：${error instanceof Error ? error.message : '请在任务明细中继续核验'}`
+      : error instanceof Error ? error.message : '补齐配置失败；任务已保留当前进度，可在明细中继续处理')
   } finally {
     resolvingMissingBatchId.value = undefined
     await loadCodeGroups()

@@ -472,8 +472,8 @@ public class RedemptionRemoteOperationService {
                     || issues.stream().anyMatch(issue -> !java.util.Set.of("CREATED", "PUBLISHED", "CODE_IMPORTED").contains(issue.getWorkflowStatus()))) {
                 throw ApiException.conflict("REPAIR_NOT_READY_TO_PUBLISH", "缺失配置尚未全部重建，不能重新发布");
             }
-            if (!"IMMEDIATE".equals(request.mode()) || Boolean.TRUE.equals(request.fallbackToScheduled())) {
-                throw ApiException.badRequest("REPAIR_PUBLISH_MODE_INVALID", "补齐发布只允许立即发布，且不能自动回退定时发布");
+            if (Boolean.TRUE.equals(request.fallbackToScheduled())) {
+                throw ApiException.badRequest("REPAIR_PUBLISH_MODE_INVALID", "补齐发布不能自动回退定时发布，请明确选择发布方式和时间");
             }
         }
         if (batch.getRemotePublishTaskId() != null && (!repair || batch.getRemotePublishTaskId().startsWith("PENDING:")))
@@ -484,6 +484,16 @@ public class RedemptionRemoteOperationService {
         if (scheduled && (scheduledTime == null || !scheduledTime.isAfter(nowInIndia()))) {
             throw ApiException.badRequest("INVALID_SCHEDULED_TIME", "定时发布时间必须晚于当前印度时间");
         }
+        if (repair && scheduled) {
+            LocalDateTime earliestExpiration = issueRepository.findByBatchIdOrderByClaimDateAscCampaignTierIdAsc(batchId)
+                    .stream().filter(issue -> "CREATED".equals(issue.getWorkflowStatus()))
+                    .map(issue -> issue.getClaimDate().plusDays(batch.getValidToDayOffset() == null ? 0 : batch.getValidToDayOffset())
+                            .atTime(23, 59, 59))
+                    .min(LocalDateTime::compareTo).orElseThrow();
+            if (!scheduledTime.isBefore(earliestExpiration)) {
+                throw ApiException.badRequest("REPAIR_SCHEDULE_AFTER_EXPIRY", "补齐配置的定时发布时间必须早于最早到期时间（印度时间）");
+            }
+        }
         RedemptionRemoteDirectory.Account account = remoteDirectory.requireEnabled(batch.getRemoteConnectionId());
         for (RedemptionCodeIssue issue : issueRepository.findByBatchIdOrderByClaimDateAscCampaignTierIdAsc(batchId)) {
             requireMatchingMarket(issue, account);
@@ -492,11 +502,12 @@ public class RedemptionRemoteOperationService {
         batch.setRemotePublishError(null);
         batch.setRemotePublishMode(null);
         batch.setRemoteScheduledPublishAt(null);
-        batch.setRemotePublishNote(repair ? "缺失配置已重建，正在重新发布；发布范围为远端全部兑换码配置" : null);
+        batch.setRemotePublishNote(repair ? "缺失配置已重建，正在重新发布；远端将发布该账号全部未发布的兑换码配置" : null);
         batch.setRemotePublishCancelledAt(null);
         batchRepository.saveAndFlush(batch);
         return new RemoteBatchContext(account.id(), null, options(batch), scheduled, scheduledTime,
-                scheduled ? "人工定时发布" : repair ? "缺失配置补齐后立即发布（远端全部兑换码配置）" : "立即发布", null, fallbackToScheduled);
+                scheduled ? repair ? "缺失配置补齐后定时发布（账号下全部未发布兑换码配置）" : "人工定时发布"
+                        : repair ? "缺失配置补齐后立即发布（账号下全部未发布兑换码配置）" : "立即发布", null, fallbackToScheduled);
     }
 
     private Long completePublish(Long batchId, String publishTaskId, boolean scheduled, LocalDateTime scheduledTime, String note) {
