@@ -121,8 +121,16 @@ else
     log "Rolling out application code (database migration remains separately gated)."
 fi
 
+# The production host has limited memory. Compose's single `up --build` may
+# build all images concurrently (even with COMPOSE_PARALLEL_LIMIT=1), exhausting
+# the host before containers can be replaced. Build one image at a time.
+for service in api worker erp-compat web; do
+    log "Building $service image..."
+    dc build "$service"
+done
+
 # Images are tagged as `latest`; without an explicit recreate Compose may keep
 # a running container that still references the previously built image.
-dc up -d --build --force-recreate --remove-orphans
+dc up -d --no-build --force-recreate --remove-orphans
 dc ps
 log "Application rollout completed without running a schema migration."
