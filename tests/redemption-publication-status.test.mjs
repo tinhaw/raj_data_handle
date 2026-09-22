@@ -4,9 +4,10 @@ import { publicationLabel, acquisitionLabel, configurationVerificationSummary } 
 const result = (state, configs = []) => ({ publicationState: state, configurations: configs })
 test('local scheduled time cannot establish remote completion', () => {
   assert.equal(publicationLabel(), '发布待核验')
-  assert.equal(publicationLabel(result('WAITING')), '等待远端执行')
-  assert.equal(publicationLabel(result('RUNNING')), '远端执行中')
+  assert.equal(publicationLabel(result('WAITING')), '等待远端发布')
+  assert.equal(publicationLabel(result('RUNNING')), '远端发布中')
   assert.equal(publicationLabel(result('FAILED')), '远端发布异常')
+  assert.equal(acquisitionLabel(false, false, result('WAITING')), '发布完成后核验兑换码')
 })
 test('remote completion and code download failure are independent', () => {
   const complete = result('COMPLETED', [{ state: 'MATCHED' }])
@@ -28,7 +29,7 @@ test('blocked download explains missing configuration IDs and does not suggest r
     { configurationId: '209', state: 'MISSING' },
   ]))
   assert.match(message, /3 个配置/)
-  assert.match(message, /207、208、209/)
+  for (const id of ['207', '208', '209']) assert.match(message, new RegExp(`原 ID：${id}`))
   assert.match(message, /暂不能下载/)
   assert.match(message, /不会恢复配置或重新发布/)
   assert.doesNotMatch(message, /可以下载兑换码/)

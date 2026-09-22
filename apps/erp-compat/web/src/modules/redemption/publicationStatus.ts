@@ -8,7 +8,7 @@ export interface PublicationVerification {
   checkedAt: string
 }
 export function publicationLabel(result?: PublicationVerification) {
-  const labels = { WAITING: '等待远端执行', RUNNING: '远端执行中', FAILED: '远端发布异常', COMPLETED: '发布完成', CANCELLED: '远端已撤销', UNKNOWN: '发布待核验' }
+  const labels = { WAITING: '等待远端发布', RUNNING: '远端发布中', FAILED: '远端发布异常', COMPLETED: '发布完成', CANCELLED: '远端已撤销', UNKNOWN: '发布待核验' }
   return result ? labels[result.publicationState] : '发布待核验'
 }
 export function acquisitionLabel(imported: boolean, hasError: boolean, result?: PublicationVerification) {
@@ -16,7 +16,9 @@ export function acquisitionLabel(imported: boolean, hasError: boolean, result?: 
   if (result?.publicationState === 'COMPLETED' && result.configurations.some(item => item.state === 'MISSING')) return '远端未找到配置'
   if (result?.publicationState === 'COMPLETED' && result.configurations.some(item => item.state !== 'MATCHED')) return '配置待核对'
   if (hasError) return '下载异常'
-  return result?.publicationState === 'COMPLETED' ? '待下载兑换码' : '等待发布核验'
+  if (result?.publicationState === 'COMPLETED') return '待下载兑换码'
+  if (result?.publicationState === 'WAITING' || result?.publicationState === 'RUNNING') return '发布完成后核验兑换码'
+  return '等待发布核验'
 }
 
 export function configurationVerificationSummary(result?: PublicationVerification, error?: string,
