@@ -548,6 +548,8 @@ function normalizeRedemptionIssue(raw: unknown): RedemptionCodeIssue {
     remoteConfigurationId: value.remoteConfigurationId ? String(value.remoteConfigurationId) : undefined,
     remoteGroupKey: value.remoteGroupKey ? String(value.remoteGroupKey) : undefined,
     remoteLabelIds: Array.isArray(value.remoteLabelIds) ? value.remoteLabelIds as Array<string | number> : [],
+    remoteConfigurationName: value.remoteConfigurationName ? String(value.remoteConfigurationName) : undefined,
+    remoteConfigurationRemark: value.remoteConfigurationRemark ? String(value.remoteConfigurationRemark) : undefined,
   }
 }
 
@@ -847,6 +849,7 @@ export const api = {
     publishBatch: async (batchId: string | number, rowVersion?: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/publish`, { rowVersion }))),
     publishRemoteBatch: async (batchId: string | number, rowVersion: number | undefined, mode: 'IMMEDIATE' | 'SCHEDULED' = 'IMMEDIATE', scheduledTime?: string, fallbackToScheduled = true) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/remote-publish`, { rowVersion, mode, scheduledTime, fallbackToScheduled }))),
     verifyRemotePublication: async (batchId: string | number) => request<PublicationVerification>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/remote-publish/verify`)),
+    startMissingConfigurationRepair: async (batchId: string | number, rowVersion?: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/missing-configurations/repair`, { rowVersion }))),
     cancelScheduledPublish: async (batchId: string | number, rowVersion?: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/remote-publish/cancel`, { rowVersion }))),
     recoverRemotePublish: async (batchId: string | number, rowVersion?: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/remote-publish/recover`, { rowVersion }))),
     importDownloadedCodes: async (batchId: string | number, rows: Array<{ remoteConfigurationId: string; redemptionCode: string }>) => {
@@ -854,6 +857,7 @@ export const api = {
       return { importedCount: Number(value.importedCount ?? 0), batch: normalizeRedemptionBatch(value.batch), issues: (Array.isArray(value.issues) ? value.issues : []).map(normalizeRedemptionIssue) }
     },
     exportBatch: (batchId: string | number) => requestDownload(() => apiClient.get<Blob>(`/redemption-campaigns/batches/${batchId}/export`, { responseType: 'blob' }), 'redemption-codes-batch.xlsx'),
+    exportAvailableBatch: (batchId: string | number) => requestDownload(() => apiClient.get<Blob>(`/redemption-campaigns/batches/${batchId}/export-available`, { responseType: 'blob' }), 'redemption-codes-available-only.xlsx'),
     exportMultiMarketGroup: (exportGroupKey: string) => requestDownload(() => apiClient.get<Blob>(`/redemption-campaigns/batches/export-groups/${encodeURIComponent(exportGroupKey)}/export`, { responseType: 'blob' }), 'redemption-codes-multi-market.xlsx'),
   },
   redemptionRemoteConnections: {

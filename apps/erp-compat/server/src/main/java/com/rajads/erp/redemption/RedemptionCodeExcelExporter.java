@@ -24,6 +24,43 @@ import java.util.Set;
 public class RedemptionCodeExcelExporter {
     private static final String DEFAULT_SHEET_NAME = "Bonus Codes";
     private static final DateTimeFormatter SHORT_DATE = DateTimeFormatter.ofPattern("dd/MM");
+
+    /** An explicit partial export contains only already imported codes and names every unresolved configuration. */
+    public byte[] exportAvailableOnly(List<RedemptionDtos.CodeIssueResponse> issues) {
+        List<RedemptionDtos.CodeIssueResponse> imported = issues.stream()
+                .filter(issue -> "CODE_IMPORTED".equals(issue.workflowStatus()) && !issue.redemptionCodes().isEmpty()).toList();
+        if (imported.isEmpty()) throw new IllegalArgumentException("没有已入库的兑换码可导出");
+        try (Workbook workbook = new XSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            Sheet codes = workbook.createSheet("已入库兑换码");
+            Row header = codes.createRow(0);
+            String[] columns = {"开始兑换日", "档位", "配置 ID", "配置名称", "配置备注", "兑换码"};
+            for (int col = 0; col < columns.length; col++) header.createCell(col).setCellValue(columns[col]);
+            int rowNumber = 1;
+            for (var issue : imported) for (String redemptionCode : issue.redemptionCodes()) {
+                Row row = codes.createRow(rowNumber++);
+                String[] values = {issue.claimDate().toString(), issue.tierName(), issue.remoteConfigurationId(),
+                        issue.remoteConfigurationName(), issue.remoteConfigurationRemark(), redemptionCode};
+                for (int col = 0; col < values.length; col++) row.createCell(col).setCellValue(safeText(values[col]));
+            }
+            for (int col = 0; col < columns.length; col++) codes.setColumnWidth(col, col == 5 ? 30 * 256 : 22 * 256);
+            Sheet missing = workbook.createSheet("未补齐配置");
+            Row missingHeader = missing.createRow(0);
+            String[] missingColumns = {"开始兑换日", "档位", "原配置 ID", "配置名称", "配置备注", "状态"};
+            for (int col = 0; col < missingColumns.length; col++) missingHeader.createCell(col).setCellValue(missingColumns[col]);
+            int missingRow = 1;
+            for (var issue : issues) if (!"CODE_IMPORTED".equals(issue.workflowStatus()) || issue.redemptionCodes().isEmpty()) {
+                Row row = missing.createRow(missingRow++);
+                String[] values = {issue.claimDate().toString(), issue.tierName(), issue.remoteConfigurationId(),
+                        issue.remoteConfigurationName(), issue.remoteConfigurationRemark(), "未入库"};
+                for (int col = 0; col < values.length; col++) row.createCell(col).setCellValue(safeText(values[col]));
+            }
+            for (int col = 0; col < missingColumns.length; col++) missing.setColumnWidth(col, 22 * 256);
+            workbook.write(output);
+            return output.toByteArray();
+        } catch (IOException exception) {
+            throw new IllegalStateException("Unable to create partial redemption code Excel", exception);
+        }
+    }
     private static final List<String> PLAYER_DAILY_BONUSES = List.of(
             "Daily Bonus:₹3-17", "Daily Bonus:₹7-57", "Daily Bonus:₹15-177", "Daily  Bonus:₹27-377", "Daily Bonus:₹57-777"
     );
@@ -124,16 +161,28 @@ public class RedemptionCodeExcelExporter {
             usedSheetNames.add("All");
             int allRowIndex = 0;
             int allColumnIndex = 0;
+            int dailyBlockStartRow = -1;
+            int dailyBlockBottomRow = 0;
 
             for (MarketSheet marketSheet : marketSheets) {
                 Sheet sheet = workbook.createSheet(uniqueSheetName(marketSheet.sheetName(), usedSheetNames));
                 if (isDailyRecharge(marketSheet)) {
                     writeDailyRechargeSheet(sheet, marketSheet, 0, dailyTitle, dailyHeader, dailyDate, dailyCode, dailyFailed);
                     // The compact daily report is naturally column-oriented: keep every
-                    // market in its own horizontal block on All, like the source template.
-                    writeDailyRechargeSheet(all, marketSheet, 0, allColumnIndex, dailyTitle, dailyHeader, dailyDate, dailyCode, dailyFailed);
+                    // consecutive market in one horizontal block on All.
+                    if (dailyBlockStartRow < 0) {
+                        dailyBlockStartRow = allRowIndex;
+                        dailyBlockBottomRow = allRowIndex;
+                        allColumnIndex = 0;
+                    }
+                    dailyBlockBottomRow = Math.max(dailyBlockBottomRow, writeDailyRechargeSheet(all, marketSheet,
+                            dailyBlockStartRow, allColumnIndex, dailyTitle, dailyHeader, dailyDate, dailyCode, dailyFailed));
                     allColumnIndex += marketSheet.campaign().tiers().size() + 2;
                 } else {
+                    if (dailyBlockStartRow >= 0) {
+                        allRowIndex = dailyBlockBottomRow + 3;
+                        dailyBlockStartRow = -1;
+                    }
                     writeMarketSheet(sheet, marketSheet, 0, title, tierHeader, dateHeader, claimTime, depositTime, code, failed);
                     allRowIndex = writeMarketSheet(all, marketSheet, allRowIndex, title, tierHeader, dateHeader, claimTime, depositTime, code, failed) + 3;
                 }

@@ -320,6 +320,9 @@ export interface RedemptionCodeIssue {
   remoteConfigurationId?: string
   remoteGroupKey?: string
   remoteLabelIds?: Array<string | number>
+  /** Exact values sent as remote group_desc and remark when this configuration was created. */
+  remoteConfigurationName?: string
+  remoteConfigurationRemark?: string
 }
 
 export interface RedemptionCodeBatch {

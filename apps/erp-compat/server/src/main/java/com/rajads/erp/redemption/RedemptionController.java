@@ -110,6 +110,13 @@ public class RedemptionController {
         return remoteOperations.verifyPublication(batchId);
     }
 
+    @PostMapping("/batches/{batchId}/missing-configurations/repair")
+    @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionDtos.BatchDetailResponse startMissingConfigurationRepair(@PathVariable Long batchId,
+            @RequestBody RedemptionDtos.PublishBatchRequest request) {
+        return service.batch(remoteOperations.startMissingConfigurationRepair(batchId, request.rowVersion()));
+    }
+
     @PostMapping("/batches/{batchId}/remote-publish/cancel")
     @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
     public RedemptionDtos.BatchDetailResponse cancelRemotePublish(@PathVariable Long batchId,
@@ -146,6 +153,23 @@ public class RedemptionController {
         response.setHeader(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
                 .filename("redemption-codes-" + exportMarketName(detail.batch().remoteMarketName()) + "-"
                         + detail.batch().claimDateFrom() + "_to_" + detail.batch().claimDateTo() + ".xlsx", StandardCharsets.UTF_8).build().toString());
+        response.getOutputStream().write(workbook);
+    }
+
+    @GetMapping(value = "/batches/{batchId}/export-available", produces = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    @PreAuthorize("hasAuthority('REDEMPTION_EXPORT')")
+    public void exportAvailable(@PathVariable Long batchId, HttpServletResponse response) throws IOException {
+        RedemptionDtos.BatchDetailResponse detail = service.batch(batchId);
+        if (detail.issues().stream().noneMatch(issue -> "CODE_IMPORTED".equals(issue.workflowStatus()) && !issue.redemptionCodes().isEmpty())) {
+            throw com.rajads.erp.shared.ApiException.conflict("NO_IMPORTED_CODES", "当前任务没有已入库的兑换码");
+        }
+        byte[] workbook = excelExporter.exportAvailableOnly(detail.issues());
+        auditService.record("REDEMPTION_AVAILABLE_CODES_EXPORTED", "REDEMPTION_CODE_BATCH", batchId.toString(), null, null,
+                Map.of("importedCount", detail.batch().importedCount(), "expectedCount", detail.batch().expectedCodeCount()));
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setContentLength(workbook.length);
+        response.setHeader(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                .filename("redemption-codes-available-only-" + batchId + ".xlsx", StandardCharsets.UTF_8).build().toString());
         response.getOutputStream().write(workbook);
     }
 

@@ -33,6 +33,47 @@ class RedemptionRemoteIdentityHttpTest {
     @MockBean UnifiedRedemptionRemoteExecutorClient executor;
 
     @Test
+    void missingConfigurationRepairRequiresFreshAbsenceAndNewPublicationBeforeDownload() throws Exception {
+        var session = login();
+        long market = market(session, "REPAIR_MARKET");
+        long accountId = account(session, market, "repair-account");
+        var group = group(session, market, "REPAIR_GROUP");
+        register(session, group).andExpect(status().isOk());
+        long batchId = group.at("/batch/id").asLong();
+        long issueId = group.at("/issues/0/id").asLong();
+        jdbc.update("update erp_compat_redemption_code_batches set status='PUBLISHED',published_at=current_timestamp,remote_publish_mode='IMMEDIATE',remote_publish_task_id='old-task' where id=?", batchId);
+        jdbc.update("update erp_compat_redemption_code_issues set workflow_status='PUBLISHED' where id=?", issueId);
+        when(executor.verifyPublication(eq(accountId), eq(batchId), eq("old-task"), eq("test"), anyList()))
+                .thenReturn(new UnifiedRedemptionRemoteExecutorClient.PublicationVerification("old-task", 4,
+                        "COMPLETED", false, java.util.List.of(new UnifiedRedemptionRemoteExecutorClient.ConfigurationVerification(
+                                "manual-scope-id", "MISSING")), java.time.Instant.now().toString(), null));
+        long version = jdbc.queryForObject("select row_version from erp_compat_redemption_code_batches where id=?", Long.class, batchId);
+        var repaired = send(session, "/api/v1/redemption-campaigns/batches/" + batchId + "/missing-configurations/repair",
+                "{\"rowVersion\":" + version + "}");
+        assertThat(repaired.at("/batch/status").asText()).isEqualTo("CREATING");
+        assertThat(repaired.at("/issues/0/remoteConfigurationId").isNull()).isTrue();
+        assertThat(repaired.at("/issues/0/remoteReferenceId").asText()).isEqualTo("manual-scope-id");
+        mvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + issueId + "/remote-download").session(session).with(csrf()))
+                .andExpect(status().isConflict());
+        verify(executor, never()).download(anyLong(), anyLong(), anyString(), any(), anyInt());
+
+        when(executor.create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any()))
+                .thenReturn(new UnifiedRedemptionRemoteExecutorClient.CreatedConfiguration("new-repair-id", "new-group", null));
+        create(session, issueId, false).andExpect(status().isOk());
+        assertThat(jdbc.queryForMap("select status,remote_publish_task_id from erp_compat_redemption_code_batches where id=?", batchId))
+                .containsEntry("status", "CREATING").containsEntry("remote_publish_task_id", "old-task");
+        when(executor.publish(eq(accountId), eq(batchId), eq("test"), eq(false), isNull(), eq(false)))
+                .thenReturn(new UnifiedRedemptionRemoteExecutorClient.PublishedBatch("new-task", null));
+        version = jdbc.queryForObject("select row_version from erp_compat_redemption_code_batches where id=?", Long.class, batchId);
+        var published = send(session, "/api/v1/redemption-campaigns/batches/" + batchId + "/remote-publish",
+                "{\"rowVersion\":" + version + ",\"mode\":\"IMMEDIATE\",\"fallbackToScheduled\":false}");
+        assertThat(published.at("/batch/remotePublishTaskId").asText()).isEqualTo("new-task");
+        assertThat(published.at("/issues/0/remoteConfigurationId").asText()).isEqualTo("new-repair-id");
+        assertThat(published.at("/issues/0/workflowStatus").asText()).isEqualTo("PUBLISHED");
+        verifyNoInteractions(standalone);
+    }
+
+    @Test
     void sameIdAcrossMarketsWorksButSameMarketAcrossAccountsConflictsWithoutRecreation() throws Exception {
         MockHttpSession session = login();
         long marketA = market(session, "SCOPE_A");

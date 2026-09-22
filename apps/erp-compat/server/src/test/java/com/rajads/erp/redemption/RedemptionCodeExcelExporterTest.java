@@ -15,6 +15,31 @@ class RedemptionCodeExcelExporterTest {
     private final RedemptionCodeExcelExporter exporter = new RedemptionCodeExcelExporter();
 
     @Test
+    void partialExportContainsOnlyImportedCodesAndNamesMissingConfigurations() throws Exception {
+        var day = LocalDate.of(2026, 9, 22);
+        var imported = new RedemptionDtos.CodeIssueResponse(1L, 1L, 1L, "代理全部", BigDecimal.ZERO,
+                BigDecimal.ONE, day, day, day, "READY-1\nREADY-2", "GENERATED", null, null,
+                null, 0L, BigDecimal.ONE, 1L, "CODE_IMPORTED", "226", null, List.of(),
+                "9-23代理全部", "9-23代理全部");
+        var missing = new RedemptionDtos.CodeIssueResponse(2L, 1L, 2L, "代理存款100", BigDecimal.valueOf(100),
+                BigDecimal.ONE, day, day, day, null, "PENDING", null, null,
+                null, 0L, BigDecimal.ONE, 1L, "PUBLISHED", "223", null, List.of(5001L),
+                "9-22代理存款100", "9-22代理存款100");
+
+        try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(exporter.exportAvailableOnly(List.of(imported, missing))))) {
+            var codes = workbook.getSheet("已入库兑换码");
+            assertThat(codes.getLastRowNum()).isEqualTo(2);
+            assertThat(codes.getRow(1).getCell(5).getStringCellValue()).isEqualTo("READY-1");
+            assertThat(codes.getRow(2).getCell(5).getStringCellValue()).isEqualTo("READY-2");
+            var unresolved = workbook.getSheet("未补齐配置");
+            assertThat(unresolved.getLastRowNum()).isEqualTo(1);
+            assertThat(unresolved.getRow(1).getCell(2).getStringCellValue()).isEqualTo("223");
+            assertThat(unresolved.getRow(1).getCell(3).getStringCellValue()).isEqualTo("9-22代理存款100");
+            assertThat(unresolved.getRow(1).getCell(4).getStringCellValue()).isEqualTo("9-22代理存款100");
+        }
+    }
+
+    @Test
     void exportsEveryCodeInSingleAndMultiMarketWorkbooks() throws Exception {
         var day = LocalDate.of(2026, 9, 5);
         var tier = new RedemptionDtos.TierResponse(7L, "首档", BigDecimal.valueOf(100),
@@ -50,6 +75,9 @@ class RedemptionCodeExcelExporterTest {
                 }
                 assertThat(exported).containsAll(codes).hasSize(sheet.getSheetName().equals("All") ? 10 : 5);
             }
+        }
+        try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(exporter.exportMultiMarket(List.of(markets.get(1), markets.get(0)))))) {
+            assertThat(workbook.getSheet("All").getPhysicalNumberOfRows()).isGreaterThan(5);
         }
     }
 

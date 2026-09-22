@@ -117,6 +117,14 @@ const verifyingPublicationIds = ref(new Set<string>())
 const publicationRequests = new Map<string, Promise<PublicationVerification | undefined>>()
 const verificationDialogVisible = ref(false)
 const verificationTarget = ref<CodeGroupRow>()
+const resolvingMissingBatchId = ref<string | number>()
+function missingConfigurations(row: CodeGroupRow) {
+  const check = publicationCheck(row)
+  return (check?.configurations || []).filter(item => item.state === 'MISSING').map((item) => ({
+    ...item,
+    issue: row.detail.issues.find(issue => issue.remoteConfigurationId === item.configurationId),
+  }))
+}
 function showPublicationResult(row: CodeGroupRow) {
   verificationTarget.value = row
   verificationDialogVisible.value = true
@@ -570,6 +578,7 @@ function expectedTaskCount() {
 }
 function isProcessing(row: CodeGroupRow) { return processingGroupIds.value.has(groupKey(row.detail.batch.id)) }
 function isSuccess(row: CodeGroupRow) { return row.detail.batch.status === 'COMPLETED' }
+function isRepairing(row: CodeGroupRow) { return row.detail.batch.status === 'CREATING' && Boolean(row.detail.batch.publishedAt) }
 function pendingRemoteCreationIssues(row: CodeGroupRow) {
   return row.detail.issues.filter((issue) => issue.workflowStatus === 'PENDING_CREATION')
 }
@@ -605,6 +614,7 @@ function groupRemark(row: CodeGroupRow) {
 }
 function groupStatus(row: CodeGroupRow) {
   if (isSuccess(row)) return { text: '发布完成', type: 'success' as const }
+  if (isRepairing(row)) return { text: '补齐缺失配置中', type: 'warning' as const }
   if (row.detail.batch.status === 'PUBLISHED') {
     const check = publicationCheck(row)
     return { text: publicationLabel(check), type: check?.publicationState === 'COMPLETED' ? 'success' as const : check?.publicationState === 'FAILED' ? 'danger' as const : 'info' as const }
@@ -617,6 +627,7 @@ function groupStatus(row: CodeGroupRow) {
 function groupProgress(row: CodeGroupRow) {
   const batch = row.detail.batch
   if (isSuccess(row)) return `${batch.importedCodeCount} / ${batch.plannedCodeCount} 个兑换码已入库`
+  if (isRepairing(row)) return `${batch.importedCodeCount} / ${batch.plannedCodeCount} 个兑换码已入库；缺失配置正在补齐`
   if (batch.remotePublishError) return `远端发布失败：${batch.remotePublishError}`
   if (batch.status === 'PUBLISHED') return `${publicationLabel(publicationCheck(row))}；${codeAcquisitionStatus(row)}`
   if (failedIssues(row).length) return `${batch.createdCount} / ${batch.expectedCodeCount} 条远端配置已创建，${failedIssues(row).length} 个任务失败`
@@ -675,6 +686,7 @@ function taskSingleKeyLimit(task: CodeGroupTask) {
 }
 function taskStatus(task: CodeGroupTask) {
   if (!isMultiMarketTask(task)) return groupStatus(taskPrimary(task))
+  if (task.members.some(isRepairing)) return { text: '补齐缺失配置中', type: 'warning' as const }
   if (task.members.some(member => member.detail.batch.remotePublishError)) return { text: '部分发布失败', type: 'danger' as const }
   if (task.members.every(isSuccess)) return { text: '生成成功', type: 'success' as const }
   if (task.members.every(member => isSuccess(member) || publicationCheck(member)?.publicationState === 'COMPLETED')) return { text: '发布完成', type: 'success' as const }
@@ -1273,7 +1285,7 @@ function openPublishDialog(target: CodeGroupRow | CodeGroupTask) {
 }
 
 function hasPendingPublishReservation(row: CodeGroupRow) {
-  return row.detail.batch.status === 'READY_TO_PUBLISH' && Boolean(row.detail.batch.remotePublishTaskId?.startsWith('PENDING:'))
+  return (row.detail.batch.status === 'READY_TO_PUBLISH' || isRepairing(row)) && Boolean(row.detail.batch.remotePublishTaskId?.startsWith('PENDING:'))
 }
 
 function remoteMarketLabel(row: CodeGroupRow) {
@@ -1434,9 +1446,9 @@ function replaceCodeGroup(replacement: CodeGroupRow) {
 async function retryRemoteCreation(issue: RedemptionCodeIssue) {
   const group = selectedGroup.value
   if (!group || !canRetryRemoteCreation(issue)) return
-  if (issue.workflowStatus === 'CREATING_REMOTE') {
+  if (issue.workflowStatus === 'CREATING_REMOTE' || isRepairing(group)) {
     try {
-      await ElMessageBox.confirm('该任务已超过 2 分钟未完成。确认后会按原参数重新创建远端配置；请先确认远端后台不存在同名配置。', '恢复卡住的创建任务', { type: 'warning', confirmButtonText: '确认重试', cancelButtonText: '取消' })
+      await ElMessageBox.confirm(`请先在远端后台确认“${issue.remoteConfigurationName || issue.tierName || '该配置'}”（备注：${issue.remoteConfigurationRemark || '未记录'}）仍不存在。上次请求结果可能不确定；确认后才会恢复或重试创建。`, '核对后重试创建', { type: 'warning', confirmButtonText: '已核对，确认重试', cancelButtonText: '取消' })
     } catch {
       return
     }
@@ -1457,6 +1469,7 @@ async function retryRemoteCreation(issue: RedemptionCodeIssue) {
 async function retrySelectedFailedRemoteCreations() {
   const group = selectedGroup.value
   if (!group) return
+  if (isRepairing(group)) { ElMessage.warning('补齐流程中请逐条核对远端后重试创建'); return }
   const targets = selectedFailedRemoteCreations().map((issue) => ({ row: group, issue }))
   if (!targets.length) return
   try {
@@ -1523,6 +1536,82 @@ async function exportGroup(row: CodeGroupRow) {
   } finally {
     exportingId.value = undefined
   }
+}
+
+async function acceptAvailableCodes(row: CodeGroupRow) {
+  resolvingMissingBatchId.value = row.detail.batch.id
+  try {
+    // A configuration already matched by the fresh remote check may still need its codes imported.
+    if (canDownloadScheduledCodes(row)) await downloadPublishedCodes(row)
+    const detail = await api.redemption.batch(row.detail.batch.id)
+    replaceCodeGroup({ campaign: row.campaign, detail })
+    if (!detail.issues.some(issue => issue.workflowStatus === 'CODE_IMPORTED' && Boolean(issue.redemptionCode))) {
+      ElMessage.warning('当前没有已入库的兑换码可下载')
+      return
+    }
+    saveDownloadedFile(await api.redemption.exportAvailableBatch(detail.batch.id))
+    ElMessage.success('已下载当前已入库的兑换码；未补齐配置列在文件的“未补齐配置”工作表，任务继续保留待补齐状态')
+  } catch (error) { ElMessage.error(error instanceof Error ? error.message : '下载现有兑换码失败') }
+  finally { resolvingMissingBatchId.value = undefined }
+}
+
+async function continueMissingConfigurationRepair(row: CodeGroupRow) {
+  resolvingMissingBatchId.value = row.detail.batch.id
+  let detail = row.detail
+  try {
+    // Each POST is separately recorded. A failed or uncertain create stops before any publish call.
+    const pending = detail.issues.filter(item => item.workflowStatus === 'PENDING_CREATION')
+    for (const [index, issue] of pending.entries()) {
+      if (!issue.id) throw new Error('缺失配置任务缺少本地 ID，请刷新后重试')
+      detail = await api.redemption.createRemoteConfiguration(issue.id, issue.workflowStatus === 'FAILED')
+      replaceCodeGroup({ campaign: row.campaign, detail })
+      if (index < pending.length - 1) await new Promise(resolve => window.setTimeout(resolve, Math.max(1, detail.batch.remoteOptions?.creationIntervalSeconds ?? 5) * 1000))
+    }
+    if (detail.issues.some(item => !['CREATED', 'PUBLISHED', 'CODE_IMPORTED'].includes(item.workflowStatus || ''))) {
+      ElMessage.warning('仍有配置待创建或待核对，暂不能重新发布')
+      return
+    }
+    await ElMessageBox.confirm(
+      `${detail.batch.remotePublishError ? '上次发布结果可能不确定，请先在 RAJACE 后台确认没有已完成的补齐发布任务。' : ''}缺失配置已重建。RAJACE 发布接口会发布当前环境中整个“兑换码”类型的待发布配置，可能包含其他任务。确认立即整体发布并关闭自动定时回退吗？`,
+      '确认补齐发布范围', { type: 'warning', confirmButtonText: '确认整体发布', cancelButtonText: '暂不发布' },
+    )
+    detail = await api.redemption.publishRemoteBatch(detail.batch.id, detail.batch.rowVersion, 'IMMEDIATE', undefined, false)
+    const replacement = { campaign: row.campaign, detail }
+    replaceCodeGroup(replacement)
+    const checked = await verifyRemotePublication(replacement, true)
+    if (checked?.publicationState !== 'COMPLETED') {
+      ElMessage.info('远端已接受补齐发布；待发布完成后，在核验结果中继续下载')
+      return
+    }
+    const complete = await downloadPublishedCodes(replacement)
+    if (complete) await exportGroup({ campaign: row.campaign, detail: await api.redemption.batch(detail.batch.id) })
+    else showPublicationResult({ campaign: row.campaign, detail: await api.redemption.batch(detail.batch.id) })
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error instanceof Error ? error.message : '补齐配置失败；任务已保留当前进度，可在明细中继续处理')
+  } finally {
+    resolvingMissingBatchId.value = undefined
+    await loadCodeGroups()
+  }
+}
+
+async function regenerateMissingConfigurations(row: CodeGroupRow) {
+  try {
+    await ElMessageBox.confirm(
+      '仅针对本次核验确认为“远端未找到”、且兑换码尚未入库的配置重建。新配置会获得新的远端 ID，原 ID 保存在操作审计中；重建失败时不会自动发布。确定继续吗？',
+      '重建缺失配置', { type: 'warning', confirmButtonText: '确认重建', cancelButtonText: '取消' },
+    )
+  } catch { return }
+  resolvingMissingBatchId.value = row.detail.batch.id
+  try {
+    const current = await api.redemption.batch(row.detail.batch.id)
+    const started = await api.redemption.startMissingConfigurationRepair(current.batch.id, current.batch.rowVersion)
+    delete publicationChecks.value[String(current.batch.id)]
+    verificationDialogVisible.value = false
+    const replacement = { campaign: row.campaign, detail: started }
+    replaceCodeGroup(replacement)
+    await continueMissingConfigurationRepair(replacement)
+  } catch (error) { ElMessage.error(error instanceof Error ? error.message : '重建缺失配置失败') }
+  finally { resolvingMissingBatchId.value = undefined }
 }
 
 onMounted(async () => {
@@ -1600,7 +1689,7 @@ onUnmounted(() => {
                 <div v-else-if="column.key === 'actions'" class="virtual-actions">
                   <el-button link type="primary" size="small" :loading="row.members.some(isProcessing)" @click="isMultiMarketTask(row) ? openTaskDetail(row) : openGroupDetail(taskPrimary(row))">查看任务</el-button>
                   <template v-if="!isMultiMarketTask(row)">
-                    <el-button v-if="taskPrimary(row).detail.batch.status === 'PUBLISHED'" link type="primary" size="small" :loading="verifyingPublicationIds.has(String(taskPrimary(row).detail.batch.id))" @click="inspectPublication(taskPrimary(row))">查看核验结果</el-button>
+                    <el-button v-if="taskPrimary(row).detail.batch.status === 'PUBLISHED'" link type="primary" size="small" :loading="verifyingPublicationIds.has(String(taskPrimary(row).detail.batch.id))" @click="inspectPublication(taskPrimary(row))">{{ missingConfigurations(taskPrimary(row)).length ? '处理缺失配置' : '查看核验结果' }}</el-button>
                     <el-button v-if="hasPendingPublishReservation(taskPrimary(row))" link type="warning" size="small" :loading="recoveringPublishId === taskPrimary(row).detail.batch.id" @click="recoverPublishReservation(taskPrimary(row))">恢复发布</el-button>
                     <el-button v-else-if="taskPrimary(row).detail.batch.status === 'READY_TO_PUBLISH'" link type="primary" size="small" @click="openPublishDialog(taskPrimary(row))">选择发布方式</el-button>
                     <el-button v-if="canCancelScheduledPublish(taskPrimary(row))" link type="danger" size="small" :disabled="!canCancelScheduledPublish(taskPrimary(row))" :loading="cancellingPublishId === taskPrimary(row).detail.batch.id" @click="cancelScheduledPublish(taskPrimary(row))">撤销发布</el-button>
@@ -1775,18 +1864,29 @@ onUnmounted(() => {
       <template #footer><el-button @click="publishDialogVisible = false">取消</el-button><el-button type="primary" :loading="publishing" @click="submitPublish">确认发布</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="verificationDialogVisible" title="发布与下载检查" width="640px" append-to-body>
+    <el-dialog v-model="verificationDialogVisible" title="发布与下载检查" width="760px" append-to-body>
       <template v-if="verificationTarget">
         <p>任务 {{ verificationTarget.detail.batch.taskNumber || verificationTarget.detail.batch.id }} · {{ remoteMarketLabel(verificationTarget) }}</p>
         <p v-if="verifyingPublicationIds.has(String(verificationTarget.detail.batch.id))" role="status">正在查询远端状态，请稍候…</p>
         <template v-else>
-          <el-alert :title="publicationCheckErrors[String(verificationTarget.detail.batch.id)] ? '本次核验未完成' : publicationLabel(publicationCheck(verificationTarget))" :description="configurationVerificationSummary(publicationCheck(verificationTarget), publicationCheckErrors[String(verificationTarget.detail.batch.id)])" type="info" :closable="false" show-icon />
+          <el-alert :title="publicationCheckErrors[String(verificationTarget.detail.batch.id)] ? '本次核验未完成' : publicationLabel(publicationCheck(verificationTarget))" :description="configurationVerificationSummary(publicationCheck(verificationTarget), publicationCheckErrors[String(verificationTarget.detail.batch.id)], verificationTarget.detail.issues)" :type="missingConfigurations(verificationTarget).length ? 'warning' : 'info'" :closable="false" show-icon />
           <p v-if="publicationCheck(verificationTarget)?.checkedAt" class="field-note">本次核验时间：{{ formatDateTime(publicationCheck(verificationTarget)?.checkedAt) }}</p>
+          <template v-if="missingConfigurations(verificationTarget).length">
+            <p class="field-note">以下配置在 RAJACE 当前列表不可见。可只下载现有已入库兑换码，或重建缺失配置并在再次发布、核验后合并下载。</p>
+            <el-table :data="missingConfigurations(verificationTarget)" size="small" max-height="260" border>
+              <el-table-column label="配置名称" min-width="145"><template #default="{ row }">{{ row.issue?.remoteConfigurationName || '名称未记录' }}</template></el-table-column>
+              <el-table-column label="配置备注" min-width="145"><template #default="{ row }">{{ row.issue?.remoteConfigurationRemark || '备注未记录' }}</template></el-table-column>
+              <el-table-column label="原配置 ID" prop="configurationId" width="115" />
+              <el-table-column label="兑换日" width="115"><template #default="{ row }">{{ row.issue?.claimDate || '—' }}</template></el-table-column>
+            </el-table>
+          </template>
         </template>
       </template>
       <template #footer>
         <el-button @click="verificationDialogVisible = false">关闭</el-button>
         <el-button v-if="verificationTarget" :loading="verifyingPublicationIds.has(String(verificationTarget.detail.batch.id))" @click="inspectPublication(verificationTarget)">刷新状态</el-button>
+        <el-button v-if="verificationTarget && missingConfigurations(verificationTarget).length && canExport" :loading="resolvingMissingBatchId === verificationTarget.detail.batch.id" @click="acceptAvailableCodes(verificationTarget)">接受当前配置，下载已有兑换码</el-button>
+        <el-button v-if="verificationTarget && missingConfigurations(verificationTarget).length && canGenerate" type="warning" :loading="resolvingMissingBatchId === verificationTarget.detail.batch.id" @click="regenerateMissingConfigurations(verificationTarget)">重建缺失配置并补齐下载</el-button>
         <el-button v-if="verificationTarget && canDownloadScheduledCodes(verificationTarget)" type="primary" :loading="isProcessing(verificationTarget)" @click="downloadPublishedCodes(verificationTarget)">下载兑换码</el-button>
       </template>
     </el-dialog>
@@ -1805,7 +1905,7 @@ onUnmounted(() => {
           <el-descriptions-item label="发布状态"><el-tag :type="groupStatus(selectedGroup).type">{{ groupStatus(selectedGroup).text }}</el-tag></el-descriptions-item>
           <el-descriptions-item label="兑换码状态">{{ codeAcquisitionStatus(selectedGroup) }}</el-descriptions-item>
           <el-descriptions-item label="远端核验">{{ publicationCheckErrors[String(selectedGroup.detail.batch.id)] || publicationCheck(selectedGroup)?.configurationError || (publicationCheck(selectedGroup)?.checkedAt ? `核验时间：${formatDateTime(publicationCheck(selectedGroup)?.checkedAt)}` : '尚未核验') }}</el-descriptions-item>
-          <el-descriptions-item v-if="publicationCheck(selectedGroup)?.configurations.some(item => item.state !== 'MATCHED')" label="配置核验结果">{{ publicationCheck(selectedGroup)?.configurations.filter(item => item.state !== 'MATCHED').map(item => `${item.configurationId}：${item.state === 'MISSING' ? '远端未找到' : item.state === 'MISMATCH' ? '参数不匹配' : '待核验'}`).join('；') }}</el-descriptions-item>
+          <el-descriptions-item v-if="publicationCheck(selectedGroup)?.configurations.some(item => item.state !== 'MATCHED')" label="配置核验结果" :span="2">{{ configurationVerificationSummary(publicationCheck(selectedGroup), undefined, selectedGroup.detail.issues) }}</el-descriptions-item>
           <el-descriptions-item label="远端账号">{{ selectedGroup.detail.batch.remoteConnectionName || '—' }}</el-descriptions-item>
           <el-descriptions-item label="盘口">{{ remoteMarketLabel(selectedGroup) }}</el-descriptions-item>
           <el-descriptions-item label="兑换码类型">{{ redemptionTypeLabel(selectedGroup.detail.batch.redemptionType) }}</el-descriptions-item>
@@ -1818,7 +1918,7 @@ onUnmounted(() => {
         <el-alert v-if="selectedGroup.detail.batch.remotePublishError" class="group-detail-error" type="error" :closable="false" show-icon>{{ selectedGroup.detail.batch.remotePublishError }}</el-alert>
         <div v-if="failedRemoteCreationCount" class="group-detail-toolbar">
           <span>当前盘口有 {{ failedRemoteCreationCount }} 条远端配置生成失败；勾选后可批量重试。</span>
-          <el-button type="warning" :disabled="!selectedFailedIssueCount" :loading="retryingSelectedFailedTasks" @click="retrySelectedFailedRemoteCreations">批量重试已选（{{ selectedFailedIssueCount }}）</el-button>
+          <el-button type="warning" :disabled="!selectedFailedIssueCount || isRepairing(selectedGroup)" :loading="retryingSelectedFailedTasks" @click="retrySelectedFailedRemoteCreations">批量重试已选（{{ selectedFailedIssueCount }}）</el-button>
         </div>
         <el-table ref="failedIssueTable" :data="selectedGroup.detail.issues" row-key="id" class="group-detail-table" @selection-change="updateSelectedFailedIssues">
           <el-table-column type="selection" width="48" :selectable="isFailedRemoteCreation" />
@@ -1834,7 +1934,9 @@ onUnmounted(() => {
         <div class="drawer-actions">
           <el-button v-if="hasPendingPublishReservation(selectedGroup)" type="warning" :loading="recoveringPublishId === selectedGroup.detail.batch.id" @click="recoverPublishReservation(selectedGroup)">恢复发布</el-button>
           <el-button v-else-if="selectedGroup.detail.batch.status === 'READY_TO_PUBLISH'" type="primary" @click="openPublishDialog(selectedGroup)">选择发布方式</el-button>
-          <el-button v-if="selectedGroup.detail.batch.status === 'PUBLISHED'" :loading="verifyingPublicationIds.has(String(selectedGroup.detail.batch.id))" @click="inspectPublication(selectedGroup)">查看核验结果</el-button>
+          <el-button v-if="selectedGroup.detail.batch.status === 'PUBLISHED'" :loading="verifyingPublicationIds.has(String(selectedGroup.detail.batch.id))" @click="inspectPublication(selectedGroup)">{{ missingConfigurations(selectedGroup).length ? '处理缺失配置' : '查看核验结果' }}</el-button>
+          <el-button v-if="isRepairing(selectedGroup) && !hasPendingPublishReservation(selectedGroup)" type="warning" :loading="resolvingMissingBatchId === selectedGroup.detail.batch.id" @click="continueMissingConfigurationRepair(selectedGroup)">继续补齐并核验</el-button>
+          <el-button v-if="(missingConfigurations(selectedGroup).length || isRepairing(selectedGroup)) && selectedGroup.detail.batch.importedCount > 0 && canExport" :loading="resolvingMissingBatchId === selectedGroup.detail.batch.id" @click="acceptAvailableCodes(selectedGroup)">仅下载已有兑换码</el-button>
           <el-button v-if="canCancelScheduledPublish(selectedGroup)" type="danger" :disabled="!canCancelScheduledPublish(selectedGroup)" :loading="cancellingPublishId === selectedGroup.detail.batch.id" @click="cancelScheduledPublish(selectedGroup)">撤销发布</el-button>
           <el-button v-if="canDownloadScheduledCodes(selectedGroup)" type="primary" :loading="isProcessing(selectedGroup)" @click="downloadPublishedCodes(selectedGroup)">{{ selectedGroup.detail.issues.some(issue => issue.remoteError) ? '重试下载' : '下载兑换码' }}</el-button>
           <el-button v-if="isSuccess(selectedGroup) && canExport" type="primary" :icon="Download" :loading="exportingId === selectedGroup.detail.batch.id" @click="exportGroup(selectedGroup)">下载当前盘口 Excel</el-button>

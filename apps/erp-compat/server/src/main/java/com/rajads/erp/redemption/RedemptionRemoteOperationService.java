@@ -194,7 +194,7 @@ public class RedemptionRemoteOperationService {
             if (rowVersion == null || !Objects.equals(batch.getRowVersion(), rowVersion)) {
                 throw ApiException.conflict("BATCH_VERSION_CONFLICT", "批次已被其他人修改，请刷新后重试");
             }
-            if (!"READY_TO_PUBLISH".equals(batch.getStatus()) || !isPendingPublishReservation(batch)) {
+            if (!("READY_TO_PUBLISH".equals(batch.getStatus()) || isRepairing(batch)) || !isPendingPublishReservation(batch)) {
                 throw ApiException.conflict("REMOTE_PUBLISH_RECOVERY_NOT_ALLOWED", "该批次没有可恢复的发布占位");
             }
             if (batch.getUpdatedAt().isAfter(Instant.now().minus(Duration.ofMinutes(2)))) {
@@ -241,6 +241,46 @@ public class RedemptionRemoteOperationService {
             auditService.record("REDEMPTION_REMOTE_PUBLICATION_VERIFIED", "REDEMPTION_CODE_BATCH", batchId.toString(), null, null, result);
         });
         return result;
+    }
+
+    /** Starts an explicit repair only for configurations freshly confirmed absent from the remote directory. */
+    public Long startMissingConfigurationRepair(Long batchId, Long rowVersion) {
+        var verification = verifyPublication(batchId);
+        if (!"COMPLETED".equals(verification.publicationState()) || verification.configurationError() != null) {
+            throw ApiException.conflict("REMOTE_REPAIR_VERIFY_REQUIRED", "远端发布或配置列表尚未核验完成，不能重建配置");
+        }
+        return required(tx().execute(status -> {
+            var batch = requireFreshBatch(batchId);
+            if (rowVersion == null || !Objects.equals(rowVersion, batch.getRowVersion()))
+                throw ApiException.conflict("BATCH_VERSION_CONFLICT", "批次已变化，请刷新核验结果后重试");
+            if (!"PUBLISHED".equals(batch.getStatus()) || !Objects.equals(batch.getRemotePublishTaskId(), verification.remotePublishTaskId()))
+                throw ApiException.conflict("REMOTE_REPAIR_STATE_CHANGED", "发布任务已变化，请刷新后重试");
+            var missingIds = verification.configurations().stream()
+                    .filter(item -> "MISSING".equals(item.state())).map(UnifiedRedemptionRemoteExecutorClient.ConfigurationVerification::configurationId)
+                    .collect(java.util.stream.Collectors.toSet());
+            if (missingIds.isEmpty()) throw ApiException.conflict("REMOTE_REPAIR_NOT_NEEDED", "远端没有缺失的配置");
+            var issues = issueRepository.findByBatchIdOrderByClaimDateAscCampaignTierIdAsc(batchId);
+            var missing = issues.stream().filter(issue -> missingIds.contains(issue.getRemoteConfigurationId())
+                    && !"CODE_IMPORTED".equals(issue.getWorkflowStatus())).toList();
+            if (missing.size() != missingIds.size()) throw ApiException.conflict("REMOTE_REPAIR_ISSUES_CHANGED", "缺失配置与当前任务不一致，请重新核验");
+            for (var issue : missing) {
+                var oldId = issue.getRemoteConfigurationId();
+                issue.setRemoteReferenceId(oldId);
+                issue.setRemoteConfigurationId(null);
+                issue.setRemoteGroupKey(null);
+                issue.setWorkflowStatus("PENDING_CREATION");
+                issue.setState("PENDING");
+                issue.setRemoteError("原配置 " + oldId + " 经远端核验不存在，等待重建");
+                auditService.record("REDEMPTION_MISSING_CONFIGURATION_REPAIR_STARTED", "REDEMPTION_CODE_ISSUE", issue.getId().toString(), null, null,
+                        Map.of("batchId", batchId, "previousConfigurationId", oldId,
+                                "configurationName", remoteDescription(batch, issue)));
+            }
+            issueRepository.saveAll(issues);
+            batch.setStatus("CREATING");
+            batch.setRemotePublishNote(appendNote(batch.getRemotePublishNote(), "缺失配置重建中；原发布任务不再用于新配置下载"));
+            batchRepository.save(batch);
+            return batchId;
+        }));
     }
 
     private RedemptionCodeBatch requireFreshBatch(Long batchId) {
@@ -424,8 +464,20 @@ public class RedemptionRemoteOperationService {
     private RemoteBatchContext reservePublish(Long batchId, RedemptionDtos.RemotePublishRequest request) {
         RedemptionCodeBatch batch = requireBatch(batchId);
         if (request == null || request.rowVersion() == null || !Objects.equals(batch.getRowVersion(), request.rowVersion())) throw ApiException.conflict("BATCH_VERSION_CONFLICT", "批次已被其他人修改，请刷新后重试");
-        if (!"READY_TO_PUBLISH".equals(batch.getStatus())) throw ApiException.conflict("BATCH_NOT_READY_TO_PUBLISH", "请先完成该批次全部远端兑换码配置创建");
-        if (batch.getRemotePublishTaskId() != null) throw ApiException.conflict("REMOTE_PUBLISH_IN_PROGRESS", "该批次正在执行远端发布，请稍后刷新");
+        boolean repair = isRepairing(batch);
+        if (!"READY_TO_PUBLISH".equals(batch.getStatus()) && !repair) throw ApiException.conflict("BATCH_NOT_READY_TO_PUBLISH", "请先完成该批次全部远端兑换码配置创建");
+        if (repair) {
+            var issues = issueRepository.findByBatchIdOrderByClaimDateAscCampaignTierIdAsc(batchId);
+            if (issues.stream().noneMatch(issue -> "CREATED".equals(issue.getWorkflowStatus()))
+                    || issues.stream().anyMatch(issue -> !java.util.Set.of("CREATED", "PUBLISHED", "CODE_IMPORTED").contains(issue.getWorkflowStatus()))) {
+                throw ApiException.conflict("REPAIR_NOT_READY_TO_PUBLISH", "缺失配置尚未全部重建，不能重新发布");
+            }
+            if (!"IMMEDIATE".equals(request.mode()) || Boolean.TRUE.equals(request.fallbackToScheduled())) {
+                throw ApiException.badRequest("REPAIR_PUBLISH_MODE_INVALID", "补齐发布只允许立即发布，且不能自动回退定时发布");
+            }
+        }
+        if (batch.getRemotePublishTaskId() != null && (!repair || batch.getRemotePublishTaskId().startsWith("PENDING:")))
+            throw ApiException.conflict("REMOTE_PUBLISH_IN_PROGRESS", "该批次正在执行远端发布，请稍后刷新");
         boolean scheduled = "SCHEDULED".equals(request.mode());
         boolean fallbackToScheduled = request.fallbackToScheduled() == null || request.fallbackToScheduled();
         LocalDateTime scheduledTime = request.scheduledTime();
@@ -440,21 +492,25 @@ public class RedemptionRemoteOperationService {
         batch.setRemotePublishError(null);
         batch.setRemotePublishMode(null);
         batch.setRemoteScheduledPublishAt(null);
-        batch.setRemotePublishNote(null);
+        batch.setRemotePublishNote(repair ? "缺失配置已重建，正在重新发布；发布范围为远端全部兑换码配置" : null);
         batch.setRemotePublishCancelledAt(null);
         batchRepository.saveAndFlush(batch);
         return new RemoteBatchContext(account.id(), null, options(batch), scheduled, scheduledTime,
-                scheduled ? "人工定时发布" : "立即发布", null, fallbackToScheduled);
+                scheduled ? "人工定时发布" : repair ? "缺失配置补齐后立即发布（远端全部兑换码配置）" : "立即发布", null, fallbackToScheduled);
     }
 
     private Long completePublish(Long batchId, String publishTaskId, boolean scheduled, LocalDateTime scheduledTime, String note) {
         RedemptionCodeBatch batch = requireBatch(batchId);
         if (batch.getRemotePublishTaskId() == null || !batch.getRemotePublishTaskId().startsWith("PENDING:")) throw ApiException.conflict("REMOTE_PUBLISH_STATE_CHANGED", "发布状态已变化，请刷新后查看");
         List<RedemptionCodeIssue> issues = issueRepository.findByBatchIdOrderByClaimDateAscCampaignTierIdAsc(batchId);
-        if (issues.size() != batch.getExpectedCodeCount() || issues.stream().anyMatch(issue -> !"CREATED".equals(issue.getWorkflowStatus()))) {
+        boolean repair = isRepairing(batch);
+        if (issues.size() != batch.getExpectedCodeCount() || (repair
+                ? issues.stream().noneMatch(issue -> "CREATED".equals(issue.getWorkflowStatus()))
+                    || issues.stream().anyMatch(issue -> !java.util.Set.of("CREATED", "PUBLISHED", "CODE_IMPORTED").contains(issue.getWorkflowStatus()))
+                : issues.stream().anyMatch(issue -> !"CREATED".equals(issue.getWorkflowStatus())))) {
             throw ApiException.conflict("BATCH_NOT_READY_TO_PUBLISH", "该批次仍有未完成的远端配置");
         }
-        if (!scheduled) { issues.forEach(issue -> issue.setWorkflowStatus("PUBLISHED")); issueRepository.saveAll(issues); }
+        if (!scheduled) { issues.stream().filter(issue -> "CREATED".equals(issue.getWorkflowStatus())).forEach(issue -> issue.setWorkflowStatus("PUBLISHED")); issueRepository.saveAll(issues); }
         // The existing batch-status check only has PUBLISHED. Scheduled publication is represented by the
         // persisted publish mode and time, while code issues remain CREATED until the remote task has run.
         batch.setStatus("PUBLISHED");
@@ -682,6 +738,7 @@ public class RedemptionRemoteOperationService {
     }
 
     private void refreshBatchAfterCreation(RedemptionCodeBatch batch) {
+        if (isRepairing(batch)) return;
         long created = issueRepository.countByBatchIdAndWorkflowStatus(batch.getId(), "CREATED");
         batch.setStatus(created == batch.getExpectedCodeCount() ? "READY_TO_PUBLISH" : "CREATING");
         batchRepository.save(batch);
@@ -690,6 +747,9 @@ public class RedemptionRemoteOperationService {
         long imported = issueRepository.countByBatchIdAndWorkflowStatus(batch.getId(), "CODE_IMPORTED");
         if (imported == batch.getExpectedCodeCount()) batch.setStatus("COMPLETED");
         batchRepository.save(batch);
+    }
+    private boolean isRepairing(RedemptionCodeBatch batch) {
+        return "CREATING".equals(batch.getStatus()) && batch.getPublishedAt() != null;
     }
     private RedemptionCodeIssue requireIssue(Long id) { return issueRepository.findById(id).orElseThrow(() -> ApiException.notFound("兑换码任务")); }
     private RedemptionCodeBatch requireBatch(Long id) { return batchRepository.findById(id).orElseThrow(() -> ApiException.notFound("兑换码批次")); }
@@ -723,22 +783,8 @@ public class RedemptionRemoteOperationService {
     }
     /** The remote console uses the same value for {@code group_desc} and {@code remark}. */
     private String remoteDescription(RedemptionCodeBatch batch, RedemptionCodeIssue issue) {
-        if (batch.getRedemptionType() == RedemptionCodeType.AGENT) {
-            LocalDate effectiveDate = issue.getClaimDate().plusDays(batch.getValidFromDayOffset() == null ? 0 : batch.getValidFromDayOffset());
-            String audience = labelIds(issue).isEmpty()
-                    ? "全部"
-                    : "存款" + issue.getMinDepositAmount().stripTrailingZeros().toPlainString();
-            return "%d-%02d代理%s".formatted(effectiveDate.getMonthValue(), effectiveDate.getDayOfMonth(), audience);
-        }
-        if (batch.getRedemptionType() == RedemptionCodeType.PREVIOUS_DAY_DEPOSIT) {
-            return "NEW-" + compactMonthDay(issue.getClaimDate()) + "存款" + issue.getMinDepositAmount().stripTrailingZeros().toPlainString();
-        }
-        LocalDate depositEnd = issue.getClaimDate().minusDays(1);
-        LocalDate depositStart = depositEnd.minusDays(batch.getLookbackDays().longValue() - 1);
-        return "NEW-" + compactMonthDay(depositStart) + "到" + compactMonthDay(depositEnd) + "存款"
-                + issue.getMinDepositAmount().stripTrailingZeros().toPlainString();
+        return RedemptionRemoteDescription.forIssue(batch, issue, labelIds(issue));
     }
-    private String compactMonthDay(LocalDate date) { return "%d%02d".formatted(date.getMonthValue(), date.getDayOfMonth()); }
     private LocalDateTime nowInIndia() { return LocalDateTime.now(INDIA_TIME_ZONE); }
     private String appendNote(String current, String next) { return limitNote(current == null || current.isBlank() ? next : current + "；" + next); }
     private boolean isCancellableScheduledPublish(RedemptionCodeBatch batch) {

@@ -315,8 +315,9 @@ public class RedemptionService {
         }
         issueRepository.saveAll(issues);
         batch = refreshBatchStatus(batch);
+        RedemptionCodeBatch responseBatch = batch;
         List<RedemptionDtos.CodeIssueResponse> resultIssues = issueRepository.findByBatchIdOrderByClaimDateAscCampaignTierIdAsc(batchId)
-                .stream().map(this::issueResponse).toList();
+                .stream().map(issue -> issueResponse(issue, responseBatch)).toList();
         auditService.record("REDEMPTION_CODES_IMPORTED", "REDEMPTION_CODE_BATCH", batchId.toString(), null, null,
                 Map.of("importedCount", imported, "submittedRowCount", request.rows().size()));
         return new RedemptionDtos.CodeImportResponse(imported, batchResponse(batch), resultIssues);
@@ -382,11 +383,18 @@ public class RedemptionService {
     }
 
     private RedemptionDtos.CodeIssueResponse issueResponse(RedemptionCodeIssue issue) {
+        RedemptionCodeBatch batch = issue.getBatchId() == null ? null : batchRepository.findById(issue.getBatchId()).orElse(null);
+        return issueResponse(issue, batch);
+    }
+
+    private RedemptionDtos.CodeIssueResponse issueResponse(RedemptionCodeIssue issue, RedemptionCodeBatch batch) {
+        List<Long> labels = parseLabelIds(issue.getRemoteLabelIdsJson());
+        String description = batch == null ? null : RedemptionRemoteDescription.forIssue(batch, issue, labels);
         return new RedemptionDtos.CodeIssueResponse(issue.getId(), issue.getCampaignId(), issue.getCampaignTierId(), issue.getTierName(),
                 issue.getMinDepositAmount(), issue.getBonusAmount(), issue.getClaimDate(), issue.getDepositWindowStart(),
                 issue.getDepositWindowEnd(), issue.getCodes().isEmpty() ? null : String.join("\n", issue.getCodes()), issue.getState(), issue.getRemoteReferenceId(),
                 issue.getRemoteError(), issue.getGeneratedAt(), issue.getRowVersion(), issue.getBonusMaxAmount(), issue.getBatchId(),
-                issue.getWorkflowStatus(), issue.getRemoteConfigurationId(), issue.getRemoteGroupKey(), parseLabelIds(issue.getRemoteLabelIdsJson()));
+                issue.getWorkflowStatus(), issue.getRemoteConfigurationId(), issue.getRemoteGroupKey(), labels, description, description);
     }
 
     private Map<String, Object> auditCampaignSummary(RedemptionDtos.CampaignResponse response) {
@@ -425,7 +433,8 @@ public class RedemptionService {
 
     private RedemptionDtos.BatchDetailResponse batchDetail(RedemptionCodeBatch batch) {
         return new RedemptionDtos.BatchDetailResponse(batchResponse(batch),
-                issueRepository.findByBatchIdOrderByClaimDateAscCampaignTierIdAsc(batch.getId()).stream().map(this::issueResponse).toList());
+                issueRepository.findByBatchIdOrderByClaimDateAscCampaignTierIdAsc(batch.getId()).stream()
+                        .map(issue -> issueResponse(issue, batch)).toList());
     }
 
     @Transactional(readOnly = true)

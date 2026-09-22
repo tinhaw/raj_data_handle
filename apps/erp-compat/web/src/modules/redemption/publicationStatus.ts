@@ -19,7 +19,8 @@ export function acquisitionLabel(imported: boolean, hasError: boolean, result?: 
   return result?.publicationState === 'COMPLETED' ? '待下载兑换码' : '等待发布核验'
 }
 
-export function configurationVerificationSummary(result?: PublicationVerification, error?: string) {
+export function configurationVerificationSummary(result?: PublicationVerification, error?: string,
+  issues: Array<{ remoteConfigurationId?: string; remoteConfigurationName?: string; remoteConfigurationRemark?: string }> = []) {
   if (error) return `本次查询失败：${error}。尚未发起下载，请稍后刷新状态。`
   if (!result) return '正在查询远端发布任务和兑换码配置…'
   if (result.publicationState !== 'COMPLETED') return `当前状态：${publicationLabel(result)}。尚未确认发布完成，暂不能下载。`
@@ -27,8 +28,12 @@ export function configurationVerificationSummary(result?: PublicationVerificatio
   const missing = result.configurations.filter(item => item.state === 'MISSING')
   const mismatch = result.configurations.filter(item => item.state === 'MISMATCH')
   const unknown = result.configurations.filter(item => item.state === 'UNKNOWN')
+  const missingDescriptions = missing.map((item) => {
+    const issue = issues.find((candidate) => candidate.remoteConfigurationId === item.configurationId)
+    return `${issue?.remoteConfigurationName || '名称未记录'}（备注：${issue?.remoteConfigurationRemark || '未记录'}；原 ID：${item.configurationId}）`
+  })
   const problems = [
-    missing.length ? `${missing.length} 个配置在当前远端列表中未找到（ID：${missing.map(item => item.configurationId).join('、')}）` : '',
+    missing.length ? `${missing.length} 个配置在当前远端列表中未找到：${missingDescriptions.join('、')}` : '',
     mismatch.length ? `${mismatch.length} 个配置的兑换码组或数量不匹配` : '',
     unknown.length ? `${unknown.length} 个配置尚未完成核验` : '',
   ].filter(Boolean)

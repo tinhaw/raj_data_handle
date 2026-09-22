@@ -49,7 +49,19 @@ public final class RedemptionDtos {
                                     LocalDate depositWindowStart, LocalDate depositWindowEnd, String redemptionCode,
                                     String state, String remoteReferenceId, String remoteError, Instant generatedAt,
                                     Long rowVersion, BigDecimal bonusMaxAmount, Long batchId, String workflowStatus,
-                                    String remoteConfigurationId, String remoteGroupKey, List<Long> remoteLabelIds) {
+                                    String remoteConfigurationId, String remoteGroupKey, List<Long> remoteLabelIds,
+                                    String remoteConfigurationName, String remoteConfigurationRemark) {
+        public CodeIssueResponse(Long id, Long campaignId, Long campaignTierId, String tierName,
+                                 BigDecimal minDepositAmount, BigDecimal bonusAmount, LocalDate claimDate,
+                                 LocalDate depositWindowStart, LocalDate depositWindowEnd, String redemptionCode,
+                                 String state, String remoteReferenceId, String remoteError, Instant generatedAt,
+                                 Long rowVersion, BigDecimal bonusMaxAmount, Long batchId, String workflowStatus,
+                                 String remoteConfigurationId, String remoteGroupKey, List<Long> remoteLabelIds) {
+            this(id, campaignId, campaignTierId, tierName, minDepositAmount, bonusAmount, claimDate,
+                    depositWindowStart, depositWindowEnd, redemptionCode, state, remoteReferenceId, remoteError,
+                    generatedAt, rowVersion, bonusMaxAmount, batchId, workflowStatus,
+                    remoteConfigurationId, remoteGroupKey, remoteLabelIds, null, null);
+        }
         @com.fasterxml.jackson.annotation.JsonProperty
         public List<String> redemptionCodes() {
             return redemptionCode == null ? List.of() : redemptionCode.lines().filter(code -> !code.isBlank()).toList();
