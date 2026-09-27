@@ -180,7 +180,9 @@ const retryingIssueId = ref<string | number>()
 const retryingSelectedFailedTasks = ref(false)
 const selectedFailedIssueIds = ref<Array<string | number>>([])
 const failedIssueTable = ref<{ clearSelection: () => void }>()
-const publishForm = ref<{ mode: 'IMMEDIATE' | 'SCHEDULED'; scheduledTime?: string; fallbackToScheduled: boolean }>({ mode: 'IMMEDIATE', fallbackToScheduled: true })
+const publishForm = ref<{ mode: 'IMMEDIATE' | 'SCHEDULED' | 'EXTERNAL'; scheduledTime?: string; fallbackToScheduled: boolean }>({ mode: 'IMMEDIATE', fallbackToScheduled: true })
+const externalTaskIds = ref<Record<string, string>>({})
+const externalPublicationResults = ref<Record<string, string>>({})
 const processingGroupIds = ref(new Set<string>())
 const indiaNow = ref('')
 let indiaClock: number | undefined
@@ -748,6 +750,7 @@ function canDownloadScheduledCodes(row: CodeGroupRow) {
 }
 function publishTime(row: CodeGroupRow) {
   const batch = row.detail.batch
+  if (batch.remotePublishMode === 'EXTERNAL') return `远端后台发布 · 任务 ${batch.remotePublishTaskId}`
   if (batch.remotePublishMode === 'IMMEDIATE') return '立即发布'
   if (batch.remotePublishMode === 'SCHEDULED' && batch.remoteScheduledPublishAt) {
     return `${formatIndiaDateTime(batch.remoteScheduledPublishAt)}（印度时间）${batch.remotePublishCancelledAt ? '，已撤销' : ''}`
@@ -1286,6 +1289,50 @@ function openPublishDialog(target: CodeGroupRow | CodeGroupTask) {
   publishDialogVisible.value = true
 }
 
+function remoteBackendUrl(row: CodeGroupRow) {
+  const connection = remoteConnections.value.find(item => String(item.id) === String(row.detail.batch.remoteConnectionId))
+  try {
+    const url = new URL(connection?.baseUrl || '')
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.origin : undefined
+  } catch { return undefined }
+}
+
+async function verifyAndDownloadExternalPublication(target: CodeGroupRow | CodeGroupTask) {
+  const rows = publishRows(target)
+  if (rows.some(row => !/^[1-9][0-9]{0,254}$/.test((externalTaskIds.value[String(row.detail.batch.id)] || '').trim()))) {
+    ElMessage.warning('请填写每个盘口对应的远端发布任务 ID（正整数）')
+    return
+  }
+  publishing.value = true
+  try {
+    for (const row of rows) {
+      const key = String(row.detail.batch.id)
+      const taskId = externalTaskIds.value[key].trim()
+      externalPublicationResults.value[key] = '正在核验远端发布结果…'
+      try {
+        // Fetch current state so returning to this dialog or retrying a partial download
+        // never reattaches an already adopted task or publishes a second time.
+        let detail = await api.redemption.batch(row.detail.batch.id)
+        if (detail.batch.status === 'READY_TO_PUBLISH') {
+          detail = await api.redemption.adoptExternalPublication(detail.batch.id, detail.batch.rowVersion, taskId)
+        } else if (detail.batch.remotePublishMode !== 'EXTERNAL' || detail.batch.remotePublishTaskId !== taskId) {
+          throw new Error('该盘口状态已变化，请关闭窗口并查看任务详情')
+        }
+        const replacement = { campaign: row.campaign, detail }
+        replaceCodeGroup(replacement)
+        externalPublicationResults.value[key] = '发布已核验，正在下载兑换码…'
+        const complete = isSuccess(replacement) || await downloadPublishedCodes(replacement)
+        externalPublicationResults.value[key] = complete ? '兑换码已全部入库，可在任务中下载 Excel' : '兑换码尚未全部入库，请查看核验结果；可再次核验并下载'
+      } catch (error) {
+        externalPublicationResults.value[key] = error instanceof Error ? error.message : '核验或下载失败，请重试'
+      }
+    }
+  } finally {
+    publishing.value = false
+    await loadCodeGroups()
+  }
+}
+
 function earliestUnpublishedExpiry(row: CodeGroupRow) {
   return row.detail.issues.filter(issue => issue.workflowStatus === 'CREATED')
     .map(issue => `${shiftDate(issue.claimDate, row.detail.batch.validToDayOffset ?? 0)} 23:59:59`).sort()[0]
@@ -1382,6 +1429,10 @@ async function recoverPublishReservation(row: CodeGroupRow) {
 async function submitPublish() {
   const target = publishTarget.value
   if (!target) return
+  if (publishForm.value.mode === 'EXTERNAL') {
+    await verifyAndDownloadExternalPublication(target)
+    return
+  }
   if (publishForm.value.mode === 'SCHEDULED' && !publishForm.value.scheduledTime) { ElMessage.warning('请选择定时发布时间（印度时间）'); return }
   const rows = publishRows(target)
   if (rows.some((row) => row.detail.batch.status !== 'READY_TO_PUBLISH' && !repairReadyForPublish(row))) {
@@ -1913,21 +1964,36 @@ onUnmounted(() => {
       <template #footer><el-button @click="codeGroupDialogVisible = false">取消</el-button><el-button type="primary" :loading="working" @click="createCodeGroup">开始生成</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="publishDialogVisible" title="选择发布方式" width="560px" destroy-on-close>
-      <p class="field-note publish-dialog__intro">{{ isMultiMarketPublishTarget(publishTarget) ? '将按盘口顺序串行执行；每个盘口仅发布其远端账号下尚未发布的配置。' : '默认先尝试立即发布；若被已有定时任务阻止，会先显示具体印度时间，确认后才转为定时发布。' }}</p>
+    <el-dialog v-model="publishDialogVisible" title="选择发布方式" width="680px" destroy-on-close :close-on-click-modal="!publishing" :close-on-press-escape="!publishing" :show-close="!publishing">
+      <el-radio-group v-model="publishForm.mode" :disabled="publishing" aria-label="发布方式">
+        <el-radio value="IMMEDIATE">立即发布（默认）</el-radio>
+        <el-radio value="SCHEDULED">定时发布</el-radio>
+        <el-radio value="EXTERNAL" :disabled="publishTarget && publishRows(publishTarget).some(isRepairing)">远端后台发布</el-radio>
+      </el-radio-group>
+      <template v-if="publishForm.mode === 'EXTERNAL' && publishTarget">
+        <el-alert type="info" :closable="false" title="在各盘口远端管理后台完成发布后，回到这里核验并下载。" description="请使用下方对应账号，在后台发布本批次配置，然后从后台发布任务列表复制任务 ID。系统会核验发布结果及配置，不会再次提交发布。定时发布需等待远端执行完成。" show-icon />
+        <el-form label-position="top" class="external-publication-form">
+          <el-form-item v-for="row in publishRows(publishTarget)" :key="String(row.detail.batch.id)" :label="`${remoteMarketLabel(row)} · 账号 ${row.detail.batch.remoteConnectionName || '—'} · ${row.detail.batch.remoteOptions?.publishEnvironment === 'prod' ? '生产环境' : '测试环境'}`">
+            <a v-if="remoteBackendUrl(row)" :href="remoteBackendUrl(row)" target="_blank" rel="noopener noreferrer">打开远端管理后台</a>
+            <p v-else class="field-note">请打开该盘口已配置的远端管理后台。</p>
+            <el-input v-model="externalTaskIds[String(row.detail.batch.id)]" :disabled="publishing" maxlength="255" :aria-label="`${remoteMarketLabel(row)} 远端发布任务 ID`" placeholder="发布完成后填写远端发布任务 ID" />
+            <p v-if="externalPublicationResults[String(row.detail.batch.id)]" class="field-note" role="status">{{ externalPublicationResults[String(row.detail.batch.id)] }}</p>
+          </el-form-item>
+        </el-form>
+      </template>
+      <p v-else class="field-note publish-dialog__intro">{{ isMultiMarketPublishTarget(publishTarget) ? '将按盘口顺序串行执行；每个盘口仅发布其远端账号下尚未发布的配置。' : '默认先尝试立即发布；若被已有定时任务阻止，会先显示具体印度时间，确认后才转为定时发布。' }}</p>
       <el-alert v-if="publishTarget && publishRows(publishTarget).some(isRepairing)" type="warning" :closable="false" title="补齐发布会发布该账号下所有尚未发布的兑换码；已发布的配置不会重新下载。若上次发布结果不确定，请先到远端后台核对。" />
-      <el-collapse v-model="publishOptionsOpen" class="advanced-options publish-options">
+      <el-collapse v-if="publishForm.mode !== 'EXTERNAL'" v-model="publishOptionsOpen" class="advanced-options publish-options">
         <el-collapse-item name="publish">
           <template #title><el-icon><Setting /></el-icon><span>发布相关设置（默认：立即发布，冲突时提示定时发布）</span></template>
           <el-form label-width="112px">
-            <el-form-item label="发布方式"><el-radio-group v-model="publishForm.mode"><el-radio value="IMMEDIATE">立即发布（默认）</el-radio><el-radio value="SCHEDULED">定时发布</el-radio></el-radio-group></el-form-item>
             <el-form-item v-if="publishForm.mode === 'SCHEDULED'" label="发布时间" required><el-date-picker v-model="publishForm.scheduledTime" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" placeholder="选择印度时间" style="width: 100%" /><p class="field-note">远端按印度时间（Asia/Kolkata）执行；撤销必须早于该时间。</p></el-form-item>
             <el-form-item v-if="publishForm.mode === 'IMMEDIATE'" label="失败后转定时"><el-switch v-model="publishForm.fallbackToScheduled" inline-prompt active-text="开" inactive-text="关" /><p class="field-note">默认开启。仅在远端明确拒绝立即发布且提示已有定时任务时，才会逐次提示定时时间；每次均须确认。</p></el-form-item>
             <el-alert v-if="publishForm.mode === 'IMMEDIATE' && publishForm.fallbackToScheduled" type="info" :closable="false" title="发生定时任务冲突时，依次提供约 15、30、60 分钟后的印度时间及最早领取日 00:00:00；到期前无法执行的时间会跳过。" />
           </el-form>
         </el-collapse-item>
       </el-collapse>
-      <template #footer><el-button @click="publishDialogVisible = false">取消</el-button><el-button type="primary" :loading="publishing" @click="submitPublish">确认发布</el-button></template>
+      <template #footer><el-button :disabled="publishing" @click="publishDialogVisible = false">{{ publishForm.mode === 'EXTERNAL' ? '关闭' : '取消' }}</el-button><el-button type="primary" :loading="publishing" @click="submitPublish">{{ publishForm.mode === 'EXTERNAL' ? '核验并下载兑换码' : '确认发布' }}</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="verificationDialogVisible" title="发布与下载检查" width="760px" append-to-body>
@@ -2016,6 +2082,9 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.external-publication-form { margin-top: 16px; }
+.external-publication-form a { color: #315efb; margin-bottom: 8px; }
+.external-publication-form .el-input { margin-top: 8px; }
 .publication-status-cell { display: flex; flex-direction: column; align-items: center; gap: 5px; }
 .publication-status-cell small { color: #65748b; }
 .redemption-alert { margin-bottom: 18px; }

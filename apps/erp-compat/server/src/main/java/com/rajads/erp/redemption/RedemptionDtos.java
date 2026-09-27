@@ -119,6 +119,8 @@ public final class RedemptionDtos {
                                                 Integer registerIpRewardLimit) { }
     public record RemoteConfigurationRequest(@NotBlank @Size(max = 255) String remoteConfigurationId, Long rowVersion) { }
     public record PublishBatchRequest(Long rowVersion) { }
+    public record ExternalPublicationRequest(@NotNull Long rowVersion,
+            @NotBlank @Pattern(regexp = "^[1-9][0-9]*$") @Size(max = 255) String remotePublishTaskId) { }
     public record RemotePublishRequest(Long rowVersion, @NotBlank @Pattern(regexp = "IMMEDIATE|SCHEDULED") String mode,
                                        @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss") java.time.LocalDateTime scheduledTime,
                                        Boolean fallbackToScheduled) { }

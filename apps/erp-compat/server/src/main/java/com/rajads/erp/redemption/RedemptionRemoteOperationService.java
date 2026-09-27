@@ -213,6 +213,64 @@ public class RedemptionRemoteOperationService {
         }));
     }
 
+    /** Associates an operator-selected, completed remote task. Never creates or publishes remotely. */
+    public Long adoptExternalPublication(Long batchId, RedemptionDtos.ExternalPublicationRequest request) {
+        var executor = unifiedRemoteExecutorClient.getIfAvailable();
+        if (executor == null) throw ApiException.conflict("REMOTE_VERIFY_UNAVAILABLE", "当前环境不支持统一远端核验");
+        var context = required(tx().execute(status -> externalPublicationContext(batchId, request)));
+        var result = executor.verifyPublication(context.accountId(), batchId, context.taskId(),
+                context.environment(), context.configurations());
+        if (!context.taskId().equals(result.remotePublishTaskId()) || !"COMPLETED".equals(result.publicationState())) {
+            throw ApiException.conflict("EXTERNAL_PUBLICATION_NOT_COMPLETED", "该远端发布任务尚未确认完成，请核对任务 ID、盘口及发布环境，待远端完成后再核验");
+        }
+        var matched = result.configurations().stream().filter(item -> "MATCHED".equals(item.state()))
+                .map(UnifiedRedemptionRemoteExecutorClient.ConfigurationVerification::configurationId)
+                .collect(java.util.stream.Collectors.toSet());
+        if (result.configurationError() != null || context.configurations().stream()
+                .anyMatch(ref -> !matched.contains(ref.configuration_id()))) {
+            throw ApiException.conflict("EXTERNAL_CONFIGURATION_MISMATCH", "远端发布已完成，但本批次配置未全部匹配，请核对配置后重试");
+        }
+        return required(tx().execute(status -> {
+            var latest = externalPublicationContext(batchId, request);
+            if (!context.equals(latest)) throw ApiException.conflict("REMOTE_PUBLISH_STATE_CHANGED", "配置或账号已变化，请刷新后重新核验");
+            var batch = requireBatch(batchId);
+            batch.setRemotePublishTaskId(context.taskId());
+            batch.setRemotePublishMode("EXTERNAL");
+            batch.setRemoteScheduledPublishAt(null);
+            batch.setRemotePublishCancelledAt(null);
+            batch.setRemotePublishError(null);
+            batch.setStatus("PUBLISHED");
+            batch.setPublishedAt(Instant.now());
+            batch.setRemotePublishNote(appendNote(batch.getRemotePublishNote(), "在远端后台发布；已核验发布任务 " + context.taskId() + " 完成，等待下载兑换码"));
+            batchRepository.save(batch);
+            auditService.record("REDEMPTION_EXTERNAL_PUBLICATION_VERIFIED", "REDEMPTION_CODE_BATCH", batchId.toString(), null, null,
+                    Map.of("remotePublishTaskId", context.taskId(), "remoteConnectionId", context.accountId(),
+                            "configurationCount", context.configurations().size(), "checkedAt", result.checkedAt()));
+            return batchId;
+        }));
+    }
+
+    private VerificationContext externalPublicationContext(Long batchId, RedemptionDtos.ExternalPublicationRequest request) {
+        var batch = requireFreshBatch(batchId);
+        if (!Objects.equals(request.rowVersion(), batch.getRowVersion()))
+            throw ApiException.conflict("BATCH_VERSION_CONFLICT", "批次已变化，请刷新后重试");
+        if (!"READY_TO_PUBLISH".equals(batch.getStatus()) || batch.getRemotePublishTaskId() != null)
+            throw ApiException.conflict("EXTERNAL_PUBLICATION_NOT_ALLOWED", "仅可为没有发布占位的待发布批次关联远端发布任务");
+        var account = remoteDirectory.requireEnabled(batch.getRemoteConnectionId());
+        List<UnifiedRedemptionRemoteExecutorClient.ConfigurationReference> refs = new ArrayList<>();
+        for (var issue : issueRepository.findByBatchIdOrderByClaimDateAscCampaignTierIdAsc(batchId)) {
+            entityManager.refresh(issue);
+            requireMatchingMarket(issue, account);
+            if (!"CREATED".equals(issue.getWorkflowStatus()) || issue.getRemoteConfigurationId() == null
+                    || issue.getRemoteGroupKey() == null || issue.getRemoteGroupKey().isBlank())
+                throw ApiException.conflict("EXTERNAL_CONFIGURATION_NOT_READY", "请先完成所有配置创建并确认兑换码组标识");
+            refs.add(new UnifiedRedemptionRemoteExecutorClient.ConfigurationReference(issue.getRemoteConfigurationId(),
+                    issue.getRemoteGroupKey(), batch.getRemoteKeyNumber() == null ? 1 : batch.getRemoteKeyNumber()));
+        }
+        if (refs.isEmpty()) throw ApiException.conflict("EXTERNAL_CONFIGURATION_NOT_READY", "当前批次没有可核验的配置");
+        return new VerificationContext(account.id(), request.remotePublishTaskId(), options(batch).publishEnvironment(), List.copyOf(refs));
+    }
+
     public UnifiedRedemptionRemoteExecutorClient.PublicationVerification verifyPublication(Long batchId) {
         var executor = unifiedRemoteExecutorClient.getIfAvailable();
         if (executor == null) throw ApiException.conflict("REMOTE_VERIFY_UNAVAILABLE", "当前环境不支持统一远端核验");

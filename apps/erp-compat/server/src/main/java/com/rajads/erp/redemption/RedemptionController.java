@@ -114,6 +114,13 @@ public class RedemptionController {
         return remoteOperations.verifyPublication(batchId);
     }
 
+    @PostMapping("/batches/{batchId}/external-publication")
+    @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionDtos.BatchDetailResponse adoptExternalPublication(@PathVariable Long batchId,
+            @Valid @RequestBody RedemptionDtos.ExternalPublicationRequest request) {
+        return service.batch(remoteOperations.adoptExternalPublication(batchId, request));
+    }
+
     @PostMapping("/batches/{batchId}/missing-configurations/repair")
     @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
     public RedemptionDtos.BatchDetailResponse startMissingConfigurationRepair(@PathVariable Long batchId,

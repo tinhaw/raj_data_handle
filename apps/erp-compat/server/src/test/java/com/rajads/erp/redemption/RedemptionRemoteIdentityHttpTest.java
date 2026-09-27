@@ -33,6 +33,86 @@ class RedemptionRemoteIdentityHttpTest {
     @MockBean UnifiedRedemptionRemoteExecutorClient executor;
 
     @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"success", "waiting", "failed", "unknown", "missing", "mismatch", "empty", "config_error", "unavailable", "stale", "reserved", "changed_market", "race", "config_race"})
+    void externalPublicationOnlyAssociatesVerifiedConfigurationsAndNeverPublishes(String scenario) throws Exception {
+        var session = login();
+        String prefix = "EXTERNAL_" + scenario.toUpperCase();
+        long market = market(session, prefix);
+        long accountId = account(session, market, prefix.toLowerCase());
+        var group = group(session, market, prefix + "_GROUP");
+        register(session, group).andExpect(status().isOk());
+        long batchId = group.at("/batch/id").asLong();
+        long issueId = group.at("/issues/0/id").asLong();
+        jdbc.update("update erp_compat_redemption_code_issues set remote_group_key='external-group' where id=?", issueId);
+        long version = jdbc.queryForObject("select row_version from erp_compat_redemption_code_batches where id=?", Long.class, batchId);
+        String state = switch (scenario) { case "waiting" -> "WAITING"; case "failed" -> "FAILED"; case "unknown" -> "UNKNOWN"; default -> "COMPLETED"; };
+        var configs = scenario.equals("empty") ? java.util.List.<UnifiedRedemptionRemoteExecutorClient.ConfigurationVerification>of()
+                : java.util.List.of(new UnifiedRedemptionRemoteExecutorClient.ConfigurationVerification("manual-scope-id",
+                        scenario.equals("missing") ? "MISSING" : scenario.equals("mismatch") ? "MISMATCH" : "MATCHED"));
+        var verified = new UnifiedRedemptionRemoteExecutorClient.PublicationVerification("987", 4, state, false,
+                configs, java.time.Instant.now().toString(), scenario.equals("config_error") ? "configuration query failed" : null);
+        when(executor.verifyPublication(eq(accountId), eq(batchId), eq("987"), eq("test"), anyList())).thenReturn(verified);
+        if (scenario.equals("unavailable")) when(executor.verifyPublication(anyLong(), anyLong(), anyString(), anyString(), anyList()))
+                .thenThrow(new com.rajads.erp.identity.CompatibilityIdentityUnavailableException("verification unavailable"));
+        if (scenario.equals("reserved")) jdbc.update("update erp_compat_redemption_code_batches set remote_publish_task_id='PENDING:other' where id=?", batchId);
+        if (scenario.equals("changed_market")) {
+            long other = market(session, prefix + "_OTHER");
+            long otherAccount = account(session, other, "external-other");
+            jdbc.update("update erp_compat_redemption_code_batches set remote_connection_id=? where id=?", otherAccount, batchId);
+        }
+        if (scenario.equals("race") || scenario.equals("config_race")) {
+            when(executor.verifyPublication(anyLong(), anyLong(), anyString(), anyString(), anyList())).thenAnswer(invocation -> {
+                if (scenario.equals("race")) jdbc.update("update erp_compat_redemption_code_batches set row_version=row_version+1 where id=?", batchId);
+                else jdbc.update("update erp_compat_redemption_code_issues set remote_group_key='changed-group' where id=?", issueId);
+                return verified;
+            });
+        }
+        String path = "/api/v1/redemption-campaigns/batches/" + batchId + "/external-publication";
+        var request = mapper.writeValueAsString(java.util.Map.of("rowVersion", scenario.equals("stale") ? version - 1 : version, "remotePublishTaskId", "987"));
+        var result = mvc.perform(post(path).session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(request));
+        if (scenario.equals("success")) {
+            result.andExpect(status().isOk()).andExpect(jsonPath("$.data.batch.status").value("PUBLISHED"))
+                    .andExpect(jsonPath("$.data.batch.remotePublishMode").value("EXTERNAL"))
+                    .andExpect(jsonPath("$.data.batch.remotePublishTaskId").value("987"))
+                    .andExpect(jsonPath("$.data.issues[0].workflowStatus").value("CREATED"));
+            assertThat(jdbc.queryForObject("select remote_publish_task_id from erp_compat_redemption_code_batches where id=?", String.class, batchId)).isEqualTo("987");
+            // Replaying the association cannot overwrite an existing task.
+            mvc.perform(post(path).session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(request)).andExpect(status().isConflict());
+            when(executor.download(eq(accountId), eq(issueId), eq("manual-scope-id"), eq("external-group"), eq(1)))
+                    .thenReturn(new UnifiedRedemptionRemoteExecutorClient.DownloadedCodes(java.util.List.of("EXTERNAL-CODE-1"), "external-group"));
+            mvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + issueId + "/remote-download").session(session).with(csrf()))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.batch.status").value("COMPLETED"))
+                    .andExpect(jsonPath("$.data.issues[0].redemptionCode").value("EXTERNAL-CODE-1"));
+            assertThat(jdbc.queryForObject("select workflow_status from erp_compat_redemption_code_issues where id=?", String.class, issueId)).isEqualTo("CODE_IMPORTED");
+        } else {
+            if (scenario.equals("unavailable")) result.andExpect(status().isServiceUnavailable());
+            else result.andExpect(status().isConflict());
+            assertThat(jdbc.queryForObject("select status from erp_compat_redemption_code_batches where id=?", String.class, batchId)).isEqualTo("READY_TO_PUBLISH");
+            assertThat(jdbc.queryForObject("select remote_publish_mode from erp_compat_redemption_code_batches where id=?", String.class, batchId)).isNull();
+            verify(executor, never()).download(anyLong(), anyLong(), anyString(), any(), anyInt());
+        }
+        verify(executor, never()).publish(anyLong(), anyLong(), anyString(), anyBoolean(), any(), anyBoolean());
+        verify(executor, never()).create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any());
+        verify(executor, never()).cancelScheduledPublish(anyLong(), anyLong(), anyString());
+        verifyNoInteractions(standalone, gate);
+    }
+
+    @Test
+    void externalPublicationRejectsInvalidInputAndRequiresLoginAndCsrf() throws Exception {
+        var session = login();
+        String path = "/api/v1/redemption-campaigns/batches/999999/external-publication";
+        for (String invalid : java.util.List.of("{}", "{\"rowVersion\":0,\"remotePublishTaskId\":\"0\"}", "{\"rowVersion\":0,\"remotePublishTaskId\":\"other\"}")) {
+            mvc.perform(post(path).session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(invalid))
+                    .andExpect(status().isBadRequest());
+        }
+        mvc.perform(post(path).with(csrf()).contentType(MediaType.APPLICATION_JSON).content("{\"rowVersion\":0,\"remotePublishTaskId\":\"987\"}"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post(path).session(session).contentType(MediaType.APPLICATION_JSON).content("{\"rowVersion\":0,\"remotePublishTaskId\":\"987\"}"))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(executor, standalone);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
     void missingConfigurationRepairRequiresFreshAbsenceAndNewPublicationBeforeDownload(boolean scheduled) throws Exception {
         var session = login();
