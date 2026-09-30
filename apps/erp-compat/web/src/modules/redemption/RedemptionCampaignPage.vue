@@ -118,6 +118,7 @@ const publicationRequests = new Map<string, Promise<PublicationVerification | un
 const verificationDialogVisible = ref(false)
 const verificationTarget = ref<CodeGroupRow>()
 const resolvingMissingBatchId = ref<string | number>()
+const continuingCreationBatchId = ref<string | number>()
 function missingConfigurations(row: CodeGroupRow) {
   const check = publicationCheck(row)
   return (check?.configurations || []).filter(item => item.state === 'MISSING').map((item) => ({
@@ -584,6 +585,13 @@ function pendingRemoteCreationIssues(row: CodeGroupRow) {
 }
 function hasRemoteCreationInProgress(row: CodeGroupRow) {
   return row.detail.issues.some((issue) => issue.workflowStatus === 'CREATING_REMOTE')
+}
+function uncreatedIssues(row: CodeGroupRow) {
+  return pendingRemoteCreationIssues(row).filter(issue => !issue.remoteConfigurationId && !issue.remoteReferenceId)
+}
+function canContinuePendingCreation(row: CodeGroupRow) {
+  return canGenerate.value && row.detail.batch.status === 'CREATING' && !row.detail.batch.publishedAt
+    && !hasRemoteCreationInProgress(row) && uncreatedIssues(row).length > 0
 }
 function failedIssues(row: CodeGroupRow) {
   return row.detail.issues.filter((issue) => issue.workflowStatus === 'FAILED' || (issue.workflowStatus === 'PUBLISHED' && Boolean(issue.remoteError)))
@@ -1536,6 +1544,53 @@ async function retryRemoteCreation(issue: RedemptionCodeIssue) {
   }
 }
 
+async function continuePendingCreation(row: CodeGroupRow) {
+  if (!canContinuePendingCreation(row) || isProcessing(row) || continuingCreationBatchId.value !== undefined) return
+  const batchId = row.detail.batch.id
+  continuingCreationBatchId.value = batchId
+  markProcessing(batchId, true)
+  try {
+    let current = { campaign: row.campaign, detail: await api.redemption.batch(batchId) }
+    replaceCodeGroup(current)
+    if (!canContinuePendingCreation(current)) { ElMessage.warning('任务状态已变化，请查看最新明细'); return }
+    const targets = uncreatedIssues(current).map(issue => issue.id)
+    try {
+      await ElMessageBox.confirm(
+        `将继续创建 ${remoteMarketLabel(row)} 的 ${targets.length} 条待创建配置。已有配置将保留；创建完成后请另行选择发布方式。`,
+        '继续创建剩余配置', { type: 'warning', confirmButtonText: '继续创建', cancelButtonText: '取消' },
+      )
+    } catch { return }
+    for (const [index, issueId] of targets.entries()) {
+      // Refresh after confirmation and between writes; another page may have made progress.
+      current = { campaign: row.campaign, detail: await api.redemption.batch(batchId) }
+      replaceCodeGroup(current)
+      if (current.detail.batch.status !== 'CREATING' || current.detail.batch.publishedAt || hasRemoteCreationInProgress(current)) {
+        ElMessage.warning('任务状态已变化，已停止继续创建，请查看最新明细')
+        return
+      }
+      if (!uncreatedIssues(current).some(issue => String(issue.id) === String(issueId))) continue
+      const requestStartedAt = Date.now()
+      current.detail = await api.redemption.createRemoteConfiguration(issueId)
+      replaceCodeGroup(current)
+      if (index < targets.length - 1) {
+        const intervalMs = Math.max(1, current.detail.batch.remoteOptions?.creationIntervalSeconds ?? 5) * 1000
+        await wait(Math.max(0, intervalMs - (Date.now() - requestStartedAt)))
+      }
+    }
+    ElMessage.success(current.detail.batch.status === 'READY_TO_PUBLISH'
+      ? '剩余配置已创建完成，请选择发布方式后发布' : '本次待创建项已处理，请查看最新任务明细')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '继续创建失败，请查看最新明细后处理')
+  } finally {
+    try {
+      replaceCodeGroup({ campaign: row.campaign, detail: await api.redemption.batch(batchId) })
+      await loadCodeGroups()
+    } catch { ElMessage.warning('任务明细刷新失败，请点击刷新查看最新状态') }
+    continuingCreationBatchId.value = undefined
+    markProcessing(batchId, false)
+  }
+}
+
 async function retrySelectedFailedRemoteCreations() {
   const group = selectedGroup.value
   if (!group) return
@@ -1963,6 +2018,10 @@ onUnmounted(() => {
           <el-tab-pane v-for="member in selectedTaskMembers" :key="member.detail.batch.id" :name="String(member.detail.batch.id)" :label="taskMemberLabel(member)" />
         </el-tabs>
         <p v-if="selectedTaskMembers.length > 1" class="field-note task-detail-note">各盘口保留独立的远端创建、发布与下载进度；系统会按盘口顺序完成创建，所有盘口完成后可在任务列表下载同一份多 Sheet Excel。</p>
+        <div v-if="canContinuePendingCreation(selectedGroup)" class="repair-action-strip" role="status">
+          <span>当前盘口还有 {{ uncreatedIssues(selectedGroup).length }} 条配置待创建，可继续处理。</span>
+          <el-button type="warning" :loading="continuingCreationBatchId === selectedGroup.detail.batch.id" :disabled="isProcessing(selectedGroup) || continuingCreationBatchId !== undefined" @click="continuePendingCreation(selectedGroup)">继续创建剩余配置（{{ uncreatedIssues(selectedGroup).length }}）</el-button>
+        </div>
         <div v-if="isRepairing(selectedGroup)" class="repair-action-strip" role="status">
           <span>{{ repairReadyForPublish(selectedGroup) ? '补齐配置已创建，尚未再次发布；请选择发布方式。' : '缺失配置仍在补齐；完成后再选择发布方式。' }}</span>
           <el-button v-if="canContinueRepair(selectedGroup)" type="warning" :loading="resolvingMissingBatchId === selectedGroup.detail.batch.id || publishing" @click="handleRepairAction(selectedGroup)">{{ repairActionLabel(selectedGroup) }}</el-button>
