@@ -166,6 +166,8 @@ function codeAcquisitionStatus(row: CodeGroupRow) {
   return acquisitionLabel(isSuccess(row), row.detail.issues.some(issue => Boolean(issue.remoteError)), publicationCheck(row))
 }
 function taskAcquisitionStatus(task: CodeGroupTask) {
+  const completed = task.members.filter(isSuccess).length
+  if (isMultiMarketTask(task) && completed > 0 && completed < task.members.length) return `${completed}/${task.members.length} 个盘口兑换码已入库`
   return [...new Set(task.members.filter(row => ['PUBLISHED', 'COMPLETED'].includes(row.detail.batch.status)).map(codeAcquisitionStatus))].join(' / ')
 }
 async function verifyPendingPublications() {
@@ -282,7 +284,7 @@ const codeGroupTaskColumns: Columns<CodeGroupTask> = [
   { key: 'claimDate', dataKey: 'id', title: '开始兑换日期', width: 175 },
   { key: 'account', dataKey: 'id', title: '远端账号', width: 135 },
   { key: 'market', dataKey: 'id', title: '盘口', width: 150 },
-  { key: 'status', dataKey: 'id', title: '发布 / 兑换码状态', width: 160, align: 'center' },
+  { key: 'status', dataKey: 'id', title: '发布 / 兑换码状态', width: 200, align: 'center' },
   { key: 'labels', dataKey: 'id', title: '用户类型 / 标签 ID', width: 240 },
   { key: 'redemptionType', dataKey: 'id', title: '兑换码类型', width: 128 },
   { key: 'singleKeyLimit', dataKey: 'id', title: '单兑换码领取次数', width: 160, align: 'center' },
@@ -586,6 +588,12 @@ function pendingRemoteCreationIssues(row: CodeGroupRow) {
 function hasRemoteCreationInProgress(row: CodeGroupRow) {
   return row.detail.issues.some((issue) => issue.workflowStatus === 'CREATING_REMOTE')
 }
+function isCreatingConfigurations(row: CodeGroupRow) {
+  return row.detail.batch.status === 'CREATING' && isProcessing(row)
+}
+function confirmedConfigurationCount(row: CodeGroupRow) {
+  return row.detail.issues.filter(issue => ['CREATED', 'PUBLISHED', 'CODE_IMPORTED'].includes(issue.workflowStatus || '')).length
+}
 function uncreatedIssues(row: CodeGroupRow) {
   return pendingRemoteCreationIssues(row).filter(issue => !issue.remoteConfigurationId && !issue.remoteReferenceId)
 }
@@ -622,7 +630,7 @@ function groupRemark(row: CodeGroupRow) {
 }
 function groupStatus(row: CodeGroupRow) {
   if (isSuccess(row)) return { text: '发布完成', type: 'success' as const }
-  if (isRepairing(row)) return { text: '补齐缺失配置中', type: 'warning' as const }
+  if (isRepairing(row)) return { text: isCreatingConfigurations(row) ? '补齐缺失配置中' : hasRemoteCreationInProgress(row) ? '创建结果待确认' : repairReadyForPublish(row) ? '待发布' : '待补齐缺失配置', type: 'warning' as const }
   if (row.detail.batch.status === 'PUBLISHED') {
     const check = publicationCheck(row)
     return { text: publicationLabel(check), type: check?.publicationState === 'COMPLETED' ? 'success' as const : check?.publicationState === 'FAILED' ? 'danger' as const : 'info' as const }
@@ -630,12 +638,15 @@ function groupStatus(row: CodeGroupRow) {
   if (row.detail.batch.remotePublishError) return { text: '发布失败', type: 'danger' as const }
   if (failedRemoteCreationIssues(row).length) return { text: '配置创建失败', type: 'danger' as const }
   if (row.detail.batch.status === 'READY_TO_PUBLISH') return { text: '待发布', type: 'info' as const }
-  return { text: '配置创建中', type: 'info' as const }
+  if (isCreatingConfigurations(row)) return { text: '配置创建中', type: 'warning' as const }
+  if (hasRemoteCreationInProgress(row)) return { text: '创建结果待确认', type: 'warning' as const }
+  if (pendingRemoteCreationIssues(row).length) return { text: '待继续创建', type: 'warning' as const }
+  return { text: '创建状态待核对', type: 'warning' as const }
 }
 function groupProgress(row: CodeGroupRow) {
   const batch = row.detail.batch
   if (isSuccess(row)) return `${batch.importedCodeCount} / ${batch.plannedCodeCount} 个兑换码已入库`
-  if (isRepairing(row)) return `${batch.importedCodeCount} / ${batch.plannedCodeCount} 个兑换码已入库；缺失配置正在补齐`
+  if (isRepairing(row)) return `${batch.importedCodeCount} / ${batch.plannedCodeCount} 个兑换码已入库；${groupStatus(row).text}`
   if (batch.remotePublishError) return `远端发布失败：${batch.remotePublishError}`
   if (batch.status === 'PUBLISHED') return `${publicationLabel(publicationCheck(row))}；${codeAcquisitionStatus(row)}`
   if (failedIssues(row).length) return `${batch.createdCount} / ${batch.expectedCodeCount} 条远端配置已创建，${failedIssues(row).length} 个任务失败`
@@ -694,21 +705,49 @@ function taskSingleKeyLimit(task: CodeGroupTask) {
 }
 function taskStatus(task: CodeGroupTask) {
   if (!isMultiMarketTask(task)) return groupStatus(taskPrimary(task))
-  if (task.members.some(isRepairing)) return { text: '补齐缺失配置中', type: 'warning' as const }
+  // Creation problems must remain visible even when other markets have already published.
+  if (task.members.some(member => failedRemoteCreationIssues(member).length > 0)) return { text: '配置创建失败', type: 'danger' as const }
+  if (task.members.some(isCreatingConfigurations)) return { text: task.members.some(isRepairing) ? '补齐缺失配置中' : '配置创建中', type: 'warning' as const }
+  if (task.members.some(hasRemoteCreationInProgress)) return { text: '创建结果待确认', type: 'warning' as const }
+  if (task.members.some(member => isRepairing(member) && !repairReadyForPublish(member))) return { text: '待补齐缺失配置', type: 'warning' as const }
+  if (task.members.some(member => member.detail.batch.status === 'CREATING' && pendingRemoteCreationIssues(member).length > 0)) return { text: '待继续创建', type: 'warning' as const }
   if (task.members.some(member => member.detail.batch.remotePublishError)) return { text: '部分发布失败', type: 'danger' as const }
   if (task.members.every(isSuccess)) return { text: '生成成功', type: 'success' as const }
   if (task.members.every(member => isSuccess(member) || publicationCheck(member)?.publicationState === 'COMPLETED')) return { text: '发布完成', type: 'success' as const }
   if (task.members.some(member => member.detail.batch.status === 'PUBLISHED')) return { text: '发布待核验', type: 'info' as const }
-  if (task.members.every((member) => member.detail.batch.status === 'READY_TO_PUBLISH')) return { text: '待发布', type: 'info' as const }
+  if (task.members.every((member) => isSuccess(member) || member.detail.batch.status === 'READY_TO_PUBLISH' || repairReadyForPublish(member))) return { text: '待发布', type: 'info' as const }
   if (task.members.some(isScheduledPublish)) return { text: '发布中', type: 'warning' as const }
-  if (task.members.some(hasRemoteCreationInProgress)) return { text: '生成中', type: 'warning' as const }
-  if (task.members.some((member) => pendingRemoteCreationIssues(member).length > 0)) return { text: '生成中', type: 'warning' as const }
-  return { text: '生成中', type: 'warning' as const }
+  return { text: '创建状态待核对', type: 'warning' as const }
+}
+function taskCreationSummary(task: CodeGroupTask) {
+  return task.members.filter(member => member.detail.batch.status === 'CREATING').map(member => {
+    const pending = pendingRemoteCreationIssues(member).length
+    const failed = failedRemoteCreationIssues(member).length
+    const uncertain = member.detail.issues.filter(issue => issue.workflowStatus === 'CREATING_REMOTE').length
+    const states = [failed ? `${failed} 条创建失败` : '', uncertain && !isCreatingConfigurations(member) ? `${uncertain} 条请求待确认` : '', pending ? `${pending} 条待创建` : ''].filter(Boolean)
+    if (isCreatingConfigurations(member)) states.unshift('正在创建')
+    return states.length ? `${remoteMarketLabel(member)}：${states.join('，')}` : ''
+  }).filter(Boolean).join('；')
+}
+function taskPendingCreationMembers(task: CodeGroupTask) {
+  return task.members.filter(canContinuePendingCreation)
+}
+function taskPendingCreationCount(task: CodeGroupTask) {
+  return taskPendingCreationMembers(task).reduce((total, member) => total + uncreatedIssues(member).length, 0)
+}
+function canOpenPendingCreationTask(task: CodeGroupTask) {
+  return taskPendingCreationCount(task) > 0 && !working.value && continuingCreationBatchId.value === undefined
+    && !task.members.some(member => isProcessing(member) || hasRemoteCreationInProgress(member))
+}
+async function openPendingCreationTask(task: CodeGroupTask) {
+  if (!canOpenPendingCreationTask(task)) return
+  const member = taskPendingCreationMembers(task)[0]
+  if (member) await openTaskDetail(task, member.detail.batch.id)
 }
 function taskProgress(task: CodeGroupTask) {
   if (!isMultiMarketTask(task)) return groupProgress(taskPrimary(task))
   const expected = task.members.reduce((total, member) => total + member.detail.batch.expectedCodeCount, 0)
-  const created = task.members.reduce((total, member) => total + member.detail.batch.createdCount, 0)
+  const created = task.members.reduce((total, member) => total + confirmedConfigurationCount(member), 0)
   const imported = task.members.reduce((total, member) => total + member.detail.batch.importedCodeCount, 0)
   const plannedCodes = task.members.reduce((total, member) => total + member.detail.batch.plannedCodeCount, 0)
   if (task.members.every(isSuccess)) return `${imported} / ${plannedCodes} 个兑换码已入库`
@@ -1491,15 +1530,15 @@ async function openGroupDetail(row: CodeGroupRow) {
   detailDrawerVisible.value = true
 }
 
-async function openTaskDetail(task: CodeGroupTask) {
+async function openTaskDetail(task: CodeGroupTask, preferredBatchId?: string | number) {
   clearFailedIssueSelection()
   const members = await Promise.all(task.members.map(async (member) => ({
     campaign: member.campaign,
     detail: await api.redemption.batch(member.detail.batch.id),
   })))
   selectedTaskMembers.value = members
-  selectedGroup.value = members[0]
-  activeTaskBatchId.value = members[0] ? String(members[0].detail.batch.id) : ''
+  selectedGroup.value = members.find(member => String(member.detail.batch.id) === String(preferredBatchId)) || members[0]
+  activeTaskBatchId.value = selectedGroup.value ? String(selectedGroup.value.detail.batch.id) : ''
   detailDrawerVisible.value = true
 }
 
@@ -1795,7 +1834,11 @@ onUnmounted(() => {
                 <span v-else-if="column.key === 'claimDate'" class="virtual-cell" :title="`${formatDate(taskPrimary(row).detail.batch.claimDateFrom)} 至 ${formatDate(taskPrimary(row).detail.batch.claimDateTo)}`">{{ formatDate(taskPrimary(row).detail.batch.claimDateFrom) }} 至 {{ formatDate(taskPrimary(row).detail.batch.claimDateTo) }}</span>
                 <span v-else-if="column.key === 'account'" class="virtual-cell" :title="taskAccounts(row)">{{ taskAccounts(row) }}</span>
                 <span v-else-if="column.key === 'market'" class="virtual-cell" :title="taskMarkets(row)">{{ taskMarkets(row) }}</span>
-                <div v-else-if="column.key === 'status'" class="publication-status-cell"><el-tag :type="taskStatus(row).type" effect="light">{{ taskStatus(row).text }}</el-tag><small>{{ taskAcquisitionStatus(row) }}</small></div>
+                <div v-else-if="column.key === 'status'" class="publication-status-cell">
+                  <el-tag :type="taskStatus(row).type" effect="light">{{ taskStatus(row).text }}</el-tag>
+                  <small v-if="taskCreationSummary(row)" class="creation-status-summary" :title="taskCreationSummary(row)">{{ taskCreationSummary(row) }}</small>
+                  <small v-if="taskAcquisitionStatus(row)">{{ taskAcquisitionStatus(row) }}</small>
+                </div>
                 <span v-else-if="column.key === 'labels'" class="virtual-cell" :title="taskLabels(row)">{{ taskLabels(row) }}</span>
                 <span v-else-if="column.key === 'redemptionType'" class="virtual-cell">{{ redemptionTypeLabel(taskPrimary(row).detail.batch.redemptionType) }}</span>
                 <span v-else-if="column.key === 'singleKeyLimit'" class="virtual-cell" :title="taskSingleKeyLimit(row)">{{ taskSingleKeyLimit(row) }}</span>
@@ -1806,6 +1849,7 @@ onUnmounted(() => {
                 <span v-else-if="column.key === 'createdAt'" class="virtual-cell">{{ formatDateTime(taskCreatedAt(row)) }}</span>
                 <div v-else-if="column.key === 'actions'" class="virtual-actions">
                   <el-button link type="primary" size="small" :loading="row.members.some(isProcessing)" @click="isMultiMarketTask(row) ? openTaskDetail(row) : openGroupDetail(taskPrimary(row))">查看任务</el-button>
+                  <el-button v-if="taskPendingCreationCount(row)" link type="warning" size="small" :disabled="!canOpenPendingCreationTask(row)" @click="openPendingCreationTask(row)">处理待创建（{{ taskPendingCreationCount(row) }}）</el-button>
                   <template v-if="!isMultiMarketTask(row)">
                     <el-button v-if="taskPrimary(row).detail.batch.status === 'PUBLISHED'" link type="primary" size="small" :loading="verifyingPublicationIds.has(String(taskPrimary(row).detail.batch.id))" @click="inspectPublication(taskPrimary(row))">{{ missingConfigurations(taskPrimary(row)).length ? '处理缺失配置' : '查看核验结果' }}</el-button>
                     <el-button v-if="hasPendingPublishReservation(taskPrimary(row))" link type="warning" size="small" :loading="recoveringPublishId === taskPrimary(row).detail.batch.id" @click="recoverPublishReservation(taskPrimary(row))">恢复发布</el-button>
@@ -2077,6 +2121,7 @@ onUnmounted(() => {
 <style scoped>
 .publication-status-cell { display: flex; flex-direction: column; align-items: center; gap: 5px; }
 .publication-status-cell small { color: #65748b; }
+.publication-status-cell .creation-status-summary { display: -webkit-box; overflow: hidden; max-width: 100%; color: #9a3412; font-size: 12px; line-height: 15px; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .redemption-alert { margin-bottom: 18px; }
 .code-group-list { overflow: hidden; }
 .code-group-list__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 19px 20px 16px; border-bottom: 1px solid #eaecf0; }
