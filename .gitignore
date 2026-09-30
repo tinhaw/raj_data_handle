@@ -29,6 +29,7 @@ dist/
 *.secrets
 deploy/secrets/*.env
 !deploy/secrets/*.env.example
+deploy/secrets/erp-p5-*.json
 deploy/香港复审ECS信息.txt
 deploy/香港复审主机数据处理数据库信息.txt
 deploy/香港数据分析ECS信息.txt

@@ -108,8 +108,9 @@ Connector 需要同时识别 HTTP 状态、JSON 业务失败和登录页响应�
 
 | endpoint_key | 方法 | 远端路径 | 用途 |
 |---|---|---|---|
-| `withdraw_order_list` | POST | `/api/operate/withdrawOrder/index` | 提现订单 |
-| `withdraw_order_summary` | POST | `/api/operate/withdrawOrder/summary` | 提现汇总 |
+| `withdraw_order_export` | POST | `/api/operate/withdrawOrder/export` | 当前提现订单缓存的完整自然日 Excel 导出 |
+| `withdraw_order_list` | POST | `/api/operate/withdrawOrder/index` | Token 探测、后续精确复查或接口联调；不作为当前提现明细页刷新通道 |
+| `withdraw_order_summary` | POST | `/api/operate/withdrawOrder/summary` | 提现汇总；待处理提现监控仅读取 `status=0`（待审核）与 `status=4`（待审查）的 `data.order_num` |
 | `charge_order_list` | GET | `/api/operate/chargeOrder/index` | 充值订单 |
 | `charge_order_summary` | GET | `/api/operate/chargeOrder/summary` | 充值汇总 |
 | `player_info` | GET | `/api/operate/playerInfoList/index` | 用户信息 |
@@ -118,10 +119,17 @@ Connector 需要同时识别 HTTP 状态、JSON 业务失败和登录页响应�
 | `player_value` | GET | `/api/operate/playerInfoList/getUserValue` | 用户价值 |
 | `agent_lower_info` | GET | `/api/operate/agentLowerInfo/index` | 代理下级信息 |
 
-提现接口可能返回银行卡、姓名、手机号和 IP 等大量 PII。遗漏比对只允许提取订单号、
-金额、状态、渠道和必要时间字段，不保存完整 `info` 对象。其他 P1 用户接口正式接入前
-必须逐字段批准采集范围，并验证是否存在可靠的增量时间字段。
-参考同步逻辑显示部分充值查询窗口最多约 30 天；联调时应重新测量，并由窗口切片器自动拆分。
+提现 Excel 导出可能含银行卡、姓名、手机号、银行、IFSC、失败原因和 IP 等敏感内容。
+当前提现订单明细只从 Excel 安全白名单提取主键、订单号、渠道、金额、状态、必要时间与
+审核人，原文件仅在内存解析后丢弃；不得保存完整 `info` 对象或任一未批准的导出列。
+按盘口业务时区每日在系统配置的提现导出时间导出前一天的完整自然日（默认 `00:05:01`），手动刷新可选前天、昨天、今天。
+具体字段和指标口径见[提现订单字段对照表](提现订单字段对照表.md)。
+
+“待处理提现监控”是独立的实时只读页面，不使用上述 Excel 缓存。页面打开时及其配置的
+秒级刷新周期到达时，统一按 `Asia/Kolkata` 计算今天全天，或昨天全天＋今天全天的查询范围，
+并对每个已启用盘口依次请求两次 `withdraw_order_summary`。只投影并返回两个状态的计数、查询时间和盘口级成功/失败状态；
+不保留订单明细、请求正文或远端响应。某一盘口失败时，合计只包含成功盘口，页面必须明确标记
+部分结果。
 
 ## 5. P1/P2 行为与游戏接口
 
@@ -133,7 +141,9 @@ Connector 需要同时识别 HTTP 状态、JSON 业务失败和登录页响应�
 | `game_vendor_list` | GET | `/api/game/vendor/list` | 游戏厂商字典 |
 | `game_info_list` | GET | `/api/game/info/list` | 游戏字典 |
 
-Excel 导出相关接口不建议作为核心采集通道。优先使用分页 JSON 接口，以便检查、重试和幂等落库。
+充值、提现的订单缓存都以远端完整自然日 Excel 导出为当前采集通道。解析器在内存完成
+严格表头白名单、主键、金额和状态校验；整份文件成功后再幂等写入本地缓存，失败时不覆盖
+旧数据。分页 JSON 仍可保留给 Token 探测、精确复查和后续接口联调，不作为页面刷新通道。
 
 ## 6. 字典接口
 

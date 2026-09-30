@@ -1,24 +1,37 @@
 <script setup lang="ts">
-import { Plus, Refresh } from '@element-plus/icons-vue'
+import { Key, Plus, Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { onMounted, reactive, ref } from 'vue'
 
 import { createUser, fetchUsers, updateUser } from '../api/auth'
 import { apiErrorMessage } from '../api/client'
-import type { UserRecord } from '../types'
+import { fetchErpRoles, fetchErpUserAccess, updateErpUserAccess } from '../api/erpAccess'
+import { fetchErpOperators } from '../api/erpOperators'
+import type { ErpOperator, ErpRoleDefinition, UserRecord } from '../types'
 import { formatDateTime } from '../ui'
 
 const loading = ref(false)
 const saving = ref(false)
 const rows = ref<UserRecord[]>([])
 const dialogVisible = ref(false)
+const erpAccessDialogVisible = ref(false)
 const editingId = ref<number | null>(null)
+const accessUser = ref<UserRecord | null>(null)
+const accessLoading = ref(false)
+const accessSaving = ref(false)
+const roleDefinitions = ref<ErpRoleDefinition[]>([])
+const operatorRows = ref<ErpOperator[]>([])
 const form = reactive({
   username: '',
   displayName: '',
   password: '',
   role: 'user' as 'admin' | 'user',
   isActive: true,
+})
+const erpAccessForm = reactive({
+  roleGrants: [] as string[],
+  allOperators: false,
+  operatorIds: [] as string[],
 })
 
 async function load(): Promise<void> {
@@ -80,6 +93,46 @@ async function save(): Promise<void> {
   }
 }
 
+async function openErpAccess(row: UserRecord): Promise<void> {
+  accessUser.value = row
+  accessLoading.value = true
+  try {
+    const [access, roles, operators] = await Promise.all([
+      fetchErpUserAccess(row.id),
+      fetchErpRoles(),
+      fetchErpOperators(true),
+    ])
+    roleDefinitions.value = roles
+    operatorRows.value = operators
+    erpAccessForm.roleGrants = access.roleGrants
+    erpAccessForm.allOperators = access.allOperators
+    erpAccessForm.operatorIds = access.operatorIds
+    erpAccessDialogVisible.value = true
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, 'ERP 授权配置加载失败。'))
+  } finally {
+    accessLoading.value = false
+  }
+}
+
+async function saveErpAccess(): Promise<void> {
+  if (!accessUser.value) return
+  accessSaving.value = true
+  try {
+    await updateErpUserAccess(accessUser.value.id, {
+      roleGrants: erpAccessForm.roleGrants,
+      allOperators: erpAccessForm.allOperators,
+      operatorIds: erpAccessForm.allOperators ? [] : erpAccessForm.operatorIds,
+    })
+    ElMessage.success('ERP 角色与投放公司范围已保存。')
+    erpAccessDialogVisible.value = false
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, 'ERP 授权配置保存失败。'))
+  } finally {
+    accessSaving.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -89,7 +142,7 @@ onMounted(load)
       <div>
         <span class="page-eyebrow">Account management</span>
         <h1>用户管理</h1>
-        <p>管理员与普通用户拥有相同业务权限；管理员额外维护系统设置。</p>
+        <p>平台角色控制登录与系统管理；ERP 角色和投放公司范围在用户级单独授予。</p>
       </div>
       <div class="header-actions">
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
@@ -115,14 +168,23 @@ onMounted(load)
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="ERP 范围" min-width="150">
+          <template #default="{ row }">
+            <span v-if="row.role === 'admin'">全部权限与全部公司</span>
+            <span v-else class="muted">按 ERP 授权配置</span>
+          </template>
+        </el-table-column>
         <el-table-column label="最后登录" min-width="180">
           <template #default="{ row }">{{ formatDateTime(row.lastLoginAt) }}</template>
         </el-table-column>
         <el-table-column label="创建时间" min-width="180">
           <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
+        <el-table-column label="操作" width="190" fixed="right">
           <template #default="{ row }">
+            <el-button v-if="row.role !== 'admin'" text type="primary" :icon="Key" @click="openErpAccess(row)">
+              ERP 授权
+            </el-button>
             <el-button text type="primary" @click="edit(row)">编辑</el-button>
           </template>
         </el-table-column>
@@ -157,5 +219,61 @@ onMounted(load)
         <el-button type="primary" :loading="saving" @click="save">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="erpAccessDialogVisible"
+      :title="`ERP 授权：${accessUser?.displayName || ''}`"
+      width="680px"
+    >
+      <el-alert
+        title="仅影响本地 ERP 权限"
+        description="角色和投放公司范围不会改变平台登录角色，也不会为账号自动授予远端连接、标签同步或兑换码发布能力。"
+        type="info"
+        show-icon
+        :closable="false"
+      />
+      <el-form v-loading="accessLoading" label-position="top" class="erp-access-form">
+        <el-form-item label="ERP 角色">
+          <el-checkbox-group v-model="erpAccessForm.roleGrants" class="role-options">
+            <el-checkbox v-for="role in roleDefinitions" :key="role.code" :label="role.code">
+              {{ role.label }}
+            </el-checkbox>
+          </el-checkbox-group>
+        </el-form-item>
+        <el-form-item label="投放公司范围">
+          <el-switch v-model="erpAccessForm.allOperators" active-text="全部投放公司" inactive-text="指定投放公司" />
+          <el-select
+            v-if="!erpAccessForm.allOperators"
+            v-model="erpAccessForm.operatorIds"
+            multiple
+            filterable
+            placeholder="请选择可访问的投放公司"
+            style="width: 100%; margin-top: 12px"
+          >
+            <el-option
+              v-for="operator in operatorRows"
+              :key="operator.id"
+              :label="`${operator.name} · ${operator.code}`"
+              :value="operator.id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="erpAccessDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="accessSaving" @click="saveErpAccess">保存授权</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.erp-access-form {
+  margin-top: 18px;
+}
+
+.role-options {
+  display: grid;
+  gap: 12px;
+}
+</style>

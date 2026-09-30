@@ -27,6 +27,8 @@ from packages.storage import LocalFileStorage
 
 
 class FakeChargeClient:
+    exact_search_calls: list[dict[str, Any]] = []
+
     def __init__(self, **_: Any) -> None:
         pass
 
@@ -56,7 +58,8 @@ class FakeChargeClient:
             1,
         )
 
-    async def exact_search(self, **_: Any) -> ExactSearchResult:
+    async def exact_search(self, **kwargs: Any) -> ExactSearchResult:
+        self.exact_search_calls.append(kwargs)
         return ExactSearchResult(orders=[], complete=True)
 
 
@@ -64,7 +67,7 @@ def _write_payment_file(path: Path) -> None:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "payin_test"
-    sheet.append(["商户订单号", "平台订单号", "订单金额", "订单状态", "订单时间"])
+    sheet.append(["商户单号（自定义）", "三方单号（自定义）", "订单金额", "订单状态", "订单时间"])
     sheet.append(["merchant-missing", "platform-missing", "10.00", "成功", "2026-07-01 12:00:00"])
     sheet.append(
         [
@@ -84,6 +87,7 @@ async def test_executor_persists_confirmed_missing_and_remote_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    FakeChargeClient.exact_search_calls = []
     configured = Settings(
         secret_key="test-secret-key-that-is-longer-than-32-characters",
         database_url="sqlite+aiosqlite:///:memory:",
@@ -147,6 +151,9 @@ async def test_executor_persists_confirmed_missing_and_remote_status(
                 "selectedChannels": [
                     {"code": "948", "label": "aelopay(HX)", "platformKey": "aelopay"}
                 ],
+                "paymentColumnMapping": {
+                    "platform_order_no": "三方单号（自定义）",
+                },
                 "comparisonWindow": {
                     "start": "2026-07-01 00:00:00",
                     "end": "2026-07-01 23:59:59",
@@ -162,6 +169,13 @@ async def test_executor_persists_confirmed_missing_and_remote_status(
                     "status": "matched",
                     "sourceSheet": "payin_test",
                     "headerRow": 1,
+                    "detectedHeaders": [
+                        "商户单号（自定义）",
+                        "三方单号（自定义）",
+                        "订单金额",
+                        "订单状态",
+                        "订单时间",
+                    ],
                     "template": {
                         "platformKey": "aelopay",
                         "businessType": "payin",
@@ -213,4 +227,12 @@ async def test_executor_persists_confirmed_missing_and_remote_status(
         "remote_status_not_success",
     }
     assert all(row.is_final for row in rows)
+    assert FakeChargeClient.exact_search_calls == [
+        {
+            "channels": [{"code": "948", "label": "aelopay(HX)"}],
+            "platform_order_no": "platform-missing",
+            "create_start": "2026-06-30 00:00:00",
+            "create_end": "2026-07-02 23:59:59",
+        }
+    ]
     await engine.dispose()

@@ -179,6 +179,7 @@ def build_runtime_env(
         "postgresql+asyncpg://"
         f"{quote(username, safe='')}:{quote(password, safe='')}@{host}:{rds_port}/{rds_database}"
     )
+    erp_compat_database_url = f"jdbc:postgresql://{host}:{rds_port}/{rds_database}"
     if access_mode == "direct_http":
         cookie_secure_raw = "false"
         cors_origins = json.dumps(
@@ -195,6 +196,9 @@ def build_runtime_env(
     values = {
         "RAJ_ENVIRONMENT": "production",
         "RAJ_DATABASE_URL": database_url,
+        "ERP_COMPAT_DATABASE_URL": erp_compat_database_url,
+        "ERP_COMPAT_DATABASE_USERNAME": username,
+        "ERP_COMPAT_DATABASE_PASSWORD": password,
         "RAJ_REDIS_URL": "redis://redis:6379/0",
         "RAJ_SECRET_KEY": app_secrets["RAJ_SECRET_KEY"].strip(),
         "RAJ_CREDENTIAL_ENCRYPTION_KEY": app_secrets["RAJ_CREDENTIAL_ENCRYPTION_KEY"].strip(),

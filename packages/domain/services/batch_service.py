@@ -37,6 +37,48 @@ class BatchValidationError(ValueError):
     pass
 
 
+ORDER_COLUMN_MAPPING_KEYS = ("platform_order_no",)
+
+
+def resolve_payment_column_mapping(
+    parameters: dict[str, Any],
+    template: dict[str, Any],
+) -> dict[str, Any]:
+    raw_template_mapping = template.get("columnMapping")
+    if not isinstance(raw_template_mapping, dict):
+        raise BatchValidationError("支付模板字段映射无效。")
+    mapping = dict(raw_template_mapping)
+    overrides = parameters.get("paymentColumnMapping")
+    if overrides is None:
+        return mapping
+    if not isinstance(overrides, dict):
+        raise BatchValidationError("支付订单号字段映射无效。")
+    for key in ORDER_COLUMN_MAPPING_KEYS:
+        value = overrides.get(key)
+        if value is not None:
+            mapping[key] = str(value).strip()
+    return mapping
+
+
+def _validate_payment_column_mapping(
+    parameters: dict[str, Any],
+    detection: dict[str, Any],
+) -> None:
+    raw_template = detection.get("template")
+    template = raw_template if isinstance(raw_template, dict) else {"columnMapping": {}}
+    mapping = resolve_payment_column_mapping(parameters, template)
+    platform_column = str(mapping.get("platform_order_no") or "").strip()
+    if not platform_column:
+        raise BatchValidationError(
+            "请确认表格中对应管理后台三方订单号 out_trade_no 的字段。"
+        )
+    detected_headers = detection.get("detectedHeaders")
+    if isinstance(detected_headers, list):
+        header_set = {str(value).strip() for value in detected_headers if str(value).strip()}
+        if platform_column not in header_set:
+            raise BatchValidationError("三方订单号映射必须选择本次解析出的表头字段。")
+
+
 def _identity_key(
     *,
     file_sha256: str,
@@ -100,6 +142,7 @@ def _validate_execution_parameters(batch: ReconciliationBatch) -> None:
     template = detection.get("template")
     if not isinstance(template, dict) or template.get("businessType") != "payin":
         raise BatchValidationError("支付模板不是充值 / 代收模板。")
+    _validate_payment_column_mapping(parameters, detection)
     channels = parameters.get("selectedChannels")
     if not isinstance(channels, list) or not channels:
         raise BatchValidationError("请至少确认一个远端充值渠道。")
@@ -125,6 +168,12 @@ def _validate_execution_parameters(batch: ReconciliationBatch) -> None:
         raise BatchValidationError("请完整确认支付与远端时间口径。")
     if window.get("remoteTimeField") not in {"create_time", "pay_time"}:
         raise BatchValidationError("远端时间字段只能是 create_time 或 pay_time。")
+    detected_headers = detection.get("detectedHeaders")
+    if (
+        isinstance(detected_headers, list)
+        and window.get("paymentTimeField") not in detected_headers
+    ):
+        raise BatchValidationError("支付平台时间列必须选择本次解析出的表头字段。")
     if str(parameters.get("currency") or "").upper() != batch.source_currency:
         raise BatchValidationError("批次币种必须与盘口币种一致。")
 
@@ -182,9 +231,12 @@ async def create_batch_from_upload(
         raise BatchValidationError(
             f"文件识别为 {detection.template.business_type} 模板，不能用于 {business_type} 比对。"
         )
+    detection_data = detection_snapshot(detection)
+    if parameters.get("paymentColumnMapping") is not None:
+        _validate_payment_column_mapping(parameters, detection_data)
     parameters = {
         **parameters,
-        "templateDetection": detection_snapshot(detection),
+        "templateDetection": detection_data,
     }
     stored = await storage.store_upload(upload)
     identity = _identity_key(

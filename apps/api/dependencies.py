@@ -41,5 +41,30 @@ async def require_admin(
     return auth
 
 
+def require_erp_permission(permission: str):
+    """Return a dependency enforcing one local ERP functional permission."""
+
+    async def dependency(
+        auth: AuthContext = Depends(get_auth_context),
+        session: AsyncSession = Depends(get_db_session),
+    ) -> AuthContext:
+        # Local import avoids making the generic authentication module depend
+        # on ERP models during application bootstrap.
+        from packages.domain.services.erp_access_service import user_has_erp_permission
+
+        if not await user_has_erp_permission(
+            session,
+            user_id=auth.user.id,
+            permission=permission,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="没有此 ERP 功能权限。",
+            )
+        return auth
+
+    return dependency
+
+
 def get_file_storage(request: Request) -> LocalFileStorage:
     return request.app.state.file_storage

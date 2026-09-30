@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { AuthUser, Captcha, UserRecord } from '../types'
+import type { AuthUser, Captcha, UserLogQueryResponse, UserRecord } from '../types'
 
 export async function fetchCaptcha(): Promise<Captcha> {
   return (await api.get<Captcha>('/auth/captcha')).data
@@ -20,6 +20,21 @@ export async function fetchMe(): Promise<AuthUser> {
 
 export async function logout(): Promise<void> {
   await api.post('/auth/logout')
+}
+
+export async function recordPageAccess(path: string): Promise<void> {
+  await api.post('/auth/user-logs/access', { path })
+}
+
+export async function queryUserLogs(payload: {
+  userId?: number
+  eventTypes?: Array<'login' | 'access'>
+  startedAt?: string
+  endedAt?: string
+  page: number
+  pageSize: number
+}): Promise<UserLogQueryResponse> {
+  return (await api.post<UserLogQueryResponse>('/auth/user-logs/query', payload)).data
 }
 
 export async function fetchUsers(): Promise<UserRecord[]> {

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,7 +13,11 @@ from packages.domain.schemas.auth import (
     CaptchaResponse,
     LoginRequest,
     LogoutResponse,
+    UserAccessLogRequest,
     UserCreateRequest,
+    UserLogQueryRequest,
+    UserLogQueryResponse,
+    UserLogResponse,
     UserResponse,
     UserUpdateRequest,
 )
@@ -21,6 +27,8 @@ from packages.domain.services.auth_service import (
     authenticate_user,
     create_user,
     list_users,
+    query_user_logs,
+    record_page_access,
     revoke_session,
     update_user,
 )
@@ -88,7 +96,7 @@ async def login(
         httponly=True,
         secure=settings.session_cookie_secure,
         samesite=settings.session_cookie_samesite,
-        max_age=settings.session_ttl_minutes * 60,
+        max_age=max(1, int((auth.expires_at - datetime.now(UTC)).total_seconds())),
         path="/",
     )
     return _auth_response(auth)
@@ -115,6 +123,42 @@ async def logout(
         samesite=settings.session_cookie_samesite,
     )
     return LogoutResponse()
+
+
+@router.post("/user-logs/access", status_code=status.HTTP_204_NO_CONTENT)
+async def log_page_access(
+    payload: UserAccessLogRequest,
+    auth: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_db_session),
+) -> Response:
+    await record_page_access(session, actor_user_id=auth.user.id, path=payload.path)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/user-logs/query", response_model=UserLogQueryResponse)
+async def user_logs(
+    payload: UserLogQueryRequest,
+    _: AuthContext = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> UserLogQueryResponse:
+    result = await query_user_logs(session, request=payload)
+    return UserLogQueryResponse(
+        items=[
+            UserLogResponse(
+                id=item.id,
+                user_id=item.user_id,
+                username=item.username,
+                display_name=item.display_name,
+                event_type=item.event_type,
+                path=item.path,
+                occurred_at=item.occurred_at,
+            )
+            for item in result.items
+        ],
+        total=result.total,
+        page=payload.page,
+        page_size=payload.page_size,
+    )
 
 
 @router.get("/users", response_model=list[UserResponse])
