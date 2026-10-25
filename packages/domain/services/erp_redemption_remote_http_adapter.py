@@ -385,6 +385,8 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
         valid_from = command.valid_from or command.claim_date
         valid_to = command.valid_to or command.claim_date
         payload: dict[str, Any] = {
+            # Remote gift-code kind is separate from our deposit/agent campaign type.
+            "gift_type": 0,
             "flow_times": options.flow_times,
             "status": "2",
             "is_need_check_uuid": int(options.check_uuid),

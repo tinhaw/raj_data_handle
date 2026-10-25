@@ -108,6 +108,11 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
             return httpx.Response(200, json={"success": True, "data": {"token": "test-jwt"}})
         if request.url.path == "/api/common/giftCodeConfig/save":
             captured.update(json.loads(request.content))
+            if captured.get("gift_type") != 0:
+                return httpx.Response(
+                    200,
+                    json={"success": False, "message": "兑换码类型 字段是必须的"},
+                )
             return httpx.Response(
                 200,
                 headers={"x-request-id": "create-1"},
@@ -218,6 +223,7 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
     assert result.remote_group_key == "group-1"
     assert result.remote_request_id == "create-1"
     assert captured["label_array"] == [901091]
+    assert captured["gift_type"] == 0
     assert captured["reward_min"] == "1"
     assert captured["reward_max"] == "3"
     assert int(captured["key_number"]) == key_number
