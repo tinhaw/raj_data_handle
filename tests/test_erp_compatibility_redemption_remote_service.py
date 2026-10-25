@@ -236,6 +236,10 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
     assert captured["gift_type"] == 0
     assert captured["reward_condition_type"] == 0
     assert captured["refresh_flag"] == 0
+    assert captured["no_label_array"] == []
+    assert captured["channel_type"] == 1
+    assert captured["face_channel"] == []
+    assert captured["no_face_channel"] == []
     assert captured["reward_min"] == "1"
     assert captured["reward_max"] == "3"
     assert int(captured["key_number"]) == key_number

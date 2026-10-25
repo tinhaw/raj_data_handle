@@ -304,7 +304,9 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
                 await self._remote_session.reject(token)
             raise ErpRedemptionRemoteHttpError("重新登录后远端仍拒绝会话，已停止重试。")
         if response.status_code >= 400:
-            raise ErpRedemptionRemoteHttpError("远端管理后台返回非成功 HTTP 状态。")
+            raise ErpRedemptionRemoteHttpError(
+                f"远端管理后台返回 HTTP {response.status_code}。"
+            )
         request_id = _clean(response.headers.get("x-request-id"))
         return (response.content if bytes_response else _success_payload(response), request_id)
 
@@ -396,6 +398,11 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
             "is_need_check_login_ip": int(options.check_login_ip),
             "is_need_check_register_ip": int(options.check_register_ip),
             "user_type": "0" if all_users else "1",
+            "label_array": list(command.label_ids),
+            "no_label_array": [],
+            "channel_type": 1,
+            "face_channel": [],
+            "no_face_channel": [],
             "is_need_bind_bank_card": int(options.require_bind_bank_card),
             "is_need_bind_phone": int(options.require_bind_phone),
             "remark": command.description,
@@ -413,8 +420,6 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
                 f"{valid_to:%Y-%m-%d} 23:59:59",
             ],
         }
-        if not all_users:
-            payload["label_array"] = list(command.label_ids)
         for key, value in {
             "activity_recharge": options.activity_recharge,
             "activity_recharge_count": options.activity_recharge_count,

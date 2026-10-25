@@ -129,11 +129,15 @@ async def test_http_adapter_maps_current_cloud_create_contract() -> None:
     assert captured["reward_condition_type"] == 0
     assert captured["refresh_flag"] == 0
     assert captured["label_array"] == [10, 20]
+    assert captured["no_label_array"] == []
+    assert captured["channel_type"] == 1
+    assert captured["face_channel"] == []
+    assert captured["no_face_channel"] == []
     assert captured["valid_time"] == ["2026-08-18 00:00:00", "2026-08-18 23:59:59"]
 
 
 @pytest.mark.asyncio
-async def test_http_adapter_maps_all_users_without_a_label_array() -> None:
+async def test_http_adapter_maps_all_users_with_empty_audience_lists() -> None:
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -181,7 +185,11 @@ async def test_http_adapter_maps_all_users_without_a_label_array() -> None:
     assert captured["gift_type"] == 0
     assert captured["reward_condition_type"] == 0
     assert captured["refresh_flag"] == 0
-    assert "label_array" not in captured
+    assert captured["label_array"] == []
+    assert captured["no_label_array"] == []
+    assert captured["channel_type"] == 1
+    assert captured["face_channel"] == []
+    assert captured["no_face_channel"] == []
 
 
 @pytest.mark.asyncio
@@ -230,6 +238,38 @@ async def test_http_adapter_downloads_all_requested_codes(key_number: int) -> No
             ),
         )
     assert result.redemption_code.splitlines() == codes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [400, 403, 404, 429, 500])
+async def test_http_error_exposes_status_without_upstream_body(status_code: int) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/system/login":
+            return httpx.Response(200, json={"success": True, "token": "test-jwt"})
+        assert request.url.path == "/api/common/giftCodeConfig/index"
+        return httpx.Response(status_code, json={"message": "test-private-upstream-detail"})
+
+    async with RajAdminGiftCodeAdapter(
+        account_id="account-1",
+        source_id="rajwin",
+        base_url="https://remote.example",
+        username="operator",
+        password="password",
+        totp_secret="JBSWY3DPEHPK3PXP",
+        business_timezone="Asia/Shanghai",
+        transport=httpx.MockTransport(handler),
+    ) as adapter:
+        with pytest.raises(ErpRedemptionRemoteHttpError) as error:
+            await adapter.check_connection(
+                grant=ErpRemoteAccountReadGrant(
+                    account_id="account-1",
+                    source_id="rajwin",
+                    operation="CHECK",
+                    capability="ERP_REMOTE_CHECK",
+                )
+            )
+    assert str(error.value) == f"远端管理后台返回 HTTP {status_code}。"
+    assert "test-private-upstream-detail" not in str(error.value)
 
 
 @pytest.mark.asyncio
