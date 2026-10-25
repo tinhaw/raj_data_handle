@@ -387,6 +387,9 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
         payload: dict[str, Any] = {
             # Remote gift-code kind is separate from our deposit/agent campaign type.
             "gift_type": 0,
+            # Match the console default: audience tags apply without extra claim conditions.
+            "reward_condition_type": 0,
+            "refresh_flag": 0,
             "flow_times": options.flow_times,
             "status": "2",
             "is_need_check_uuid": int(options.check_uuid),

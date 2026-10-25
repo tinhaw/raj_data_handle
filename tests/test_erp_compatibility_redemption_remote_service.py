@@ -113,6 +113,16 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
                     200,
                     json={"success": False, "message": "兑换码类型 字段是必须的"},
                 )
+            if captured.get("reward_condition_type") != 0:
+                return httpx.Response(
+                    200,
+                    json={"success": False, "message": "领奖判断条件 字段是必须的"},
+                )
+            if captured.get("refresh_flag") != 0:
+                return httpx.Response(
+                    200,
+                    json={"success": False, "message": "是否刷新每日兑换码配置 字段是必须的"},
+                )
             return httpx.Response(
                 200,
                 headers={"x-request-id": "create-1"},
@@ -224,6 +234,8 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
     assert result.remote_request_id == "create-1"
     assert captured["label_array"] == [901091]
     assert captured["gift_type"] == 0
+    assert captured["reward_condition_type"] == 0
+    assert captured["refresh_flag"] == 0
     assert captured["reward_min"] == "1"
     assert captured["reward_max"] == "3"
     assert int(captured["key_number"]) == key_number

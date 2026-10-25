@@ -72,6 +72,16 @@ async def test_http_adapter_maps_current_cloud_create_contract() -> None:
                     200,
                     json={"success": False, "message": "兑换码类型 字段是必须的"},
                 )
+            if captured.get("reward_condition_type") != 0:
+                return httpx.Response(
+                    200,
+                    json={"success": False, "message": "领奖判断条件 字段是必须的"},
+                )
+            if captured.get("refresh_flag") != 0:
+                return httpx.Response(
+                    200,
+                    json={"success": False, "message": "是否刷新每日兑换码配置 字段是必须的"},
+                )
             return httpx.Response(200, json={"success": True, "data": {"id": "cfg-1"}})
         if request.url.path == "/api/common/giftCodeConfig/index":
             return httpx.Response(
@@ -116,6 +126,8 @@ async def test_http_adapter_maps_current_cloud_create_contract() -> None:
     assert result.remote_configuration_id == "cfg-1"
     assert result.remote_group_key == "group-1"
     assert captured["gift_type"] == 0
+    assert captured["reward_condition_type"] == 0
+    assert captured["refresh_flag"] == 0
     assert captured["label_array"] == [10, 20]
     assert captured["valid_time"] == ["2026-08-18 00:00:00", "2026-08-18 23:59:59"]
 
@@ -167,6 +179,8 @@ async def test_http_adapter_maps_all_users_without_a_label_array() -> None:
 
     assert captured["user_type"] == "0"
     assert captured["gift_type"] == 0
+    assert captured["reward_condition_type"] == 0
+    assert captured["refresh_flag"] == 0
     assert "label_array" not in captured
 
 
