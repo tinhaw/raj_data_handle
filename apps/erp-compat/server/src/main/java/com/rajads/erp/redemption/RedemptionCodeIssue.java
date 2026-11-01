@@ -12,7 +12,10 @@ import java.util.ArrayList;
 import java.util.List;
 
 @Entity
-@Table(name = "erp_compat_redemption_code_issues")
+@Table(name = "erp_compat_redemption_code_issues", uniqueConstraints = {
+        @UniqueConstraint(name = "uq_erp_compat_issue_market_code", columnNames = {"remote_market_id", "redemption_code"}),
+        @UniqueConstraint(name = "uq_erp_compat_issue_id_market", columnNames = {"id", "remote_market_id"})
+})
 @Getter
 @Setter
 @NoArgsConstructor
@@ -35,14 +38,13 @@ public class RedemptionCodeIssue {
     @Column(name = "remote_create_receipt_id", length = 255) private String remoteCreateReceiptId;
     @Column(name = "remote_group_key", length = 255) private String remoteGroupKey;
     @Column(name = "remote_label_ids_json", columnDefinition = "text") private String remoteLabelIdsJson;
-    @Column(name = "redemption_code", unique = true, length = 255) private String redemptionCode;
+    @Column(name = "redemption_code", length = 255) private String redemptionCode;
     @ElementCollection
     @org.hibernate.annotations.BatchSize(size = 100)
     @CollectionTable(name = "erp_compat_redemption_issue_codes", joinColumns = @JoinColumn(name = "issue_id"),
-            uniqueConstraints = @UniqueConstraint(columnNames = "code"))
+            uniqueConstraints = @UniqueConstraint(name = "uq_erp_compat_issue_codes_market_code", columnNames = {"remote_market_id", "code"}))
     @OrderColumn(name = "code_index")
-    @Column(name = "code", nullable = false, length = 255)
-    private List<String> codes = new ArrayList<>();
+    private List<RedemptionStoredCode> codes = new ArrayList<>();
     @Column(name = "remote_request_id", nullable = false, unique = true, length = 80) private String remoteRequestId;
     @Column(name = "remote_reference_id", length = 255) private String remoteReferenceId;
     @Column(nullable = false, length = 20) private String state = "PENDING";
@@ -54,13 +56,14 @@ public class RedemptionCodeIssue {
     @Version @Column(name = "row_version", nullable = false) private Long rowVersion;
 
     public List<String> getCodes() {
-        return codes.isEmpty() && redemptionCode != null ? List.of(redemptionCode) : List.copyOf(codes);
+        return codes.isEmpty() && redemptionCode != null ? List.of(redemptionCode)
+                : codes.stream().map(RedemptionStoredCode::getValue).toList();
     }
 
     public void setCodes(List<String> values) {
         List<String> copy = List.copyOf(values);
         codes.clear();
-        codes.addAll(copy);
+        copy.forEach(code -> codes.add(new RedemptionStoredCode(remoteMarketId, code)));
         redemptionCode = copy.isEmpty() ? null : copy.get(0);
     }
 

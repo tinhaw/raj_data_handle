@@ -326,6 +326,60 @@ class RedemptionRemoteIdentityHttpTest {
         verifyNoInteractions(standalone, gate);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {1, 50})
+    void codeValuesAreScopedToMarketAndDuplicateImportsRemainAtomic(int keyNumber) throws Exception {
+        var session = login();
+        String prefix = "CODE_SCOPE_" + keyNumber;
+        long marketA = market(session, prefix + "_A");
+        long accountA = account(session, marketA, prefix.toLowerCase() + "-a");
+        long marketB = market(session, prefix + "_B");
+        long accountB = account(session, marketB, prefix.toLowerCase() + "-b");
+        var groups = java.util.List.of(group(session, marketA, prefix + "_GROUP_A", keyNumber),
+                group(session, marketB, prefix + "_GROUP_B", keyNumber),
+                group(session, marketA, prefix + "_GROUP_C", keyNumber));
+        var codes = java.util.stream.IntStream.range(0, keyNumber)
+                .mapToObj(i -> prefix + "-SHARED-" + i).toList();
+        for (int index = 0; index < groups.size(); index++) {
+            var group = groups.get(index);
+            long batch = group.at("/batch/id").asLong();
+            long issue = group.at("/issues/0/id").asLong();
+            long account = index == 1 ? accountB : accountA;
+            String config = "code-scope-" + index;
+            mvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + issue + "/remote-configuration")
+                    .session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"remoteConfigurationId\":\"" + config + "\",\"rowVersion\":" + group.at("/issues/0/rowVersion").asLong() + "}"))
+                    .andExpect(status().isOk());
+            String task = "scope-task-" + index;
+            jdbc.update("update erp_compat_redemption_code_batches set status='PUBLISHED',remote_publish_mode='IMMEDIATE',remote_publish_task_id=? where id=?", task, batch);
+            var check = new UnifiedRedemptionRemoteExecutorClient.PublicationVerification(task, 4, "COMPLETED", false,
+                    java.util.List.of(new UnifiedRedemptionRemoteExecutorClient.ConfigurationVerification(config, "MATCHED")),
+                    java.time.Instant.now().toString(), null);
+            when(executor.verifyPublication(eq(account), eq(batch), eq(task), eq("test"), anyList())).thenReturn(check);
+            when(executor.download(eq(account), eq(issue), eq(config), any(), eq(keyNumber)))
+                    .thenReturn(new UnifiedRedemptionRemoteExecutorClient.DownloadedCodes(codes, "scope-group-" + index));
+            var action = mvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + issue + "/remote-download").session(session).with(csrf()));
+            if (index < 2) action.andExpect(status().isOk()).andExpect(jsonPath("$.data.batch.status").value("COMPLETED"))
+                    .andExpect(jsonPath("$.data.issues[0].redemptionCodes.length()").value(keyNumber));
+            else action.andExpect(status().isConflict());
+        }
+        long issueA = groups.get(0).at("/issues/0/id").asLong();
+        long issueB = groups.get(1).at("/issues/0/id").asLong();
+        long issueC = groups.get(2).at("/issues/0/id").asLong();
+        assertThat(jdbc.queryForObject("select count(*) from erp_compat_redemption_issue_codes where issue_id in (?,?)", Integer.class, issueA, issueB)).isEqualTo(2 * keyNumber);
+        assertThat(jdbc.queryForObject("select count(*) from erp_compat_redemption_issue_codes where issue_id=?", Integer.class, issueC)).isZero();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc.update(
+                "insert into erp_compat_redemption_issue_codes(issue_id,code_index,code,remote_market_id) values(?,0,?,?)", issueC, codes.get(0), marketA))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc.update(
+                "insert into erp_compat_redemption_issue_codes(issue_id,code_index,code,remote_market_id) values(?,0,?,?)", issueC, prefix + "-WRONG-MARKET", marketB))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        mvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + issueA + "/remote-download").session(session).with(csrf()))
+                .andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("select count(*) from erp_compat_redemption_issue_codes where issue_id=?", Integer.class, issueA)).isEqualTo(keyNumber);
+        verifyNoInteractions(standalone, gate);
+    }
+
     private org.springframework.test.web.servlet.ResultActions create(MockHttpSession session, long issue, boolean retry) throws Exception {
         return mvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + issue + "/remote-create")
                 .param("retryFailed", Boolean.toString(retry)).session(session).with(csrf()));
@@ -378,12 +432,16 @@ class RedemptionRemoteIdentityHttpTest {
     }
 
     private JsonNode group(MockHttpSession session, long market, String code) throws Exception {
+        return group(session, market, code, 1);
+    }
+
+    private JsonNode group(MockHttpSession session, long market, String code, int keyNumber) throws Exception {
         return send(session, "/api/v1/redemption-campaigns/groups", """
                 {"code":"%s","name":"%s","claimDateFrom":"2026-09-05","claimDateTo":"2026-09-05","lookbackDays":7,
                  "tiers":[{"displayName":"全部用户","minDepositAmount":0,"bonusAmount":1,"bonusMaxAmount":3,"sortOrder":1}],
                  "remoteMarketId":%s,"redemptionType":"SEVEN_DAY_DEPOSIT","tierUserTypes":["ALL_USERS"],"tierLabelIds":[[]],
-                 "remoteOptions":{"publishEnvironment":"test","flowTimes":5,"creationIntervalSeconds":5,"keyNumber":1,"singleUserLimit":1,"singleKeyLimit":2,"requireBindBankCard":false,"requireBindPhone":true,"checkUuid":true,"uuidRewardLimit":1,"checkLoginIp":true,"loginIpRewardLimit":1,"checkRegisterIp":true,"registerIpRewardLimit":1}}
-                """.formatted(code, code, market));
+                 "remoteOptions":{"publishEnvironment":"test","flowTimes":5,"creationIntervalSeconds":5,"keyNumber":%d,"singleUserLimit":1,"singleKeyLimit":2,"requireBindBankCard":false,"requireBindPhone":true,"checkUuid":true,"uuidRewardLimit":1,"checkLoginIp":true,"loginIpRewardLimit":1,"checkRegisterIp":true,"registerIpRewardLimit":1}}
+                """.formatted(code, code, market, keyNumber));
     }
 
     private JsonNode send(MockHttpSession session, String path, String content) throws Exception {

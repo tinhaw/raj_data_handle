@@ -13,7 +13,7 @@ public interface RedemptionCodeIssueRepository extends JpaRepository<RedemptionC
     List<RedemptionCodeIssue> findByCampaignIdAndClaimDateBetweenOrderByClaimDateAscCampaignTierIdAsc(Long campaignId, LocalDate from, LocalDate to);
     List<RedemptionCodeIssue> findByCampaignIdAndClaimDateBetweenAndStateOrderByClaimDateAscCampaignTierIdAsc(Long campaignId, LocalDate from, LocalDate to, String state);
     Optional<RedemptionCodeIssue> findByCampaignIdAndCampaignTierIdAndClaimDate(Long campaignId, Long tierId, LocalDate claimDate);
-    Optional<RedemptionCodeIssue> findByRedemptionCode(String redemptionCode);
+    Optional<RedemptionCodeIssue> findByRemoteMarketIdAndRedemptionCode(Long remoteMarketId, String redemptionCode);
     Optional<RedemptionCodeIssue> findByRemoteMarketIdAndRemoteConfigurationId(Long remoteMarketId, String remoteConfigurationId);
     boolean existsByCampaignId(Long campaignId);
     boolean existsByCampaignIdAndClaimDateBetween(Long campaignId, LocalDate from, LocalDate to);

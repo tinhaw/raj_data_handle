@@ -31,8 +31,9 @@ public class RedemptionCodeStorage {
         }
         Long conflicts = entityManager.createQuery(
                 "select count(distinct i) from RedemptionCodeIssue i left join i.codes code "
-                        + "where (code in :codes or i.redemptionCode in :codes) and i.id <> :id", Long.class)
-                .setParameter("codes", codes).setParameter("id", issue.getId()).getSingleResult();
+                        + "where i.remoteMarketId = :market and (code.value in :codes or i.redemptionCode in :codes) and i.id <> :id", Long.class)
+                .setParameter("codes", codes).setParameter("id", issue.getId())
+                .setParameter("market", issue.getRemoteMarketId()).getSingleResult();
         if (conflicts > 0) throw ApiException.conflict("REDEMPTION_CODE_EXISTS", "兑换码已保存到其他任务");
         issue.setCodes(codes);
         return codes.size();

@@ -36,7 +36,7 @@ class RedemptionCodeStorageTest {
         var entityManager = mock(EntityManager.class, RETURNS_DEEP_STUBS);
         when(entityManager.createQuery(anyString(), eq(Long.class))
                 .setParameter("codes", List.of("TAKEN"))
-                .setParameter("id", 1L).getSingleResult()).thenReturn(1L);
+                .setParameter("id", 1L).setParameter("market", 0L).getSingleResult()).thenReturn(1L);
         var issue = new RedemptionCodeIssue();
         issue.setId(1L);
         assertThatThrownBy(() -> new RedemptionCodeStorage(entityManager)

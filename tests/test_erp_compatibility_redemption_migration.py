@@ -117,7 +117,8 @@ def test_0037_projects_redemption_state_and_unified_remote_account(
             connection.execute(
                 "UPDATE erp_compat_redemption_code_issues SET redemption_code = 'LEGACY-ONE'"
             )
-        command.upgrade(config, "head")
+        # This historical contract covers the global-code schema before 0053.
+        command.upgrade(config, "20261101_0052")
         with sqlite3.connect(database_path) as connection:
             campaign = connection.execute(
                 "SELECT id, code, row_version FROM erp_compat_redemption_campaigns"
