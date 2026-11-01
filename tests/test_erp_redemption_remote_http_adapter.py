@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from io import BytesIO
@@ -59,7 +60,8 @@ def test_download_rejects_incomplete_duplicate_or_invalid_codes(codes, expected_
 
 
 @pytest.mark.asyncio
-async def test_http_adapter_maps_current_cloud_create_contract() -> None:
+@pytest.mark.parametrize("minimum,maximum", [("10", "10"), ("5.00", "7.00")])
+async def test_http_adapter_maps_current_cloud_create_contract(minimum, maximum) -> None:
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -67,6 +69,11 @@ async def test_http_adapter_maps_current_cloud_create_contract() -> None:
             return httpx.Response(200, json={"success": True, "data": {"token": "test-jwt"}})
         if request.url.path == "/api/common/giftCodeConfig/save":
             captured.update(json.loads(request.content))
+            if any(type(captured.get(field)) is not int for field in ("reward_min", "reward_max")):
+                return httpx.Response(
+                    500,
+                    json={"message": "Argument #3 ($money) must be of type int, string given"},
+                )
             if captured.get("gift_type") != 0:
                 return httpx.Response(
                     200,
@@ -118,13 +125,15 @@ async def test_http_adapter_maps_current_cloud_create_contract() -> None:
                 deposit_window_start=date(2026, 8, 11),
                 deposit_window_end=date(2026, 8, 17),
                 label_ids=(10, 20),
-                bonus_amount=Decimal("10"),
-                bonus_max_amount=Decimal("10"),
+                bonus_amount=Decimal(minimum),
+                bonus_max_amount=Decimal(maximum),
                 options=_options(),
             ),
         )
     assert result.remote_configuration_id == "cfg-1"
     assert result.remote_group_key == "group-1"
+    assert captured["reward_min"] == int(Decimal(minimum))
+    assert captured["reward_max"] == int(Decimal(maximum))
     assert captured["gift_type"] == 0
     assert captured["reward_condition_type"] == 0
     assert captured["refresh_flag"] == 0
@@ -175,9 +184,9 @@ async def test_http_adapter_maps_all_users_with_empty_audience_lists() -> None:
                 deposit_window_start=date(2026, 8, 11),
                 deposit_window_end=date(2026, 8, 17),
                 label_ids=(),
-                bonus_amount=Decimal("1"),
-                bonus_max_amount=Decimal("3"),
-                options=_options(),
+                bonus_amount=Decimal("5.00"),
+                bonus_max_amount=Decimal("7.00"),
+                options=replace(_options(), key_number=50, single_key_limit=500),
             ),
         )
 
@@ -190,6 +199,38 @@ async def test_http_adapter_maps_all_users_with_empty_audience_lists() -> None:
     assert captured["channel_type"] == 1
     assert captured["face_channel"] == []
     assert captured["no_face_channel"] == []
+    assert type(captured["reward_min"]) is int and captured["reward_min"] == 5
+    assert type(captured["reward_max"]) is int and captured["reward_max"] == 7
+    assert captured["key_number"] == "50"
+    assert captured["single_key_limit"] == 500
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("minimum,maximum", [("5.25", "7.00"), ("5.00", "7.50")])
+async def test_create_rejects_fractional_rewards_before_any_remote_request(minimum, maximum):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("Fractional rewards must not trigger login or remote creation")
+
+    grant = ErpRemoteExecutionGrant(
+        account_id="account-1", source_id="rajwin", operation="CREATE",
+        capability="ERP_REDEMPTION_CREATE",
+    )
+    async with RajAdminGiftCodeAdapter(
+        account_id="account-1", source_id="rajwin", base_url="https://remote.example",
+        username="operator", password="password", totp_secret="JBSWY3DPEHPK3PXP",
+        business_timezone="Asia/Shanghai", transport=httpx.MockTransport(handler),
+    ) as adapter:
+        with pytest.raises(ErpRedemptionRemoteHttpError, match="兑换金额.*整数"):
+            await adapter.create_configuration(
+                grant=grant,
+                command=RemoteCreateCommand(
+                    issue_id="issue-fractional", description="fractional reward",
+                    claim_date=date(2026, 11, 1), deposit_window_start=date(2026, 11, 1),
+                    deposit_window_end=date(2026, 11, 1), label_ids=(),
+                    bonus_amount=Decimal(minimum), bonus_max_amount=Decimal(maximum),
+                    options=_options(),
+                ),
+            )
 
 
 @pytest.mark.asyncio

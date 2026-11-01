@@ -386,6 +386,13 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
         all_users = not command.label_ids
         valid_from = command.valid_from or command.claim_date
         valid_to = command.valid_to or command.claim_date
+        # The remote bonus-rule mapper requires PHP integers, including for
+        # amounts persisted locally as Decimal("5.00"). Never round a reward.
+        if any(
+            not amount.is_finite() or amount != amount.to_integral_value()
+            for amount in (command.bonus_amount, command.bonus_max_amount)
+        ):
+            raise ErpRedemptionRemoteHttpError("远端兑换金额仅支持整数，请调整兑换金额上下限。")
         payload: dict[str, Any] = {
             # Remote gift-code kind is separate from our deposit/agent campaign type.
             "gift_type": 0,
@@ -407,8 +414,8 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
             "is_need_bind_phone": int(options.require_bind_phone),
             "remark": command.description,
             "group_desc": command.description,
-            "reward_min": str(command.bonus_amount),
-            "reward_max": str(command.bonus_max_amount),
+            "reward_min": int(command.bonus_amount),
+            "reward_max": int(command.bonus_max_amount),
             "key_number": str(options.key_number),
             "single_user_limit": options.single_user_limit,
             "single_key_limit": options.single_key_limit,

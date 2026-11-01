@@ -79,7 +79,7 @@ def _payload(account_id: int, key_number: int = 1) -> ErpCompatibilityRemoteCrea
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key_number", [1, 5])
+@pytest.mark.parametrize("key_number", [1, 5, 50])
 async def test_compatibility_create_uses_mapped_unified_account_without_legacy_secret(
     key_number: int,
 ) -> None:
@@ -108,6 +108,8 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
             return httpx.Response(200, json={"success": True, "data": {"token": "test-jwt"}})
         if request.url.path == "/api/common/giftCodeConfig/save":
             captured.update(json.loads(request.content))
+            if any(type(captured.get(field)) is not int for field in ("reward_min", "reward_max")):
+                return httpx.Response(500, json={"message": "money must be of type int"})
             if captured.get("gift_type") != 0:
                 return httpx.Response(
                     200,
@@ -240,8 +242,8 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
     assert captured["channel_type"] == 1
     assert captured["face_channel"] == []
     assert captured["no_face_channel"] == []
-    assert captured["reward_min"] == "1"
-    assert captured["reward_max"] == "3"
+    assert type(captured["reward_min"]) is int and captured["reward_min"] == 1
+    assert type(captured["reward_max"]) is int and captured["reward_max"] == 3
     assert int(captured["key_number"]) == key_number
     await engine.dispose()
 
