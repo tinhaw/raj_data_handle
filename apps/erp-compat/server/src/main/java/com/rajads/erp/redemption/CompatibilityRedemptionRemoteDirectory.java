@@ -20,6 +20,7 @@ import java.util.Optional;
 @Primary
 @ConditionalOnProperty(prefix = "erp.compatibility", name = "standalone-auth-enabled", havingValue = "false", matchIfMissing = true)
 public class CompatibilityRedemptionRemoteDirectory implements RedemptionRemoteDirectory {
+    private static final String REGISTRY_ATTRIBUTE = CompatibilityRedemptionRemoteDirectory.class.getName() + ".registry";
     private final CompatibilityRemoteRegistryClient client;
     private final String sessionCookieName;
 
@@ -100,14 +101,25 @@ public class CompatibilityRedemptionRemoteDirectory implements RedemptionRemoteD
     }
 
     private CompatibilityRemoteRegistry registry() {
-        return client.get(sessionCookieName, sessionCookie());
+        HttpServletRequest request = currentRequest();
+        Object cached = request.getAttribute(REGISTRY_ATTRIBUTE);
+        if (cached instanceof CompatibilityRemoteRegistry registry) return registry;
+        // A batch list resolves the same accounts repeatedly. Reuse only this
+        // authenticated request's snapshot; a later request must reload it so
+        // permission, account and tag changes are never cached across users.
+        CompatibilityRemoteRegistry registry = client.get(sessionCookieName, sessionCookie(request));
+        request.setAttribute(REGISTRY_ATTRIBUTE, registry);
+        return registry;
     }
 
-    private String sessionCookie() {
+    private HttpServletRequest currentRequest() {
         if (!(RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attributes)) {
             throw ApiException.forbidden("统一登录会话仅能在已认证的 ERP 请求中使用");
         }
-        HttpServletRequest request = attributes.getRequest();
+        return attributes.getRequest();
+    }
+
+    private String sessionCookie(HttpServletRequest request) {
         Cookie[] cookies = request.getCookies();
         if (cookies == null) return null;
         for (Cookie cookie : cookies) if (sessionCookieName.equals(cookie.getName())) return cookie.getValue();

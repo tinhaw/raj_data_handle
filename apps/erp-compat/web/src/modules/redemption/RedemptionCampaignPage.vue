@@ -81,6 +81,7 @@ interface CodeGroupTask {
 
 const session = useSessionStore()
 const loading = ref(false)
+const codeGroupLoadError = ref('')
 const working = ref(false)
 const exportingId = ref<string | number>()
 const exportingGroupKey = ref<string>()
@@ -923,6 +924,7 @@ async function loadMarketTierConfiguration() {
 
 async function loadCodeGroups() {
   loading.value = true
+  codeGroupLoadError.value = ''
   try {
     const [loadedCampaigns, details] = await Promise.all([api.redemption.list(), api.redemption.batchOverviews()])
     const campaignById = new Map(loadedCampaigns.map(campaign => [String(campaign.id), campaign]))
@@ -934,7 +936,11 @@ async function loadCodeGroups() {
     codeGroups.value = groups.sort((left, right) => String(right.detail.batch.createdAt || '').localeCompare(String(left.detail.batch.createdAt || '')))
     void verifyPendingPublications()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '读取兑换码组任务失败')
+    const detail = error instanceof Error ? error.message : '请求失败，请稍后重试'
+    codeGroupLoadError.value = /timeout|超时/i.test(detail)
+      ? '任务列表加载超时，请点击刷新重试；已创建的任务仍保存在系统中。'
+      : `任务列表读取失败：${detail}`
+    ElMessage.error(codeGroupLoadError.value)
   } finally {
     loading.value = false
   }
@@ -1857,9 +1863,10 @@ onUnmounted(() => {
           <h3>批量生成兑换码组任务</h3>
           <p>分别显示远端发布结果与兑换码下载状态；兑换码全部入库后可下载 Excel。</p>
         </div>
-        <span class="code-group-list__count">{{ loading && !codeGroupTasks.length ? '正在加载任务…' : `共 ${codeGroupTasks.length} 个兑换码组任务` }}</span>
+        <span class="code-group-list__count">{{ loading && !codeGroupTasks.length ? '正在加载任务…' : codeGroupLoadError && !codeGroupTasks.length ? '任务读取失败' : `共 ${codeGroupTasks.length} 个兑换码组任务` }}</span>
       </header>
 
+      <el-alert v-if="codeGroupLoadError" type="error" :closable="false" show-icon :title="codeGroupLoadError" />
       <div v-if="codeGroupTasks.length" v-loading="loading" class="code-group-virtual-table">
         <el-auto-resizer>
           <template #default="{ height, width }">
@@ -1931,7 +1938,7 @@ onUnmounted(() => {
         />
       </div>
       <div v-else-if="loading" v-loading="loading" class="code-group-loading" />
-      <el-empty v-else :image-size="68" description="还没有兑换码组，点击右上角“批量生成兑换码组”开始创建" />
+      <el-empty v-else-if="!codeGroupLoadError" :image-size="68" description="还没有兑换码组，点击右上角“批量生成兑换码组”开始创建" />
     </article>
 
     <el-dialog v-model="codeGroupDialogVisible" title="批量生成兑换码组" width="1040px" destroy-on-close>

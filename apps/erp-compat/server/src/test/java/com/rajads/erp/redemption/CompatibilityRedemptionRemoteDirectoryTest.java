@@ -1,6 +1,7 @@
 package com.rajads.erp.redemption;
 
 import com.rajads.erp.shared.ApiException;
+import com.rajads.erp.identity.CompatibilityIdentityUnavailableException;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -15,6 +16,8 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class CompatibilityRedemptionRemoteDirectoryTest {
@@ -48,11 +51,69 @@ class CompatibilityRedemptionRemoteDirectoryTest {
                 .hasMessageContaining("999");
     }
 
+    @Test
+    void batchListResolvesAllAccountsFromOneRequestSnapshot() {
+        CompatibilityRemoteRegistryClient client = mock(CompatibilityRemoteRegistryClient.class);
+        CompatibilityRedemptionRemoteDirectory directory = directory(client);
+        when(client.get("raj_session", "signed-session")).thenReturn(registry());
+
+        for (int batch = 0; batch < 84; batch++) {
+            assertThat(directory.find(batch % 2 == 0 ? 23L : 24L)).isPresent();
+        }
+        directory.requireCurrentTags(23L, List.of(901L, 902L));
+        verify(client, times(1)).get("raj_session", "signed-session");
+    }
+
+    @Test
+    void nextRequestReloadsRegistryEvenForTheSameSession() {
+        CompatibilityRemoteRegistryClient client = mock(CompatibilityRemoteRegistryClient.class);
+        CompatibilityRedemptionRemoteDirectory directory = directory(client);
+        when(client.get("raj_session", "signed-session")).thenReturn(
+                registry(), new CompatibilityRemoteRegistry(List.of(), List.of()));
+        assertThat(directory.find(23L)).isPresent();
+
+        request("signed-session");
+        assertThat(directory.find(23L)).isEmpty();
+        verify(client, times(2)).get("raj_session", "signed-session");
+    }
+
+    @Test
+    void anotherUserNeverReceivesThePreviousRequestsRegistry() {
+        CompatibilityRemoteRegistryClient client = mock(CompatibilityRemoteRegistryClient.class);
+        CompatibilityRedemptionRemoteDirectory directory = directory(client);
+        when(client.get("raj_session", "signed-session")).thenReturn(registry());
+        when(client.get("raj_session", "other-session")).thenReturn(
+                new CompatibilityRemoteRegistry(List.of(), List.of()));
+        assertThat(directory.requireEnabled(23L)).isNotNull();
+
+        request("other-session");
+        assertThat(directory.find(23L)).isEmpty();
+        verify(client, times(1)).get("raj_session", "other-session");
+    }
+
+    @Test
+    void failedRegistryReadIsNotCachedAsAnEmptyDirectory() {
+        CompatibilityRemoteRegistryClient client = mock(CompatibilityRemoteRegistryClient.class);
+        CompatibilityRedemptionRemoteDirectory directory = directory(client);
+        when(client.get("raj_session", "signed-session"))
+                .thenThrow(new CompatibilityIdentityUnavailableException("Registry unavailable"))
+                .thenReturn(registry());
+
+        assertThatThrownBy(() -> directory.find(23L))
+                .isInstanceOf(CompatibilityIdentityUnavailableException.class);
+        assertThat(directory.find(23L)).isPresent();
+        verify(client, times(2)).get("raj_session", "signed-session");
+    }
+
     private CompatibilityRedemptionRemoteDirectory directory(CompatibilityRemoteRegistryClient client) {
-        MockHttpServletRequest request = new MockHttpServletRequest();
-        request.setCookies(new Cookie("raj_session", "signed-session"));
-        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+        request("signed-session");
         return new CompatibilityRedemptionRemoteDirectory(client, "raj_session");
+    }
+
+    private void request(String cookie) {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setCookies(new Cookie("raj_session", cookie));
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
     }
 
     private CompatibilityRemoteRegistry registry() {
