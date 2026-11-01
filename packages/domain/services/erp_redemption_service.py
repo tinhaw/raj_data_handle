@@ -226,9 +226,6 @@ async def create_erp_redemption_campaign(
         )
     ):
         raise ErpRedemptionConflictError("活动编码已存在。")
-    deposits = {tier.min_deposit_amount.normalize() for tier in request.tiers}
-    if len(deposits) != len(request.tiers):
-        raise ErpRedemptionError("充值门槛不能重复。")
     campaign = ErpRedemptionCampaign(
         code=request.code,
         name=request.name,
@@ -277,7 +274,7 @@ async def create_erp_redemption_campaign(
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
-        raise ErpRedemptionConflictError("活动编码或充值门槛已存在。") from exc
+        raise ErpRedemptionConflictError("活动编码已存在。") from exc
     return result
 
 

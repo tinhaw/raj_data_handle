@@ -363,14 +363,10 @@ public class RedemptionService {
     private void replaceTiers(Long campaignId, List<RedemptionDtos.TierRequest> requests) {
         if (requests == null || requests.isEmpty()) throw ApiException.badRequest("CAMPAIGN_TIER_REQUIRED", "活动至少需要一个充值分档");
         if (requests.size() > 20) throw ApiException.badRequest("TOO_MANY_CAMPAIGN_TIERS", "一个活动最多配置 20 个充值分档");
-        Set<BigDecimal> deposits = new HashSet<>();
         List<RedemptionCampaignTier> tiers = new ArrayList<>();
         for (int index = 0; index < requests.size(); index++) {
             RedemptionDtos.TierRequest request = requests.get(index);
             BigDecimal deposit = normalizedAmount(request.minDepositAmount(), "充值门槛");
-            if (!deposits.add(deposit.stripTrailingZeros())) {
-                throw ApiException.badRequest("DUPLICATE_DEPOSIT_TIER", "充值门槛不能重复");
-            }
             RedemptionCampaignTier tier = new RedemptionCampaignTier();
             tier.setCampaignId(campaignId);
             tier.setDisplayName(trimToNull(request.displayName()));

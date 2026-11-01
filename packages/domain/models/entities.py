@@ -1928,13 +1928,6 @@ class ErpRedemptionCampaignTier(Base):
     """A deposit threshold and reward snapshot for a local campaign."""
 
     __tablename__ = "erp_redemption_campaign_tiers"
-    __table_args__ = (
-        UniqueConstraint(
-            "campaign_id",
-            "min_deposit_amount",
-            name="uq_erp_redemption_tier_deposit",
-        ),
-    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     campaign_id: Mapped[str] = mapped_column(

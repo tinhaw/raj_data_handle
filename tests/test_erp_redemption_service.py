@@ -22,6 +22,7 @@ from packages.domain.services.erp_redemption_service import (
     create_erp_redemption_task,
     get_erp_redemption_batch,
     import_erp_redemption_codes,
+    list_erp_redemption_campaigns,
     publish_erp_redemption_batch_locally,
 )
 
@@ -44,6 +45,65 @@ async def _actor_id(session) -> int:
     session.add(actor)
     await session.commit()
     return actor.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("threshold", [Decimal("0"), Decimal("100")])
+async def test_same_threshold_tiers_remain_distinct_after_batch_readback(threshold) -> None:
+    engine, factory = await _session_factory()
+    try:
+        async with factory() as session:
+            actor_id = await _actor_id(session)
+            campaign = await create_erp_redemption_campaign(
+                session,
+                actor_user_id=actor_id,
+                request=ErpRedemptionCampaignCreateRequest(
+                    code="shared-threshold",
+                    name="Independent reward tiers",
+                    tiers=[
+                        ErpRedemptionTierWrite(
+                            display_name=name,
+                            min_deposit_amount=threshold,
+                            bonus_amount=Decimal("5"),
+                            bonus_max_amount=maximum,
+                            sort_order=index,
+                        )
+                        for index, (name, maximum) in enumerate(
+                            [("All users", Decimal("7")), ("Game count zero", Decimal("17"))],
+                            start=1,
+                        )
+                    ],
+                ),
+            )
+            assert len({tier.id for tier in campaign.tiers}) == 2
+            stored = (await list_erp_redemption_campaigns(session))[0]
+            assert [(tier.display_name, tier.sort_order) for tier in stored.tiers] == [
+                ("All users", 1),
+                ("Game count zero", 2),
+            ]
+            detail = await create_erp_redemption_batch(
+                session,
+                actor_user_id=actor_id,
+                request=ErpRedemptionBatchCreateRequest(
+                    campaign_id=campaign.id,
+                    claim_date_from=date(2026, 11, 1),
+                    claim_date_to=date(2026, 11, 2),
+                ),
+            )
+        async with factory() as session:
+            reloaded = await get_erp_redemption_batch(session, batch_id=detail.batch.id)
+            assert reloaded.batch.expected_code_count == 4
+            assert len(reloaded.issues) == 4
+            by_tier = {tier.id: tier for tier in campaign.tiers}
+            for issue in reloaded.issues:
+                tier = by_tier[issue.campaign_tier_id]
+                assert issue.min_deposit_amount == threshold
+                assert issue.tier_name == tier.display_name
+                assert issue.bonus_amount == tier.bonus_amount
+                assert issue.bonus_max_amount == tier.bonus_max_amount
+            assert {issue.campaign_tier_id for issue in reloaded.issues} == set(by_tier)
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

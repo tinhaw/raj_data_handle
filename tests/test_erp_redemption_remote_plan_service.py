@@ -37,6 +37,7 @@ from packages.domain.services.erp_redemption_remote_gate import (
     ErpRemoteExecutionNotAuthorizedError,
 )
 from packages.domain.services.erp_redemption_remote_plan_service import (
+    ErpRedemptionRemotePlanConflictError,
     cancel_local_erp_redemption_publish_schedule,
     complete_erp_redemption_remote_execution,
     configure_erp_redemption_remote_plan,
@@ -63,7 +64,7 @@ async def _setup():
     return engine, factory
 
 
-async def _task_fixture(session):
+async def _task_fixture(session, *, shared_threshold=False):
     actor = AppUser(
         username="remote-plan-admin",
         username_normalized="remote-plan-admin",
@@ -99,7 +100,7 @@ async def _task_fixture(session):
                 ),
                 ErpRedemptionTierWrite(
                     display_name="500 tier",
-                    min_deposit_amount=Decimal("500"),
+                    min_deposit_amount=Decimal("100" if shared_threshold else "500"),
                     bonus_amount=Decimal("50"),
                 ),
             ],
@@ -260,11 +261,16 @@ async def test_remote_plan_tracks_create_publish_cancel_without_network_calls() 
 
 
 @pytest.mark.asyncio
-async def test_task_remote_plans_are_configured_from_unified_account_preset() -> None:
+@pytest.mark.parametrize("shared_threshold", [False, True])
+async def test_task_remote_plans_are_configured_from_unified_account_preset(
+    shared_threshold,
+) -> None:
     engine, factory = await _setup()
     try:
         async with factory() as session:
-            actor, account, campaign, batch_id = await _task_fixture(session)
+            actor, account, campaign, batch_id = await _task_fixture(
+                session, shared_threshold=shared_threshold
+            )
             session.add(
                 RemoteAccountRewardTierPreset(
                     account_id=account.id,
@@ -300,7 +306,49 @@ async def test_task_remote_plans_are_configured_from_unified_account_preset() ->
             assert len(plans) == 1
             assert plans[0].batch_id == batch_id
             detail = await get_erp_redemption_batch(session, batch_id=batch_id)
-            assert [issue.remote_label_ids for issue in detail.issues] == [[901091], [901092]]
+            assert {issue.campaign_tier_id: issue.remote_label_ids for issue in detail.issues} == {
+                campaign.tiers[0].id: [901091],
+                campaign.tiers[1].id: [901092],
+            }
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preset_name", ["renamed tier", "100 tier"])
+async def test_task_plan_rejects_ambiguous_presets_without_binding_wrong_labels(preset_name):
+    engine, factory = await _setup()
+    try:
+        async with factory() as session:
+            actor, account, _, batch_id = await _task_fixture(session, shared_threshold=True)
+            session.add(
+                RemoteAccountRewardTierPreset(
+                    account_id=account.id,
+                    tiers_json=[
+                        {
+                            "display_name": preset_name,
+                            "min_deposit_amount": "100",
+                            "bonus_amount": "5",
+                            "bonus_max_amount": "7",
+                            "label_ids": [label],
+                        }
+                        for label in (901091, 901092)
+                    ],
+                    tag_snapshot_json=[{"id": label, "name": "Tier"} for label in (901091, 901092)],
+                    saved_by=actor.id,
+                )
+            )
+            await session.commit()
+            batch = await session.get(ErpRedemptionCodeBatch, batch_id)
+            with pytest.raises(ErpRedemptionRemotePlanConflictError, match="无法唯一匹配"):
+                await configure_erp_redemption_task_remote_plans(
+                    session,
+                    task_id=batch.task_id,
+                    request=ErpRedemptionTaskRemotePlanWrite(redemption_type="SEVEN_DAY_DEPOSIT"),
+                    actor_user_id=actor.id,
+                )
+            detail = await get_erp_redemption_batch(session, batch_id=batch_id)
+            assert all(not issue.remote_label_ids for issue in detail.issues)
     finally:
         await engine.dispose()
 

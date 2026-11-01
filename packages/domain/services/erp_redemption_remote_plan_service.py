@@ -408,24 +408,31 @@ async def configure_erp_redemption_task_remote_plans(
             )
         labels: dict[str, list[int]] = {}
         for issue in issues:
-            matched = next(
-                (
+            # Thresholds may be shared by different audiences. An exact name
+            # takes precedence over the legacy amount-only fallback; neither
+            # path may silently choose the first of several candidate tiers.
+            matches = [
+                tier
+                for tier in preset.tiers
+                if issue.tier_name and tier.display_name == issue.tier_name
+            ]
+            if not matches:
+                matches = [
                     tier
                     for tier in preset.tiers
-                    if (
-                        issue.tier_name
-                        and tier.display_name == issue.tier_name
-                    )
-                    or tier.min_deposit_amount == issue.min_deposit_amount
-                ),
-                None,
-            )
-            if matched is None:
+                    if tier.min_deposit_amount == issue.min_deposit_amount
+                ]
+            if not matches:
                 raise ErpRedemptionRemotePlanConflictError(
                     f"账号 {batch.remote_account_id} 的预设缺少档位“"
                     f"{issue.tier_name or issue.min_deposit_amount}”。"
                 )
-            labels[issue.campaign_tier_id] = matched.label_ids
+            if len(matches) > 1:
+                raise ErpRedemptionRemotePlanConflictError(
+                    f"账号 {batch.remote_account_id} 的预设无法唯一匹配档位“"
+                    f"{issue.tier_name or issue.min_deposit_amount}”，请使用不同名称明确区分人群。"
+                )
+            labels[issue.campaign_tier_id] = matches[0].label_ids
         batch_labels[batch.id] = labels
 
     options = request.model_dump()
