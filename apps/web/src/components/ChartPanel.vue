@@ -1,12 +1,21 @@
 <script setup lang="ts">
-import { BarChart, LineChart } from 'echarts/charts'
-import { GridComponent, TooltipComponent } from 'echarts/components'
+import { BarChart, LineChart, PieChart } from 'echarts/charts'
+import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from 'echarts/components'
 import type { EChartsOption } from 'echarts'
 import { init, use, type EChartsType } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-use([BarChart, LineChart, GridComponent, TooltipComponent, CanvasRenderer])
+use([
+  BarChart,
+  LineChart,
+  PieChart,
+  GridComponent,
+  LegendComponent,
+  TitleComponent,
+  TooltipComponent,
+  CanvasRenderer,
+])
 
 const props = withDefaults(
   defineProps<{
@@ -14,10 +23,16 @@ const props = withDefaults(
     option: EChartsOption
     empty?: boolean
     height?: number
+    active?: boolean
+    plain?: boolean
+    showTitle?: boolean
   }>(),
   {
     empty: false,
     height: 280,
+    active: true,
+    plain: false,
+    showTitle: true,
   },
 )
 
@@ -28,9 +43,10 @@ const emit = defineEmits<{
 const chartElement = ref<HTMLDivElement | null>(null)
 let chart: EChartsType | null = null
 let resizeObserver: ResizeObserver | null = null
+let renderFrame: number | null = null
 
 function render(): void {
-  if (!chartElement.value || props.empty) {
+  if (!chartElement.value || !props.active || props.empty) {
     chart?.clear()
     return
   }
@@ -41,18 +57,41 @@ function render(): void {
   chart.setOption(props.option, true)
 }
 
-watch(() => props.option, () => nextTick(render), { deep: true })
-watch(() => props.empty, () => nextTick(render))
+function renderAtVisibleSize(): void {
+  void nextTick(() => {
+    if (renderFrame !== null) window.cancelAnimationFrame(renderFrame)
+    renderFrame = window.requestAnimationFrame(() => {
+      renderFrame = null
+      if (
+        !chartElement.value ||
+        !props.active ||
+        chartElement.value.clientWidth === 0 ||
+        chartElement.value.clientHeight === 0
+      ) {
+        return
+      }
+      render()
+      chart?.resize()
+    })
+  })
+}
+
+watch(() => props.option, renderAtVisibleSize, { deep: true })
+watch(() => props.empty, renderAtVisibleSize)
+watch(() => props.active, renderAtVisibleSize)
 
 onMounted(() => {
-  render()
+  renderAtVisibleSize()
   if (chartElement.value) {
-    resizeObserver = new ResizeObserver(() => chart?.resize())
+    resizeObserver = new ResizeObserver(() => {
+      if (props.active) chart?.resize()
+    })
     resizeObserver.observe(chartElement.value)
   }
 })
 
 onBeforeUnmount(() => {
+  if (renderFrame !== null) window.cancelAnimationFrame(renderFrame)
   resizeObserver?.disconnect()
   chart?.dispose()
   chart = null
@@ -60,9 +99,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="chart-panel surface-card">
-    <header>{{ title }}</header>
-    <div v-if="empty" class="chart-empty">暂无可展示数据</div>
+  <section class="chart-panel" :class="{ 'surface-card': !plain, 'chart-panel--plain': plain }">
+    <header v-if="showTitle">{{ title }}</header>
+    <div v-if="empty" class="chart-empty" :style="{ height: `${height}px` }">暂无可展示数据</div>
     <div v-else ref="chartElement" class="chart-canvas" :style="{ height: `${height}px` }" />
   </section>
 </template>
@@ -84,10 +123,13 @@ onBeforeUnmount(() => {
 }
 
 .chart-empty {
-  height: 280px;
   display: grid;
   place-items: center;
   color: var(--ink-muted);
   font-size: 14px;
+}
+
+.chart-panel--plain {
+  padding: 0;
 }
 </style>

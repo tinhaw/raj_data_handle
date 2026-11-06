@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +17,7 @@ from packages.common.security import (
 )
 from packages.common.settings import Settings, get_settings
 from packages.domain.models import (
+    DataDictionaryEntry,
     PaymentChannelBinding,
     PaymentPlatform,
     ReconciliationBatch,
@@ -28,7 +29,27 @@ from packages.domain.schemas.source import (
     SourceUpsertRequest,
 )
 from packages.domain.services.auth_service import write_audit
+from packages.domain.services.data_dictionary_service import (
+    DataDictionarySyncError,
+    ensure_charge_statuses,
+    ensure_spin_order_statuses,
+    sync_payment_channel_names,
+    sync_payment_channels,
+)
+from packages.domain.services.erp_compatibility_id_service import (
+    register_erp_compatibility_id,
+)
+from packages.domain.services.remote_account_credentials import (
+    RemoteAccountCredentialsError,
+    decrypt_remote_account_credentials,
+    resolve_default_remote_account_credentials,
+)
+from packages.domain.services.remote_account_session_service import account_session
 from packages.domain.services.remote_charge_service import RajAdminChargeClient, RemoteChargeError
+from packages.domain.services.remote_scoring_review_service import (
+    RemoteScoringReviewError,
+    ScoringReviewRemoteClient,
+)
 
 SOURCE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 
@@ -83,6 +104,62 @@ def normalize_base_url(value: str | None, settings: Settings) -> str | None:
     return urlunsplit((parts.scheme, parts.netloc, "", "", "")).rstrip("/")
 
 
+def _normalize_key_api_base_url(
+    value: str | None,
+    settings: Settings,
+    *,
+    label: str,
+) -> str | None:
+    """Normalize a write-only-key API root that must end in ``/api``."""
+
+    if value is None:
+        return None
+    parts = urlsplit(value.strip())
+    if parts.username or parts.password or parts.query or parts.fragment:
+        raise SourceValidationError(f"{label} Base URL 不能包含凭据、查询参数或片段。")
+    is_local_dev = settings.environment == "development" and parts.hostname in {
+        "localhost",
+        "127.0.0.1",
+    }
+    if parts.scheme != "https" and not (is_local_dev and parts.scheme == "http"):
+        raise SourceValidationError(f"{label} Base URL 必须使用 HTTPS。")
+    if not parts.hostname:
+        raise SourceValidationError(f"{label} Base URL 缺少有效主机名。")
+    if parts.path.rstrip("/") != "/api":
+        raise SourceValidationError(f"{label} Base URL 必须以 /api 结束。")
+    return urlunsplit((parts.scheme, parts.netloc, "/api", "", ""))
+
+
+def normalize_scoring_api_base_url(value: str | None, settings: Settings) -> str | None:
+    """Normalize an external scoring-review API root, including its ``/api`` path.
+
+    This deliberately differs from :func:`normalize_base_url`: Raj admin
+    connections start at a host root, while the documented scoring API base is
+    ``https://<host>/api``.  Keeping the paths separate prevents an admin URL
+    from being accidentally used as an API-key endpoint.
+    """
+
+    return _normalize_key_api_base_url(value, settings, label="评分审核 API")
+
+
+def normalize_initial_review_v1_api_base_url(value: str | None, settings: Settings) -> str | None:
+    """Normalize the v1 initial-review API root using the same ``/api`` contract."""
+
+    return _normalize_key_api_base_url(value, settings, label="v1版初审 API")
+
+
+def _scoring_api_credential_scope(source_id: str) -> str:
+    """Return a distinct AES-GCM associated-data scope for the API key."""
+
+    return f"{source_id}:scoring-review-api"
+
+
+def _initial_review_v1_api_credential_scope(source_id: str) -> str:
+    """Keep v1 initial-review keys cryptographically separate from other keys."""
+
+    return f"{source_id}:initial-review-v1-api"
+
+
 def _credentials_dict(request: object) -> dict[str, str | None]:
     if request is None:
         return {}
@@ -94,11 +171,72 @@ def _credentials_dict(request: object) -> dict[str, str | None]:
 
 
 async def list_sources(session: AsyncSession, enabled: bool | None = None) -> list[SourceConfig]:
-    statement = select(SourceConfig).order_by(SourceConfig.source_id.asc())
+    statement = select(SourceConfig).order_by(
+        SourceConfig.display_order.asc(), SourceConfig.source_id.asc()
+    )
     if enabled is not None:
         statement = statement.where(SourceConfig.enabled.is_(enabled))
     result = await session.scalars(statement)
     return list(result)
+
+
+def source_login_username(
+    source: SourceConfig,
+    *,
+    settings: Settings | None = None,
+) -> str | None:
+    """Return only a source's login account for the administrator settings UI.
+
+    Passwords and TOTP secrets remain write-only.  A malformed historical
+    ciphertext should not prevent the settings page from loading; the normal
+    credential update flow will surface that condition if it needs changing.
+    """
+
+    if not source.encrypted_credentials:
+        return None
+    try:
+        credentials = decrypt_credentials(
+            source.encrypted_credentials,
+            source_id=source.source_id,
+            credential_version=source.credential_version,
+            settings=settings,
+        )
+    except SecurityValidationError:
+        return None
+    username = credentials.get("username", "").strip()
+    return username or None
+
+
+async def reorder_sources(
+    session: AsyncSession,
+    *,
+    source_ids: list[str],
+    actor_user_id: int,
+) -> list[SourceConfig]:
+    normalized_ids = [validate_source_id(source_id) for source_id in source_ids]
+    if len(normalized_ids) != len(set(normalized_ids)):
+        raise SourceValidationError("盘口顺序不能包含重复项。")
+
+    sources = list(await session.scalars(select(SourceConfig)))
+    current_ids = {source.source_id for source in sources}
+    if set(normalized_ids) != current_ids:
+        raise SourceValidationError("盘口顺序必须包含全部盘口，且不能包含不存在的盘口。")
+
+    source_by_id = {source.source_id: source for source in sources}
+    for display_order, source_id in enumerate(normalized_ids, start=1):
+        source = source_by_id[source_id]
+        source.display_order = display_order
+        source.updated_by = actor_user_id
+
+    await write_audit(
+        session,
+        action="source.reorder",
+        actor_user_id=actor_user_id,
+        target_type="source",
+        metadata={"source_ids": normalized_ids},
+    )
+    await session.commit()
+    return [source_by_id[source_id] for source_id in normalized_ids]
 
 
 async def get_source(session: AsyncSession, source_id: str) -> SourceConfig:
@@ -148,11 +286,14 @@ async def upsert_source(
     if source is None:
         if not isinstance(request, SourceUpsertRequest):
             raise SourceValidationError("盘口配置不存在。")
+        max_display_order = await session.scalar(select(func.max(SourceConfig.display_order)))
         source = SourceConfig(
             source_id=source_id,
             display_name=request.display_name,
+            display_order=(max_display_order or 0) + 1,
             business_timezone=current_settings.default_business_timezone,
             currency=current_settings.default_currency,
+            credential_version=0,
             created_by=actor_user_id,
             updated_by=actor_user_id,
         )
@@ -201,7 +342,7 @@ async def upsert_source(
         required = {"username", "password", "totp_secret"}
         if not required.issubset(existing):
             raise SourceValidationError("首次配置必须同时提供账号、密码和 TOTP Secret。")
-        source.credential_version += 1
+        source.credential_version = (source.credential_version or 0) + 1
         source.encrypted_credentials = encrypt_credentials(
             existing,
             source_id=source.source_id,
@@ -213,13 +354,96 @@ async def upsert_source(
         credentials_changed = True
         changed_fields.append("credentials")
 
+    scoring_api = getattr(request, "scoring_api", None)
+    if scoring_api is not None:
+        raw_scoring_api_url = (
+            str(scoring_api.base_url) if scoring_api.base_url is not None else None
+        )
+        scoring_api_base_url = normalize_scoring_api_base_url(
+            raw_scoring_api_url,
+            current_settings,
+        )
+        if source.scoring_api_base_url != scoring_api_base_url:
+            source.scoring_api_base_url = scoring_api_base_url
+            source.scoring_api_last_test_status = None
+            changed_fields.append("scoring_api_base_url")
+
+        supplied_api_key = (scoring_api.api_key or "").strip()
+        if supplied_api_key:
+            if scoring_api_base_url is None:
+                raise SourceValidationError("配置评分审核 API Key 前必须填写 Base URL。")
+            source.scoring_api_key_version = (source.scoring_api_key_version or 0) + 1
+            source.encrypted_scoring_api_key = encrypt_credentials(
+                {"api_key": supplied_api_key},
+                source_id=_scoring_api_credential_scope(source.source_id),
+                credential_version=source.scoring_api_key_version,
+                settings=current_settings,
+            )
+            source.scoring_api_key_updated_at = datetime.now(UTC)
+            source.scoring_api_last_test_status = None
+            changed_fields.append("scoring_api_key")
+        elif scoring_api_base_url is None and source.encrypted_scoring_api_key is not None:
+            # Clearing the URL explicitly clears the inaccessible key too.
+            # A new version makes a copied historical ciphertext unusable.
+            source.scoring_api_key_version = (source.scoring_api_key_version or 0) + 1
+            source.encrypted_scoring_api_key = None
+            source.scoring_api_key_updated_at = datetime.now(UTC)
+            source.scoring_api_last_test_status = None
+            changed_fields.append("scoring_api_key")
+
+    initial_review_v1_api = getattr(request, "initial_review_v1_api", None)
+    if initial_review_v1_api is not None:
+        raw_initial_review_v1_api_url = (
+            str(initial_review_v1_api.base_url)
+            if initial_review_v1_api.base_url is not None
+            else None
+        )
+        initial_review_v1_api_base_url = normalize_initial_review_v1_api_base_url(
+            raw_initial_review_v1_api_url,
+            current_settings,
+        )
+        if source.initial_review_v1_api_base_url != initial_review_v1_api_base_url:
+            source.initial_review_v1_api_base_url = initial_review_v1_api_base_url
+            changed_fields.append("initial_review_v1_api_base_url")
+
+        supplied_initial_review_v1_api_key = (initial_review_v1_api.api_key or "").strip()
+        if supplied_initial_review_v1_api_key:
+            if initial_review_v1_api_base_url is None:
+                raise SourceValidationError("配置 v1版初审 API Key 前必须填写 Base URL。")
+            source.initial_review_v1_api_key_version = (
+                source.initial_review_v1_api_key_version or 0
+            ) + 1
+            source.encrypted_initial_review_v1_api_key = encrypt_credentials(
+                {"api_key": supplied_initial_review_v1_api_key},
+                source_id=_initial_review_v1_api_credential_scope(source.source_id),
+                credential_version=source.initial_review_v1_api_key_version,
+                settings=current_settings,
+            )
+            source.initial_review_v1_api_key_updated_at = datetime.now(UTC)
+            changed_fields.append("initial_review_v1_api_key")
+        elif (
+            initial_review_v1_api_base_url is None
+            and source.encrypted_initial_review_v1_api_key is not None
+        ):
+            # Clearing the URL explicitly clears the inaccessible key too.
+            source.initial_review_v1_api_key_version = (
+                source.initial_review_v1_api_key_version or 0
+            ) + 1
+            source.encrypted_initial_review_v1_api_key = None
+            source.initial_review_v1_api_key_updated_at = datetime.now(UTC)
+            changed_fields.append("initial_review_v1_api_key")
+
     requested_enabled = getattr(request, "enabled", None)
     if requested_enabled is not None:
         if requested_enabled:
-            if not source.base_url or not source.encrypted_credentials:
-                raise SourceValidationError("启用前必须配置 Base URL 和完整远端凭据。")
-            if source.last_test_status != "passed":
-                raise SourceValidationError("启用前必须通过最近一次完整连接测试。")
+            if not source.base_url:
+                raise SourceValidationError("启用前必须配置 Base URL。")
+            credential_envelope = await resolve_default_remote_account_credentials(
+                session,
+                source=source,
+            )
+            if credential_envelope is None:
+                raise SourceValidationError("启用前必须配置一个已启用的默认远端账号。")
         if source.enabled != requested_enabled:
             source.enabled = requested_enabled
             changed_fields.append("enabled")
@@ -229,6 +453,15 @@ async def upsert_source(
     if changed_fields and not creating:
         source.config_version += 1
     source.updated_by = actor_user_id
+    if creating:
+        await session.flush()
+        await register_erp_compatibility_id(
+            session,
+            entity_type="source",
+            canonical_id=source.source_id,
+        )
+        await ensure_charge_statuses(session, source_id=source.source_id)
+        await ensure_spin_order_statuses(session, source_id=source.source_id)
     await write_audit(
         session,
         action="source.create" if creating else "source.update",
@@ -260,6 +493,9 @@ async def delete_source(
 
     await session.execute(
         delete(PaymentChannelBinding).where(PaymentChannelBinding.source_id == source.source_id)
+    )
+    await session.execute(
+        delete(DataDictionaryEntry).where(DataDictionaryEntry.source_id == source.source_id)
     )
     await write_audit(
         session,
@@ -302,6 +538,56 @@ async def clear_credentials(
     return source
 
 
+async def test_source_scoring_api_connection(
+    session: AsyncSession,
+    *,
+    source_id: str,
+    actor_user_id: int,
+) -> tuple[SourceConfig, str]:
+    """Validate the external API's low-volume Excel export independently."""
+
+    source = await get_source(session, source_id)
+    if not source.scoring_api_base_url or not source.encrypted_scoring_api_key:
+        raise SourceValidationError("请先保存评分审核 API Base URL 和 API Key。")
+    request_id = uuid.uuid4().hex
+    settings = get_settings()
+    try:
+        payload = decrypt_credentials(
+            source.encrypted_scoring_api_key,
+            source_id=_scoring_api_credential_scope(source.source_id),
+            credential_version=source.scoring_api_key_version,
+            settings=settings,
+        )
+        api_key = payload["api_key"]
+    except (SecurityValidationError, KeyError) as exc:
+        raise SourceValidationError("已保存的评分审核 API Key 无法解密，请重新配置。") from exc
+
+    test_status = "failed"
+    try:
+        async with ScoringReviewRemoteClient(
+            base_url=source.scoring_api_base_url,
+            api_key=api_key,
+        ) as client:
+            await client.test_connection()
+        test_status = "passed"
+    except RemoteScoringReviewError:
+        test_status = "failed"
+    source.scoring_api_last_tested_at = datetime.now(UTC)
+    source.scoring_api_last_test_status = test_status
+    source.scoring_api_last_test_request_id = request_id
+    await write_audit(
+        session,
+        action="source.scoring_api.connection_test",
+        actor_user_id=actor_user_id,
+        target_type="source",
+        target_id=source.source_id,
+        result=test_status,
+        metadata={"request_id": request_id},
+    )
+    await session.commit()
+    return source, request_id
+
+
 def _platform_key_for_channel(label: str) -> str | None:
     normalized = "".join(label.lower().split())
     if "aelopay" in normalized:
@@ -319,6 +605,16 @@ async def _sync_known_channels(
     actor_user_id: int,
 ) -> int:
     platforms = {item.platform_key: item for item in await session.scalars(select(PaymentPlatform))}
+    existing_bindings = list(
+        await session.scalars(
+            select(PaymentChannelBinding).where(
+                PaymentChannelBinding.source_id == source.source_id,
+                PaymentChannelBinding.business_type == "payin",
+            )
+        )
+    )
+    for binding in existing_bindings:
+        binding.active = False
     synced = 0
     for channel in channels:
         platform_key = _platform_key_for_channel(channel["label"])
@@ -358,38 +654,60 @@ async def test_source_connection(
     actor_user_id: int,
 ) -> tuple[SourceConfig, str]:
     source = await get_source(session, source_id)
-    if not source.base_url or not source.encrypted_credentials:
-        raise SourceValidationError("请先保存 Base URL 和完整远端凭据。")
+    if not source.base_url:
+        raise SourceValidationError("请先保存 Base URL。")
     request_id = uuid.uuid4().hex
     settings = get_settings()
+    credential_envelope = await resolve_default_remote_account_credentials(
+        session,
+        source=source,
+    )
+    if credential_envelope is None:
+        raise SourceValidationError("请先配置一个已启用的默认远端账号。")
     try:
-        credentials = decrypt_credentials(
-            source.encrypted_credentials,
-            source_id=source.source_id,
-            credential_version=source.credential_version,
+        credentials = decrypt_remote_account_credentials(
+            credential_envelope,
             settings=settings,
         )
-    except SecurityValidationError as exc:
+    except RemoteAccountCredentialsError as exc:
         raise SourceValidationError("已保存凭据无法解密，请清除后重新配置。") from exc
     test_status = "failed"
     synced_channels = 0
+    dictionary_entries = 0
+    payment_dictionary_entries = 0
     try:
         async with RajAdminChargeClient(
+            remote_session=account_session(
+                session, envelope=credential_envelope, base_url=source.base_url, settings=settings
+            ),
             base_url=source.base_url,
             username=credentials["username"],
             password=credentials["password"],
             totp_secret=credentials["totp_secret"],
         ) as client:
             await client.login()
-            channels = await client.fetch_channels()
+            channel_names = await client.fetch_channels()
+            payment_channels = await client.fetch_payment_channels()
+        channel_dictionary_sync = await sync_payment_channels(
+            session,
+            source_id=source.source_id,
+            channels=payment_channels,
+        )
+        payment_dictionary_entries = channel_dictionary_sync.active_entries
+        channel_name_dictionary_sync = await sync_payment_channel_names(
+            session,
+            source_id=source.source_id,
+            channels=channel_names,
+        )
+        dictionary_entries = channel_name_dictionary_sync.active_entries
         synced_channels = await _sync_known_channels(
             session,
             source=source,
-            channels=channels,
+            channels=channel_names,
             actor_user_id=actor_user_id,
         )
         test_status = "passed"
-    except (RemoteChargeError, KeyError):
+    except (RemoteChargeError, DataDictionarySyncError, KeyError):
         test_status = "failed"
     source.last_tested_at = datetime.now(UTC)
     source.last_test_status = test_status
@@ -403,6 +721,8 @@ async def test_source_connection(
         result=test_status,
         metadata={
             "request_id": request_id,
+            "synced_payment_channels": payment_dictionary_entries,
+            "synced_payment_channel_names": dictionary_entries,
             "synced_known_payin_channels": synced_channels,
         },
     )

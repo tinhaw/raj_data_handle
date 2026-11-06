@@ -299,17 +299,10 @@ def upgrade() -> None:
                 "match_rules_json": [
                     {
                         "priority": 1,
-                        "payment_canonical_field": "merchant_order_no",
-                        "remote_canonical_field": "order_num",
-                        "match_type": "exact",
-                        "required": True,
-                    },
-                    {
-                        "priority": 2,
                         "payment_canonical_field": "platform_order_no",
                         "remote_canonical_field": "out_trade_no",
                         "match_type": "exact",
-                        "required": False,
+                        "required": True,
                     },
                 ],
                 "active": True,

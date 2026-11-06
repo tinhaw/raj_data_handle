@@ -179,8 +179,8 @@ def import_payment_orders(
     platform_column = str(column_mapping.get("platform_order_no") or "")
     amount_column = str(column_mapping.get("amount") or "")
     status_column = str(column_mapping.get("payment_status") or "")
-    if not merchant_column or not amount_column or not status_column:
-        raise PaymentImportError("支付模板缺少订单号、金额或状态映射。")
+    if not platform_column or not amount_column or not status_column:
+        raise PaymentImportError("支付模板缺少三方订单号、金额或状态映射。")
     candidate_times = column_mapping.get("candidate_time_fields")
     if not isinstance(candidate_times, list) or payment_time_field not in candidate_times:
         raise PaymentImportError("支付时间列不属于当前模板允许的候选字段。")
@@ -202,8 +202,8 @@ def import_payment_orders(
             excluded += 1
             continue
 
-        merchant_order_no = _order_text(row.get(merchant_column))
-        platform_order_no = _order_text(row.get(platform_column)) if platform_column else None
+        merchant_order_no = _order_text(row.get(merchant_column)) if merchant_column else None
+        platform_order_no = _order_text(row.get(platform_column))
         amount = _decimal(row.get(amount_column))
         payment_status_raw = _order_text(row.get(status_column))
         payment_status_group = (
@@ -214,7 +214,7 @@ def import_payment_orders(
             else "unknown"
         )
         invalid = (
-            not merchant_order_no or amount is None or payment_status_raw is None or time_is_invalid
+            not platform_order_no or amount is None or payment_status_raw is None or time_is_invalid
         )
         parsed_rows.append(
             {
@@ -231,7 +231,7 @@ def import_payment_orders(
 
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in parsed_rows:
-        group_key = row["merchant_order_no"] or f"invalid-row:{row['row_number']}"
+        group_key = row["platform_order_no"] or f"invalid-row:{row['row_number']}"
         grouped.setdefault(group_key, []).append(row)
 
     groups: list[PaymentOrderGroup] = []

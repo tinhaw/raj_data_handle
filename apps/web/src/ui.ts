@@ -7,6 +7,32 @@ export function formatDateTime(value: string | null | undefined): string {
   }).format(new Date(value))
 }
 
+/** Return one full calendar day in the selected business timezone. */
+export function businessFullDayRange(timeZone: string, daysAgo: number): [string, string] {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date())
+  const values = Object.fromEntries(
+    parts
+      .filter((part) => part.type === 'year' || part.type === 'month' || part.type === 'day')
+      .map((part) => [part.type, part.value]),
+  )
+  const year = Number(values.year)
+  const month = Number(values.month)
+  const day = Number(values.day)
+  const target = new Date(Date.UTC(year, month - 1, day - daysAgo))
+  const date = `${target.getUTCFullYear()}-${String(target.getUTCMonth() + 1).padStart(2, '0')}-${String(target.getUTCDate()).padStart(2, '0')}`
+  return [`${date} 00:00:00`, `${date} 23:59:59`]
+}
+
+/** Return yesterday's full calendar day in the selected business timezone. */
+export function yesterdayFullDayRange(timeZone: string): [string, string] {
+  return businessFullDayRange(timeZone, 1)
+}
+
 const statusNames: Record<string, string> = {
   awaiting_confirmation: '待确认',
   queued: '排队中',

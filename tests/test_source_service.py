@@ -1,17 +1,35 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from packages.common.security import SecurityValidationError, decrypt_credentials
 from packages.common.settings import Settings
-from packages.domain.models import Base, ReconciliationBatch, SourceConfig
-from packages.domain.schemas.source import SourceCreateRequest
+from packages.domain.models import (
+    Base,
+    DataDictionaryEntry,
+    ReconciliationBatch,
+    SourceConfig,
+)
+from packages.domain.schemas.source import (
+    ScoringApiWrite,
+    SourceCreateRequest,
+    SourceCredentialsWrite,
+)
 from packages.domain.services.source_service import (
     SourceConflictError,
     SourceValidationError,
+    _initial_review_v1_api_credential_scope,
+    _scoring_api_credential_scope,
     create_source,
     delete_source,
+    list_sources,
     normalize_base_url,
+    normalize_initial_review_v1_api_base_url,
+    normalize_scoring_api_base_url,
+    reorder_sources,
+    source_login_username,
     validate_source_id,
     validate_timezone,
 )
@@ -31,6 +49,28 @@ def test_base_url_is_normalized_without_business_path() -> None:
         normalize_base_url("https://admin.example.com/", configured) == "https://admin.example.com"
     )
     assert normalize_base_url("http://localhost:9000", configured) == "http://localhost:9000"
+
+
+def test_scoring_api_base_url_retains_its_required_api_root() -> None:
+    configured = development_settings()
+    assert (
+        normalize_scoring_api_base_url("https://scoring.example.com/api/", configured)
+        == "https://scoring.example.com/api"
+    )
+    with pytest.raises(SourceValidationError, match="/api"):
+        normalize_scoring_api_base_url("https://scoring.example.com", configured)
+    with pytest.raises(SourceValidationError):
+        normalize_scoring_api_base_url("https://scoring.example.com/api?key=secret", configured)
+
+
+def test_initial_review_v1_api_base_url_uses_the_scoring_api_format() -> None:
+    configured = development_settings()
+    assert (
+        normalize_initial_review_v1_api_base_url("https://review.example.com/api/", configured)
+        == "https://review.example.com/api"
+    )
+    with pytest.raises(SourceValidationError, match="v1版初审 API"):
+        normalize_initial_review_v1_api_base_url("https://review.example.com", configured)
 
 
 @pytest.mark.parametrize(
@@ -84,6 +124,30 @@ async def test_custom_source_can_be_created_and_deleted() -> None:
         )
         assert created.source_id == "rajstar"
         assert created.enabled is False
+        seeded_statuses = list(
+            await session.scalars(
+                select(DataDictionaryEntry)
+                .where(
+                    DataDictionaryEntry.source_id == "rajstar",
+                    DataDictionaryEntry.dictionary_type == "charge_status",
+                )
+                .order_by(DataDictionaryEntry.entry_code)
+            )
+        )
+        assert [(entry.entry_code, entry.entry_label) for entry in seeded_statuses] == [
+            ("-1", "已失效"),
+            ("0", "待支付"),
+            ("1", "已支付"),
+            ("2", "已退款"),
+        ]
+        dictionary_entry = DataDictionaryEntry(
+            source_id="rajstar",
+            dictionary_type="payment_channel_name",
+            entry_code="948",
+            entry_label="aelopay(HX)",
+        )
+        session.add(dictionary_entry)
+        await session.commit()
 
         with pytest.raises(SourceConflictError):
             await create_source(
@@ -95,6 +159,198 @@ async def test_custom_source_can_be_created_and_deleted() -> None:
 
         await delete_source(session, source_id="rajstar", actor_user_id=1)
         assert await session.get(SourceConfig, "rajstar") is None
+        assert await session.get(DataDictionaryEntry, dictionary_entry.id) is None
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_new_source_accepts_initial_credentials_before_database_flush() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with factory() as session:
+        created = await create_source(
+            session,
+            request=SourceCreateRequest(
+                source_id="rajstar",
+                display_name="RajStar",
+                base_url="https://admin.example.test",
+                credentials=SourceCredentialsWrite(
+                    username="reader",
+                    password="test-password",
+                    totp_secret="JBSWY3DPEHPK3PXP",
+                ),
+            ),
+            actor_user_id=1,
+            settings=development_settings(),
+        )
+
+    assert created.credential_version == 1
+    assert created.encrypted_credentials is not None
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_source_login_username_can_be_read_without_exposing_other_credentials() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings = development_settings()
+
+    async with factory() as session:
+        source = await create_source(
+            session,
+            request=SourceCreateRequest(
+                source_id="rajstar",
+                display_name="RajStar",
+                base_url="https://admin.example.test",
+                credentials=SourceCredentialsWrite(
+                    username="reader",
+                    password="test-password",
+                    totp_secret="JBSWY3DPEHPK3PXP",
+                ),
+            ),
+            actor_user_id=1,
+            settings=settings,
+        )
+
+    assert source_login_username(source, settings=settings) == "reader"
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_source_keeps_scoring_api_key_in_a_separate_encrypted_scope() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings = development_settings()
+
+    async with factory() as session:
+        created = await create_source(
+            session,
+            request=SourceCreateRequest(
+                source_id="rajscore",
+                display_name="RajScore",
+                scoring_api=ScoringApiWrite(
+                    base_url="https://scoring.example.test/api",
+                    api_key="srk_v1_prefix.secret",
+                ),
+            ),
+            actor_user_id=1,
+            settings=settings,
+        )
+
+    assert created.scoring_api_base_url == "https://scoring.example.test/api"
+    assert created.encrypted_scoring_api_key is not None
+    assert created.scoring_api_key_version == 1
+    with pytest.raises(SecurityValidationError):
+        # The admin-login associated-data scope must not decrypt an API key.
+        decrypt_credentials(
+            created.encrypted_scoring_api_key,
+            source_id=created.source_id,
+            credential_version=created.scoring_api_key_version,
+            settings=settings,
+        )
+    assert decrypt_credentials(
+        created.encrypted_scoring_api_key,
+        source_id=_scoring_api_credential_scope(created.source_id),
+        credential_version=created.scoring_api_key_version,
+        settings=settings,
+    ) == {"api_key": "srk_v1_prefix.secret"}
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_source_keeps_initial_review_v1_api_key_in_a_separate_encrypted_scope() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings = development_settings()
+
+    async with factory() as session:
+        created = await create_source(
+            session,
+            request=SourceCreateRequest(
+                source_id="rajfirstreview",
+                display_name="Raj First Review",
+                initial_review_v1_api=ScoringApiWrite(
+                    base_url="https://first-review.example.test/api",
+                    api_key="frk_v1_prefix.secret",
+                ),
+            ),
+            actor_user_id=1,
+            settings=settings,
+        )
+
+    assert created.initial_review_v1_api_base_url == "https://first-review.example.test/api"
+    assert created.encrypted_initial_review_v1_api_key is not None
+    assert created.initial_review_v1_api_key_version == 1
+    with pytest.raises(SecurityValidationError):
+        decrypt_credentials(
+            created.encrypted_initial_review_v1_api_key,
+            source_id=_scoring_api_credential_scope(created.source_id),
+            credential_version=created.initial_review_v1_api_key_version,
+            settings=settings,
+        )
+    assert decrypt_credentials(
+        created.encrypted_initial_review_v1_api_key,
+        source_id=_initial_review_v1_api_credential_scope(created.source_id),
+        credential_version=created.initial_review_v1_api_key_version,
+        settings=settings,
+    ) == {"api_key": "frk_v1_prefix.secret"}
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sources_can_be_reordered_and_are_listed_in_persisted_order() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with factory() as session:
+        session.add_all(
+            [
+                SourceConfig(
+                    source_id="rajwin",
+                    display_name="RajWin",
+                    business_timezone="Asia/Kolkata",
+                    currency="INR",
+                ),
+                SourceConfig(
+                    source_id="rajluck",
+                    display_name="RajLuck",
+                    business_timezone="Asia/Kolkata",
+                    currency="INR",
+                ),
+            ]
+        )
+        await session.commit()
+
+        reordered = await reorder_sources(
+            session,
+            source_ids=["rajwin", "rajluck"],
+            actor_user_id=1,
+        )
+        assert [source.source_id for source in reordered] == ["rajwin", "rajluck"]
+        assert [source.source_id for source in await list_sources(session)] == [
+            "rajwin",
+            "rajluck",
+        ]
+        assert [source.display_order for source in reordered] == [1, 2]
+
+        with pytest.raises(SourceValidationError, match="重复"):
+            await reorder_sources(
+                session,
+                source_ids=["rajwin", "rajwin"],
+                actor_user_id=1,
+            )
 
     await engine.dispose()
 

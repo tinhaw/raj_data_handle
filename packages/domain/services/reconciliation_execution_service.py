@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from packages.common.security import SecurityValidationError, decrypt_credentials
 from packages.common.settings import Settings, get_settings
 from packages.domain.models import (
     OrderReconciliationResult,
@@ -17,7 +16,10 @@ from packages.domain.models import (
     StoredFileObject,
     StoredFileReference,
 )
-from packages.domain.services.batch_service import transition_batch
+from packages.domain.services.batch_service import (
+    resolve_payment_column_mapping,
+    transition_batch,
+)
 from packages.domain.services.payment_import_service import (
     PaymentImportError,
     PaymentOrderGroup,
@@ -27,6 +29,12 @@ from packages.domain.services.reconciliation_engine import (
     ReconciliationDecision,
     compare_with_remote_orders,
 )
+from packages.domain.services.remote_account_credentials import (
+    RemoteAccountCredentialsError,
+    decrypt_remote_account_credentials,
+    resolve_default_remote_account_credentials,
+)
+from packages.domain.services.remote_account_session_service import account_session
 from packages.domain.services.remote_charge_service import (
     RajAdminChargeClient,
     RemoteChargeError,
@@ -174,18 +182,25 @@ async def execute_reconciliation_batch(
             source is None
             or not source.enabled
             or not source.base_url
-            or not source.encrypted_credentials
             or source.config_version != batch.source_config_version
         ):
             raise ReconciliationExecutionError("盘口配置已变化或不可用，请创建重新比对版本。")
-        credentials = decrypt_credentials(
-            source.encrypted_credentials,
-            source_id=source.source_id,
-            credential_version=source.credential_version,
+        credential_envelope = await resolve_default_remote_account_credentials(
+            session,
+            source=source,
+        )
+        if credential_envelope is None:
+            raise ReconciliationExecutionError("盘口尚未配置可用的默认远端账号。")
+        credentials = decrypt_remote_account_credentials(
+            credential_envelope,
             settings=current_settings,
         )
         detection, template = _template_snapshot(batch)
         window = batch.parameters_json["comparisonWindow"]
+        column_mapping = resolve_payment_column_mapping(batch.parameters_json, template)
+        detected_headers = detection.get("detectedHeaders")
+        if isinstance(detected_headers, list) and detected_headers:
+            column_mapping["candidate_time_fields"] = list(detected_headers)
         path = await _uploaded_path(session, storage, batch.id)
         imported = import_payment_orders(
             path,
@@ -193,7 +208,7 @@ async def execute_reconciliation_batch(
             platform_key=str(template["platformKey"]),
             source_sheet=str(detection["sourceSheet"]),
             header_row=int(detection["headerRow"]),
-            column_mapping=dict(template["columnMapping"]),
+            column_mapping=column_mapping,
             success_status_values=list(template["successStatusValues"]),
             payment_time_field=str(window["paymentTimeField"]),
             payment_timezone=str(window["paymentTimezone"]),
@@ -207,7 +222,7 @@ async def execute_reconciliation_batch(
         ValueError,
         PaymentImportError,
         ReconciliationExecutionError,
-        SecurityValidationError,
+        RemoteAccountCredentialsError,
     ) as exc:
         batch.error_category = "validation_error"
         batch.error_message = str(exc)[:500]
@@ -257,6 +272,12 @@ async def execute_reconciliation_batch(
     ]
     try:
         async with RajAdminChargeClient(
+            remote_session=account_session(
+                session,
+                envelope=credential_envelope,
+                base_url=source.base_url,
+                settings=current_settings,
+            ),
             base_url=source.base_url,
             username=credentials["username"],
             password=credentials["password"],
@@ -321,8 +342,9 @@ async def execute_reconciliation_batch(
                         return
                     exact = await client.exact_search(
                         channels=channels,
-                        merchant_order_no=payment.merchant_order_no or "",
                         platform_order_no=payment.platform_order_no,
+                        create_start=query_lower.strftime("%Y-%m-%d %H:%M:%S"),
+                        create_end=query_upper.strftime("%Y-%m-%d %H:%M:%S"),
                     )
                     decision = compare_with_remote_orders(
                         payment,

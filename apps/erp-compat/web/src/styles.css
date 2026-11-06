@@ -1,0 +1,78 @@
+:root {
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  color: #182230;
+  background: #f7f8fa;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+body { min-width: 1180px; min-height: 100vh; margin: 0; background: #f7f8fa; }
+button, input, textarea { font: inherit; }
+
+.app-shell { min-height: 100vh; }
+.app-aside { position: relative; z-index: 2; overflow: visible; background: #101828; transition: width .2s ease; }
+.brand { display: flex; align-items: center; gap: 10px; height: 76px; padding: 0 20px; color: #fff; white-space: nowrap; overflow: hidden; }
+.brand-mark { display: grid; flex: 0 0 auto; place-items: center; width: 34px; height: 34px; color: #fff; font-size: 18px; font-weight: 800; background: linear-gradient(145deg, #4e7cff, #155eef); border-radius: 10px; box-shadow: 0 6px 16px rgba(21, 94, 239, .35); }
+.brand-copy { display: grid; gap: 2px; }
+.brand-copy strong { font-size: 16px; letter-spacing: .2px; }
+.brand-copy span { color: #98a2b3; font-size: 11px; }
+.side-menu { width: 100%; --el-menu-bg-color: transparent; --el-menu-text-color: #d0d5dd; --el-menu-hover-bg-color: #1d2939; --el-menu-active-color: #fff; border-right: none; background: transparent; }
+.side-menu.el-menu--collapse { width: 72px; }
+.side-menu .el-menu { background: transparent; }
+.side-menu .el-menu-item { height: 46px; margin: 2px 10px; color: #d0d5dd; border-radius: 8px; }
+.side-menu .el-menu-item:hover { background: #1d2939; color: #fff; }
+.side-menu .el-menu-item.is-active { color: #fff; background: #253e78; }
+.side-menu .el-menu-item .el-icon { color: inherit; font-size: 17px; }
+.side-menu .el-sub-menu__title { height: 46px; margin: 2px 10px; color: #d0d5dd; border-radius: 8px; }
+.side-menu .el-sub-menu__title:hover { color: #fff; background: #1d2939; }
+.side-menu .el-sub-menu.is-active > .el-sub-menu__title { color: #fff; background: #253e78; }
+.side-menu .el-sub-menu .el-icon, .side-menu .el-sub-menu__icon-arrow { color: inherit; font-size: 17px; }
+.side-menu-popper { --el-menu-bg-color: #101828; --el-menu-text-color: #d0d5dd; --el-menu-hover-bg-color: #1d2939; --el-menu-active-color: #fff; background: #101828; border: 1px solid #344054; border-radius: 8px; box-shadow: 0 8px 18px rgba(16, 24, 40, .25); }
+.el-popper.side-menu-popper { padding: 0; }
+.side-menu-popper.el-menu--popup, .side-menu-popper .el-menu--popup { min-width: 184px; padding: 6px; background: transparent; }
+.side-menu-popper .el-menu-item { min-width: auto; height: 42px; margin: 2px 0; color: #d0d5dd; border-radius: 6px; }
+.side-menu-popper .el-menu-item:hover { color: #fff; background: #1d2939; }
+.side-menu-popper .el-menu-item.is-active { color: #fff; background: #253e78; }
+.side-menu-popper .el-menu-item .el-icon { color: inherit; font-size: 16px; }
+.menu-caption { margin: 22px 20px 8px; color: #667085; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.collapse-button { position: absolute; z-index: 3; right: -13px; top: 97px; display: grid; place-items: center; width: 26px; height: 26px; padding: 0; color: #667085; cursor: pointer; background: #fff; border: 1px solid #eaecf0; border-radius: 50%; box-shadow: 0 2px 8px rgba(16, 24, 40, .08); }
+.collapse-button:hover { color: #155eef; }
+.app-header { display: flex; align-items: center; justify-content: space-between; height: 76px; padding: 12px 32px; background: #fff; border-bottom: 1px solid #eaecf0; }
+.app-header h1 { margin: 7px 0 0; font-size: 20px; line-height: 1.2; font-weight: 650; color: #101828; }
+.header-actions { display: flex; align-items: center; gap: 18px; }
+.business-time { color: #667085; font-size: 13px; }
+.user-menu { display: flex; align-items: center; gap: 8px; padding: 3px; color: #344054; cursor: pointer; background: transparent; border: 0; }
+.user-avatar { color: #fff; font-size: 13px; font-weight: 700; background: #155eef; }
+.app-main { padding: 24px 32px 44px; overflow: visible; }
+.demo-alert { margin-bottom: 16px; }
+
+.page-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.page-title-row h2 { margin: 0; color: #101828; font-size: 20px; line-height: 1.4; }
+.page-subtitle { margin: 5px 0 0; color: #667085; font-size: 13px; line-height: 1.55; }
+.page-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; }
+.panel { margin-bottom: 18px; background: #fff; border: 1px solid #eaecf0; border-radius: 12px; box-shadow: 0 1px 2px rgba(16, 24, 40, .02); }
+.panel--padded { padding: 20px; }
+.filter-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px; }
+.filter-bar .el-form-item { margin: 0; }
+.table-card { overflow: hidden; }
+.table-card .el-table { --el-table-header-bg-color: #f9fafb; --el-table-border-color: #eaecf0; --el-table-row-hover-bg-color: #f8fbff; }
+.table-card .el-table th.el-table__cell { color: #475467; font-size: 12px; font-weight: 650; }
+.table-card .el-table td.el-table__cell { color: #344054; font-size: 13px; }
+.money { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.money--negative { color: #d92d20; font-weight: 650; }
+.money--positive { color: #027a48; }
+.muted { color: #98a2b3; }
+.hint { color: #667085; font-size: 12px; }
+.required-note { color: #d92d20; }
+.warning-row td { background: #fffaeb !important; }
+.table-footer { display: flex; justify-content: space-between; align-items: center; padding: 13px 16px; color: #667085; font-size: 12px; border-top: 1px solid #eaecf0; }
+.empty-panel { display: grid; place-items: center; min-height: 220px; padding: 36px; color: #667085; text-align: center; background: #fff; border: 1px solid #eaecf0; border-radius: 12px; }
+.field-note { margin-top: 5px; color: #98a2b3; font-size: 12px; line-height: 1.45; }
+.el-button--primary { --el-button-bg-color: #155eef; --el-button-border-color: #155eef; --el-button-hover-bg-color: #004eeb; --el-button-hover-border-color: #004eeb; }
+.el-input__wrapper.is-focus, .el-select__wrapper.is-focused { box-shadow: 0 0 0 1px #155eef inset !important; }
+
+@media (max-width: 1300px) {
+  .app-main { padding-left: 20px; padding-right: 20px; }
+  .app-header { padding-left: 24px; padding-right: 24px; }
+}
