@@ -1,31 +1,30 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, useId, watch } from 'vue'
 import type { ClaimColumn, ClaimRow } from '@/api/claimStatistics'
 import { trendAxis, trendColumnLabel, trendPath, trendPointLabel, trendPoints, updateTrendExclusions } from './claimTrend'
 
-const props = defineProps<{ columns: ClaimColumn[]; rows: ClaimRow[]; loading: boolean }>()
+const props = defineProps<{ marketName: string; columns: ClaimColumn[]; rows: ClaimRow[]; loading: boolean }>()
+const titleId = useId()
 const chartType = ref<'curve' | 'bar'>('curve')
 const excludedKeys = ref<string[]>([])
 const selectedKeys = computed({
   get: () => props.columns.filter(column => !excludedKeys.value.includes(column.key)).map(column => column.key),
   set: (keys: string[]) => { excludedKeys.value = updateTrendExclusions(props.columns.map(column => column.key), excludedKeys.value, keys) },
 })
-const optionGroups = computed(() => {
-  const groups = new Map<string, { id: string; name: string; columns: ClaimColumn[] }>()
-  for (const column of props.columns) {
-    if (!groups.has(column.sourceId)) groups.set(column.sourceId, { id: column.sourceId, name: column.sourceName, columns: [] })
-    groups.get(column.sourceId)!.columns.push(column)
-  }
-  return [...groups.values()]
-})
+function toggleSeries(key: string) {
+  selectedKeys.value = selectedKeys.value.includes(key)
+    ? selectedKeys.value.filter(value => value !== key)
+    : [...selectedKeys.value, key]
+}
 const colorIndices = new Map<string, number>()
 watch(() => props.columns, columns => {
   for (const column of columns) if (!colorIndices.has(column.key)) colorIndices.set(column.key, colorIndices.size)
 }, { immediate: true })
 function color(key: string) { return `var(--claim-line-${(colorIndices.get(key) || 0) % 20 + 1})` }
-const series = computed(() => props.columns.filter(column => selectedKeys.value.includes(column.key)).map(column => ({
+const allSeries = computed(() => props.columns.map(column => ({
   key: column.key, label: trendColumnLabel(column), points: trendPoints(props.rows, column.key),
 })))
+const series = computed(() => allSeries.value.filter(item => selectedKeys.value.includes(item.key)))
 const axis = computed(() => trendAxis(series.value.flatMap(item => item.points.map(point => point.value))))
 const hasValues = computed(() => series.value.some(item => item.points.some(point => point.value !== null)))
 const plotElement = ref<HTMLDivElement>()
@@ -75,28 +74,33 @@ onUnmounted(() => observer?.disconnect())
 </script>
 
 <template>
-  <section v-loading="loading" class="claim-trend" aria-labelledby="claim-trend-title">
+  <section v-loading="loading" class="claim-trend" :aria-labelledby="titleId">
     <header class="trend-heading">
-      <div><h3 id="claim-trend-title">每日领取趋势</h3><p>每个系列对应一个盘口 × 档位 · 单位：次</p></div>
+      <div><h3 :id="titleId">{{ marketName }} · 每日领取趋势</h3><p>勾选图例中的档位可显示或隐藏对应数据 · 单位：次</p></div>
       <div class="trend-selection">
         <el-radio-group v-model="chartType" size="small" aria-label="图表类型"><el-radio-button value="curve">曲线图</el-radio-button><el-radio-button value="bar">柱状图</el-radio-button></el-radio-group>
-        <label for="claim-trend-select">展示档位</label>
-        <el-select id="claim-trend-select" v-model="selectedKeys" multiple filterable collapse-tags collapse-tags-tooltip :max-collapse-tags="1" clearable placeholder="选择盘口与档位" aria-label="选择趋势图展示的盘口与档位">
-          <el-option-group v-for="group in optionGroups" :key="group.id" :label="group.name">
-            <el-option v-for="column in group.columns" :key="column.key" :value="column.key" :label="trendColumnLabel(column)" />
-          </el-option-group>
-        </el-select>
-        <el-button text :disabled="selectedKeys.length === columns.length" @click="selectedKeys = columns.map(column => column.key)">全选</el-button>
-        <el-button text :disabled="!selectedKeys.length" @click="selectedKeys = []">清空</el-button>
+        <el-button text :disabled="selectedKeys.length === columns.length" @click="selectedKeys = columns.map(column => column.key)">全部展示</el-button>
+        <el-button text :disabled="!selectedKeys.length" @click="selectedKeys = []">全部隐藏</el-button>
       </div>
     </header>
     <p class="trend-summary" aria-live="polite">已选 {{ selectedKeys.length }} / {{ columns.length }} 个档位<span v-if="rows.length"> · {{ rows[0]?.date }} 至 {{ rows.at(-1)?.date }}</span></p>
+    <ul class="trend-legend" :aria-label="`${marketName} 展示档位`">
+      <li v-for="item in allSeries" :key="item.key" :class="{ 'legend-hidden': !selectedKeys.includes(item.key) }">
+        <label>
+          <input type="checkbox" :checked="selectedKeys.includes(item.key)" :style="{ accentColor: color(item.key) }" :aria-label="item.label" @change="toggleSeries(item.key)" />
+          <i :style="{ backgroundColor: color(item.key) }" />
+          <span class="legend-label" :title="item.label">{{ item.label }}</span>
+          <span v-if="!selectedKeys.includes(item.key)" class="legend-state">已隐藏</span>
+          <strong v-else-if="inspectedIndex >= 0" :class="{ 'legend-partial': item.points[inspectedIndex]?.value !== null && !item.points[inspectedIndex]?.cell?.complete }">{{ trendPointLabel(item.points[inspectedIndex]!) }}</strong>
+        </label>
+      </li>
+    </ul>
     <div v-if="!selectedKeys.length" class="trend-empty">请选择至少一个档位查看领取趋势。</div>
     <div v-else-if="!rows.length" class="trend-empty">当前查询范围暂无日期数据。</div>
     <template v-else>
       <div ref="plotElement" class="trend-plot">
-        <svg :viewBox="`0 0 ${width} ${height}`" role="img" tabindex="0" :aria-label="`每日领取${chartType === 'curve' ? '曲线图' : '柱状图'}，横轴日期，纵轴当日领取次数，已选 ${selectedKeys.length} 个档位。使用左右方向键查看日期数量。`" @pointermove="inspectPointer" @pointerdown="inspectPointer" @focus="focusInspection" @keydown.left.prevent="inspectOffset(-1)" @keydown.right.prevent="inspectOffset(1)" @keydown.home.prevent="inspectFirst" @keydown.end.prevent="inspectLast">
-          <title>各盘口与档位每日兑换码领取次数</title>
+        <svg :viewBox="`0 0 ${width} ${height}`" role="img" tabindex="0" :aria-label="`${marketName} 每日领取${chartType === 'curve' ? '曲线图' : '柱状图'}，横轴日期，纵轴当日领取次数，已选 ${selectedKeys.length} 个档位。使用左右方向键查看日期数量。`" @pointermove="inspectPointer" @pointerdown="inspectPointer" @focus="focusInspection" @keydown.left.prevent="inspectOffset(-1)" @keydown.right.prevent="inspectOffset(1)" @keydown.home.prevent="inspectFirst" @keydown.end.prevent="inspectLast">
+          <title>{{ marketName }} 各档位每日兑换码领取次数</title>
           <g aria-hidden="true">
             <text class="trend-axis-label" :x="padding.left" y="14">领取次数（次）</text>
             <rect :x="padding.left" :y="padding.top" :width="plotWidth" :height="plotHeight" fill="transparent" />
@@ -121,9 +125,7 @@ onUnmounted(() => observer?.disconnect())
         <p v-if="!hasValues" class="trend-no-values">所选档位尚无已同步的领取数量</p>
       </div>
       <p class="trend-inspection" aria-live="polite">{{ inspectedIndex >= 0 ? `${inspectedDate} · 当日领取数量见图例` : '指向图表日期查看各系列数量；也可聚焦图表后使用左右方向键。' }}</p>
-      <ul class="trend-legend" aria-label="图例与当日数量">
-        <li v-for="item in series" :key="item.key"><i :style="{ backgroundColor: color(item.key) }" /><span class="legend-label" :title="item.label">{{ item.label }}</span><strong v-if="inspectedIndex >= 0" :class="{ 'legend-partial': item.points[inspectedIndex]?.value !== null && !item.points[inspectedIndex]?.cell?.complete }">{{ trendPointLabel(item.points[inspectedIndex]!) }}</strong></li>
-      </ul>
+
     </template>
     <p class="trend-footnote">按各盘口业务时区归日；{{ chartType === 'curve' ? '空心点' : '半透明柱' }}为部分数据，缺失数据保留空缺，不按 0 计算。</p>
   </section>
@@ -179,7 +181,6 @@ html.dark .claim-trend {
 .trend-heading p, .trend-summary, .trend-footnote, .trend-inspection { color: var(--theme-text-muted, #66798f); font-size: 12px; line-height: 1.7; margin: 4px 0 0; }
 .trend-selection { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .trend-selection label { color: var(--theme-text, #344054); font-size: 12px; }
-.trend-selection .el-select { width: 340px; }
 .trend-selection .el-button + .el-button { margin-left: 0; }
 .trend-summary { margin: 12px 0 0; }
 .trend-plot { position: relative; width: 100%; min-width: 0; margin-top: 12px; }
@@ -190,8 +191,15 @@ html.dark .claim-trend {
 .trend-line { fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .trend-cursor { stroke: var(--theme-text-muted, #66798f); stroke-width: 1; stroke-dasharray: 4 3; pointer-events: none; }
 .trend-inspection { min-height: 22px; }
-.trend-legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 6px 20px; max-height: 156px; overflow-y: auto; padding: 8px 0; margin: 0; list-style: none; }
-.trend-legend li { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--theme-text, #344054); font-size: 12px; line-height: 1.7; }
+.trend-legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 6px 20px; padding: 8px 0; margin: 0; list-style: none; }
+.trend-legend li { min-width: 0; }
+.trend-legend label { display: flex; cursor: pointer; min-height: 44px; padding: 4px 8px; border-radius: 4px; box-sizing: border-box; align-items: center; gap: 8px; min-width: 0; color: var(--theme-text, #344054); font-size: 12px; line-height: 1.7; }
+.trend-legend label:hover { background: var(--theme-bg-soft, rgba(128, 128, 128, 0.08)); }
+.trend-legend input { flex: 0 0 18px; width: 18px; height: 18px; margin: 0; cursor: pointer; }
+.trend-legend input:focus-visible { outline: 2px solid var(--theme-info, #155eef); outline-offset: 3px; }
+.legend-hidden .legend-label { color: var(--theme-text-muted, #66798f); }
+.legend-hidden i { opacity: 0.35; }
+.legend-state { margin-left: auto; white-space: nowrap; font-size: 11px; color: var(--theme-text-muted, #66798f); }
 .trend-legend i { flex: 0 0 12px; width: 12px; height: 3px; border-radius: 2px; }
 .legend-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .trend-legend strong { margin-left: auto; font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -202,7 +210,6 @@ html.dark .claim-trend {
 @media (max-width: 640px) {
   .claim-trend { padding: 16px 12px; }
   .trend-selection { width: 100%; }
-  .trend-selection .el-select { width: 100%; }
   .trend-heading { gap: 12px; }
   .trend-legend { grid-template-columns: minmax(0, 1fr); }
 }
