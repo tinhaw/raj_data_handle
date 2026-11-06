@@ -22,6 +22,7 @@ from packages.domain.services.data_dictionary_refresh_service import (
 from packages.domain.services.reconciliation_execution_service import (
     execute_reconciliation_batch,
 )
+from packages.domain.services.redemption_claim_worker import process_claim_sync
 from packages.domain.services.remote_account_connection_service import run_due_account_relogins
 from packages.domain.services.remote_market_monitor_service import (
     process_next_monitor_notification,
@@ -250,10 +251,24 @@ async def run_remote_account_relogin_loop() -> None:
         await asyncio.sleep(30)
 
 
+async def run_redemption_claim_loop() -> None:
+    while True:
+        try:
+            processed = await process_claim_sync()
+        except Exception:
+            # Pending schema/account failures must not stop the other business loops.
+            logger.warning("redemption claim sync unavailable; retrying later")
+            processed = False
+        await asyncio.sleep(1 if processed else 30)
+
+
 async def run() -> None:
     settings = get_settings()
     storage = LocalFileStorage(settings.storage_root, settings.upload_max_bytes)
     logger.info("reconciliation worker started")
+    claim_refresh_task = asyncio.create_task(
+        run_redemption_claim_loop(), name="redemption-claim-refresh-loop"
+    )
     next_cleanup_at = 0.0
     refresh_task = asyncio.create_task(
         run_withdraw_order_refresh_loop(),
@@ -309,6 +324,7 @@ async def run() -> None:
                 logger.warning("database schema or connection is not ready; retrying later")
                 await asyncio.sleep(30)
     finally:
+        claim_refresh_task.cancel()
         refresh_task.cancel()
         charge_refresh_task.cancel()
         spin_refresh_task.cancel()
@@ -316,6 +332,10 @@ async def run() -> None:
         account_relogin_task.cancel()
         remote_market_monitor_task.cancel()
         remote_market_monitor_notification_task.cancel()
+        try:
+            await claim_refresh_task
+        except asyncio.CancelledError:
+            pass
         try:
             await refresh_task
         except asyncio.CancelledError:

@@ -23,6 +23,7 @@ public final class CompatibilityAuthorityMapper {
             Map.entry("ERP_REDEMPTION_MANAGE", Set.of("REDEMPTION_MANAGE")),
             Map.entry("ERP_REDEMPTION_GENERATE", Set.of("REDEMPTION_GENERATE")),
             Map.entry("ERP_REDEMPTION_EXPORT", Set.of("REDEMPTION_EXPORT")),
+            Map.entry("ERP_REDEMPTION_STATS_SYNC", Set.of("REDEMPTION_STATS_SYNC")),
             Map.entry("ERP_REMOTE_ACCOUNT_MANAGE", Set.of("REDEMPTION_REMOTE_MANAGE")),
             Map.entry("ERP_ACCESS_MANAGE", Set.of("USER_MANAGE"))
     );

@@ -41,6 +41,10 @@ RATE_LIMIT_COOLDOWN_SECONDS = 15 * 60
 class RemoteSessionError(ValueError):
     """Only fixed, safe-to-display messages may cross this boundary."""
 
+    def __init__(self, message: str, *, fallback_allowed: bool = False) -> None:
+        super().__init__(message)
+        self.fallback_allowed = fallback_allowed
+
 
 def utc(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=UTC) if value and value.tzinfo is None else value
@@ -247,10 +251,12 @@ class RemoteAccountSession:
             if reason == "request" and account.last_logged_in_at and not account.auto_relogin:
                 account.session_last_error = "登录会话已失效，自动重登已关闭，请手动重新登录。"
                 await session.commit()
-                raise RemoteSessionError(account.session_last_error)
+                raise RemoteSessionError(account.session_last_error, fallback_allowed=True)
             if utc(account.login_retry_after) and utc(account.login_retry_after) > now:
                 await session.commit()
-                raise RemoteSessionError("远端登录处于冷却期，请在页面显示的可重试时间后操作。")
+                raise RemoteSessionError(
+                    "远端登录处于冷却期，请在页面显示的可重试时间后操作。", fallback_allowed=True
+                )
             if utc(account.last_login_attempt_at) and now < utc(
                 account.last_login_attempt_at
             ) + timedelta(seconds=MIN_LOGIN_GAP_SECONDS):
@@ -259,7 +265,7 @@ class RemoteAccountSession:
                 )
                 account.session_last_error = "登录请求过于频繁，已暂停重复登录。"
                 await session.commit()
-                raise RemoteSessionError(account.session_last_error)
+                raise RemoteSessionError(account.session_last_error, fallback_allowed=True)
             account.last_login_attempt_at = now
             try:
                 token = await login()
@@ -314,7 +320,9 @@ class RemoteAccountSession:
                     metadata={"reason": reason, "rate_limited": rate_limited},
                 )
                 await session.commit()
-                raise RemoteSessionError(account.session_last_error) from None
+                raise RemoteSessionError(
+                    account.session_last_error, fallback_allowed=True
+                ) from None
             account.session_ciphertext = ciphertext
             account.session_identity = self.identity
             account.session_expires_at = expiry

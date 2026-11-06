@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { Download, Plus, Refresh, Setting } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, TableV2FixedDir } from 'element-plus'
 import type { Columns } from 'element-plus'
@@ -64,8 +65,6 @@ interface MarketTierDraft {
   rewardTierPreset?: RedemptionRewardTierPreset
 }
 
-type PreviousDayProfile = 'WIN' | 'LUCK_SPIN'
-
 interface CodeGroupRow {
   campaign: RedemptionCampaign
   detail: RedemptionBatchDetail
@@ -80,6 +79,10 @@ interface CodeGroupTask {
 }
 
 const session = useSessionStore()
+const route = useRoute()
+const router = useRouter()
+const taskTable = ref<{ scrollToTop: (top: number) => void }>()
+const taskTableScroll = ref(Math.max(0, Number(route.query.tableScroll) || 0))
 const loading = ref(false)
 const codeGroupLoadError = ref('')
 const working = ref(false)
@@ -98,8 +101,8 @@ const advancedOptionsOpen = ref<string[]>([])
 const publishOptionsOpen = ref<string[]>([])
 const campaigns = ref<RedemptionCampaign[]>([])
 const codeGroups = ref<CodeGroupRow[]>([])
-const codeGroupTaskCurrentPage = ref(1)
-const codeGroupTaskPageSize = ref(20)
+const codeGroupTaskCurrentPage = ref(Math.max(1, Number(route.query.page) || 1))
+const codeGroupTaskPageSize = ref([10, 20, 50, 100].includes(Number(route.query.pageSize)) ? Number(route.query.pageSize) : 20)
 const selectedTaskMembers = ref<CodeGroupRow[]>([])
 const activeTaskBatchId = ref('')
 const remoteConnections = ref<RedemptionRemoteConnection[]>([])
@@ -184,9 +187,7 @@ const retryingIssueId = ref<string | number>()
 const retryingSelectedFailedTasks = ref(false)
 const selectedFailedIssueIds = ref<Array<string | number>>([])
 const failedIssueTable = ref<{ clearSelection: () => void }>()
-const publishForm = ref<{ mode: 'IMMEDIATE' | 'SCHEDULED' | 'EXTERNAL'; scheduledTime?: string; fallbackToScheduled: boolean }>({ mode: 'IMMEDIATE', fallbackToScheduled: true })
-const externalTaskIds = ref<Record<string, string>>({})
-const externalPublicationResults = ref<Record<string, string>>({})
+const publishForm = ref<{ mode: 'IMMEDIATE' | 'SCHEDULED'; scheduledTime?: string; fallbackToScheduled: boolean }>({ mode: 'IMMEDIATE', fallbackToScheduled: true })
 const processingGroupIds = ref(new Set<string>())
 const indiaNow = ref('')
 let indiaClock: number | undefined
@@ -199,16 +200,6 @@ const fallbackTags: RedemptionRemoteTag[] = [
   { id: 901094, name: '(901094)近7天充值总金额10000以上' },
 ]
 
-const previousDayFallbackTags: RedemptionRemoteTag[] = [
-  { id: 901990, name: '(901990)日充值100-199' },
-  { id: 901991, name: '(901991)日充值200-999' },
-  { id: 901993, name: '(901993)日充值1000-2999' },
-  { id: 901996, name: '(901996)日充值3000-9999' },
-  // Verified in both RajLuck and RajSpin remote consoles.
-  { id: 901994, name: '(901994)日充值3000-9999' },
-  { id: 901020, name: '(901020)日充值recharge today-10000+' },
-]
-
 const sevenDayTierProfiles: SevenDayTierProfile[] = [
   { fallbackLabelId: 901091, name: '近 7 天充值总金额 100–499', minDepositAmount: 100, maxDepositAmount: 499, bonusAmount: 1, bonusMaxAmount: 3 },
   { fallbackLabelId: 901092, name: '近 7 天充值总金额 500–1,999', minDepositAmount: 500, maxDepositAmount: 1999, bonusAmount: 5, bonusMaxAmount: 7 },
@@ -217,24 +208,14 @@ const sevenDayTierProfiles: SevenDayTierProfile[] = [
   { fallbackLabelId: 901094, name: '近 7 天充值总金额 10,000 以上', minDepositAmount: 10000, bonusAmount: 37, bonusMaxAmount: 57 },
 ]
 
-const previousDayProfiles: Record<PreviousDayProfile, Array<Omit<TierProfile, 'id'> & { id?: number }>> = {
-  WIN: [
-    { id: undefined, name: '日充值 0（所有用户）', minDepositAmount: 0, bonusAmount: 1, bonusMaxAmount: 3 },
-    { id: 901990, name: '日充值 100–199', minDepositAmount: 100, bonusAmount: 3, bonusMaxAmount: 5 },
-    { id: 901991, name: '日充值 200–999', minDepositAmount: 200, bonusAmount: 7, bonusMaxAmount: 9 },
-    { id: 901993, name: '日充值 1,000–2,999', minDepositAmount: 1000, bonusAmount: 13, bonusMaxAmount: 17 },
-    { id: 901996, name: '日充值 3,000–9,999', minDepositAmount: 3000, bonusAmount: 27, bonusMaxAmount: 37 },
-    { id: 901020, name: '日充值 10,000+', minDepositAmount: 10000, bonusAmount: 57, bonusMaxAmount: 77 },
-  ],
-  LUCK_SPIN: [
-    { id: undefined, name: '日充值 0（所有用户）', minDepositAmount: 0, bonusAmount: 1, bonusMaxAmount: 3 },
-    { id: 901990, name: '日充值 100–199', minDepositAmount: 100, bonusAmount: 3, bonusMaxAmount: 5 },
-    { id: 901991, name: '日充值 200–999', minDepositAmount: 200, bonusAmount: 7, bonusMaxAmount: 9 },
-    { id: 901993, name: '日充值 1,000–2,999', minDepositAmount: 1000, bonusAmount: 13, bonusMaxAmount: 17 },
-    { id: 901994, name: '日充值 3,000–9,999', minDepositAmount: 3000, bonusAmount: 27, bonusMaxAmount: 37 },
-    { id: 901020, name: '日充值 10,000+', minDepositAmount: 10000, bonusAmount: 57, bonusMaxAmount: 77 },
-  ],
-}
+const previousDayTierProfiles: Array<TierProfile & { maxDepositAmount?: number }> = [
+  { name: '日充值 0（所有用户）', minDepositAmount: 0, bonusAmount: 1, bonusMaxAmount: 3 },
+  { name: '日充值 100–199', minDepositAmount: 100, maxDepositAmount: 199, bonusAmount: 3, bonusMaxAmount: 5 },
+  { name: '日充值 200–999', minDepositAmount: 200, maxDepositAmount: 999, bonusAmount: 7, bonusMaxAmount: 9 },
+  { name: '日充值 1,000–2,999', minDepositAmount: 1000, maxDepositAmount: 2999, bonusAmount: 13, bonusMaxAmount: 17 },
+  { name: '日充值 3,000–9,999', minDepositAmount: 3000, maxDepositAmount: 9999, bonusAmount: 27, bonusMaxAmount: 37 },
+  { name: '日充值 10,000+', minDepositAmount: 10000, bonusAmount: 57, bonusMaxAmount: 77 },
+]
 
 const form = ref<CodeGroupForm>(newCodeGroupForm())
 const validityOffsets = computed<[number, number]>(() => form.value.validityMode === 'CLAIM_DAY'
@@ -304,6 +285,15 @@ function changeCodeGroupTaskPageSize(pageSize: number) {
   codeGroupTaskCurrentPage.value = 1
 }
 
+function openClaimStatistics(task: CodeGroupTask) {
+  router.push({ name: 'redemption-claim-statistics', params: { taskId: task.taskId }, query: {
+    returnPage: codeGroupTaskCurrentPage.value, returnPageSize: codeGroupTaskPageSize.value,
+    returnTableScroll: taskTableScroll.value,
+  } })
+}
+
+function trackTaskScroll({ scrollTop }: { scrollTop: number }) { taskTableScroll.value = scrollTop }
+
 watch([() => codeGroupTasks.value.length, codeGroupTaskPageSize], () => {
   const lastPage = Math.max(1, Math.ceil(codeGroupTasks.value.length / codeGroupTaskPageSize.value))
   if (codeGroupTaskCurrentPage.value > lastPage) codeGroupTaskCurrentPage.value = lastPage
@@ -324,14 +314,8 @@ const tagOptions = computed(() => {
 })
 const previousDayTagOptions = computed(() => {
   const tags = new Map<string, RedemptionRemoteTag>()
-  const source = remoteTagsLoaded.value ? remoteTags.value : previousDayFallbackTags
+  const source = remoteTagsLoaded.value ? remoteTags.value : rewardTierPreset.value?.tagSnapshot || []
   for (const tag of source) tags.set(String(tag.id), tag)
-  // Keep each configured default visible even when an older local snapshot
-  // predates that tag. A deliberate sync will then replace the snapshot.
-  for (const tier of form.value.tiers) for (const labelId of tier.labelIds) {
-    const fallback = previousDayFallbackTags.find((tag) => String(tag.id) === String(labelId))
-    if (fallback && !tags.has(String(fallback.id))) tags.set(String(fallback.id), fallback)
-  }
   return [...tags.values()]
 })
 const availableRemoteMarkets = computed(() => {
@@ -361,18 +345,6 @@ function marketIdentities(marketId?: string | number) {
 const selectedRemoteConnection = computed(() => remoteConnectionForMarket(form.value.remoteMarketId))
 const selectedMarketIdentities = computed(() => marketIdentities(form.value.remoteMarketId))
 const isRajWinMarket = computed(() => selectedMarketIdentities.value.some((value) => value === 'rajwin'))
-function previousDayProfileForMarket(marketId?: string | number): PreviousDayProfile | undefined {
-  const identities = marketIdentities(marketId)
-  if (identities.some((value) => value === 'rajwin')) return 'WIN'
-  if (identities.some((value) => value === 'rajluck' || value === 'rajspin')) return 'LUCK_SPIN'
-  return undefined
-}
-const previousDayProfile = computed(() => previousDayProfileForMarket(form.value.remoteMarketId))
-const previousDayProfileLabel = computed(() => {
-  if (previousDayProfile.value === 'WIN') return 'Win（RajWin）'
-  if (previousDayProfile.value === 'LUCK_SPIN') return 'Luck Spin（RajLuck、RajSpin）'
-  return '该盘口尚未配置日充值标签方案'
-})
 
 function hasPermission(permission: string) {
   const user = session.user
@@ -418,15 +390,25 @@ function draftTier(labelId?: string | number): CodeGroupTierDraft {
   }
 }
 
-function previousDayTiers(profile: PreviousDayProfile): CodeGroupTierDraft[] {
-  return previousDayProfiles[profile].map((tier) => ({
-    userType: tier.id === undefined ? 'ALL_USERS' : 'LABEL_USERS',
-    displayName: tier.name,
-    minDepositAmount: tier.minDepositAmount,
-    bonusAmount: tier.bonusAmount,
-    bonusMaxAmount: tier.bonusMaxAmount,
-    labelIds: tier.id === undefined ? [] : [tier.id],
-  }))
+function previousDayTiers(): CodeGroupTierDraft[] {
+  return previousDayTierProfiles.map((tier) => {
+    const allUsers = tier.minDepositAmount === 0
+    const matches = previousDayTagOptions.value.filter((tag) => {
+      if (!/日充值|每日充值|recharge\s*today|daily\s*(?:recharge|deposit)/i.test(tag.name)) return false
+      const range = tagDepositRange(tag.name.replace(/^\s*\(\d+\)\s*/, ''))
+      return range?.min === tier.minDepositAmount && range?.max === tier.maxDepositAmount
+    })
+    // Missing or ambiguous labels must be selected explicitly, never borrowed from another market.
+    const tag = !allUsers && matches.length === 1 ? matches[0] : undefined
+    return {
+      userType: allUsers ? 'ALL_USERS' : 'LABEL_USERS',
+      displayName: tag?.name.replace(/^\(\d+\)/, '').trim() || tier.name,
+      minDepositAmount: tier.minDepositAmount,
+      bonusAmount: tier.bonusAmount,
+      bonusMaxAmount: tier.bonusMaxAmount,
+      labelIds: tag ? [tag.id] : [],
+    }
+  })
 }
 
 function isPreviousDayDeposit() { return form.value.redemptionType === 'PREVIOUS_DAY_DEPOSIT' }
@@ -798,7 +780,6 @@ function canDownloadScheduledCodes(row: CodeGroupRow) {
 }
 function publishTime(row: CodeGroupRow) {
   const batch = row.detail.batch
-  if (batch.remotePublishMode === 'EXTERNAL') return `远端后台发布 · 任务 ${batch.remotePublishTaskId}`
   if (batch.remotePublishMode === 'IMMEDIATE') return '立即发布'
   if (batch.remotePublishMode === 'SCHEDULED' && batch.remoteScheduledPublishAt) {
     return `${formatIndiaDateTime(batch.remoteScheduledPublishAt)}（印度时间）${batch.remotePublishCancelledAt ? '，已撤销' : ''}`
@@ -994,8 +975,10 @@ function changeRedemptionType() {
 }
 
 function resetPreviousDayTiers() {
-  const profile = previousDayProfile.value
-  form.value.tiers = profile ? previousDayTiers(profile) : []
+  form.value.tiers = previousDayTiers()
+  if (form.value.tiers.some((tier) => tier.userType === 'LABEL_USERS' && !tier.labelIds.length)) {
+    ElMessage.warning('部分日充值档位未匹配到唯一标签，请按当前盘口标签手动选择，或删除不需要的档位')
+  }
 }
 
 function tagDepositRange(name?: string) {
@@ -1052,7 +1035,7 @@ function defaultAgentTiers(): CodeGroupTierDraft[] {
   }]
 }
 
-/** Applies a saved market preset when usable, otherwise that market's standard five tiers. */
+/** Applies a usable saved preset, otherwise builds defaults from the current market's tags. */
 function applyMarketTierDefaults() {
   const preset = rewardTierPreset.value
   if (preset?.exists && !preset.stale && savedPresetMatchesCurrentMarket(preset)) {
@@ -1224,9 +1207,15 @@ function validateForm() {
     const label = marketLabel(marketId)
     const draft = marketTierDrafts.value[marketKey(marketId)]
     if (!remoteConnectionForMarket(marketId)) return `${label} 暂无可用远端账号，请前往“远端连接”完成账号配置`
-    if (isPreviousDayDeposit() && !previousDayProfileForMarket(marketId)) return `日充值目前不支持 ${label}`
     if (!draft?.tiers.length) return `${label} 请先配置至少一个充值档位`
     if (draft.tiers.some((tier) => tier.userType === 'LABEL_USERS' && !tier.labelIds.length)) return `${label} 的标签用户档位必须选择至少一个标签 ID`
+    if (isPreviousDayDeposit() && draft.tiers.some((tier) => tier.userType === 'LABEL_USERS')) {
+      if (!draft.remoteTagsLoaded) return `${label} 的标签尚未加载成功，请重新加载后再创建`
+      const currentIds = new Set(draft.remoteTags.map((tag) => String(tag.id)))
+      if (draft.tiers.some((tier) => tier.userType === 'LABEL_USERS' && tier.labelIds.some((id) => !currentIds.has(String(id))))) {
+        return `${label} 的档位含有当前盘口不存在的标签 ID，请重新选择标签`
+      }
+    }
     if (draft.tiers.some((tier) => tier.bonusAmount < 0 || tier.bonusMaxAmount < tier.bonusAmount)) return `${label} 的兑换金额上下限不正确`
   }
   return ''
@@ -1342,50 +1331,6 @@ function openPublishDialog(target: CodeGroupRow | CodeGroupTask) {
   publishDialogVisible.value = true
 }
 
-function remoteBackendUrl(row: CodeGroupRow) {
-  const connection = remoteConnections.value.find(item => String(item.id) === String(row.detail.batch.remoteConnectionId))
-  try {
-    const url = new URL(connection?.baseUrl || '')
-    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.origin : undefined
-  } catch { return undefined }
-}
-
-async function verifyAndDownloadExternalPublication(target: CodeGroupRow | CodeGroupTask) {
-  const rows = publishRows(target)
-  if (rows.some(row => !/^[1-9][0-9]{0,254}$/.test((externalTaskIds.value[String(row.detail.batch.id)] || '').trim()))) {
-    ElMessage.warning('请填写每个盘口对应的远端发布任务 ID（正整数）')
-    return
-  }
-  publishing.value = true
-  try {
-    for (const row of rows) {
-      const key = String(row.detail.batch.id)
-      const taskId = externalTaskIds.value[key].trim()
-      externalPublicationResults.value[key] = '正在核验远端发布结果…'
-      try {
-        // Fetch current state so returning to this dialog or retrying a partial download
-        // never reattaches an already adopted task or publishes a second time.
-        let detail = await api.redemption.batch(row.detail.batch.id)
-        if (detail.batch.status === 'READY_TO_PUBLISH') {
-          detail = await api.redemption.adoptExternalPublication(detail.batch.id, detail.batch.rowVersion, taskId)
-        } else if (detail.batch.remotePublishMode !== 'EXTERNAL' || detail.batch.remotePublishTaskId !== taskId) {
-          throw new Error('该盘口状态已变化，请关闭窗口并查看任务详情')
-        }
-        const replacement = { campaign: row.campaign, detail }
-        replaceCodeGroup(replacement)
-        externalPublicationResults.value[key] = '发布已核验，正在下载兑换码…'
-        const complete = isSuccess(replacement) || await downloadPublishedCodes(replacement)
-        externalPublicationResults.value[key] = complete ? '兑换码已全部入库，可在任务中下载 Excel' : '兑换码尚未全部入库，请查看核验结果；可再次核验并下载'
-      } catch (error) {
-        externalPublicationResults.value[key] = error instanceof Error ? error.message : '核验或下载失败，请重试'
-      }
-    }
-  } finally {
-    publishing.value = false
-    await loadCodeGroups()
-  }
-}
-
 function earliestUnpublishedExpiry(row: CodeGroupRow) {
   return row.detail.issues.filter(issue => issue.workflowStatus === 'CREATED')
     .map(issue => `${shiftDate(issue.claimDate, row.detail.batch.validToDayOffset ?? 0)} 23:59:59`).sort()[0]
@@ -1482,10 +1427,6 @@ async function recoverPublishReservation(row: CodeGroupRow) {
 async function submitPublish() {
   const target = publishTarget.value
   if (!target) return
-  if (publishForm.value.mode === 'EXTERNAL') {
-    await verifyAndDownloadExternalPublication(target)
-    return
-  }
   if (publishForm.value.mode === 'SCHEDULED' && !publishForm.value.scheduledTime) { ElMessage.warning('请选择定时发布时间（印度时间）'); return }
   const rows = publishRows(target)
   if (rows.some((row) => row.detail.batch.status !== 'READY_TO_PUBLISH' && !repairReadyForPublish(row))) {
@@ -1832,6 +1773,8 @@ onMounted(async () => {
   indiaNow.value = indiaNowText()
   indiaClock = window.setInterval(() => { indiaNow.value = indiaNowText() }, 15_000)
   await Promise.all([loadCodeGroups(), loadRemoteConnections()])
+  await nextTick()
+  taskTable.value?.scrollToTop(taskTableScroll.value)
 })
 
 onUnmounted(() => {
@@ -1871,6 +1814,8 @@ onUnmounted(() => {
         <el-auto-resizer>
           <template #default="{ height, width }">
             <el-table-v2
+              ref="taskTable"
+              @scroll="trackTaskScroll"
               :columns="codeGroupTaskColumns"
               :data="paginatedCodeGroupTasks"
               :width="width"
@@ -1907,6 +1852,7 @@ onUnmounted(() => {
                 <span v-else-if="column.key === 'createdAt'" class="virtual-cell">{{ formatDateTime(taskCreatedAt(row)) }}</span>
                 <div v-else-if="column.key === 'actions'" class="virtual-actions">
                   <el-button link type="primary" size="small" :loading="row.members.some(isProcessing)" @click="isMultiMarketTask(row) ? openTaskDetail(row) : openGroupDetail(taskPrimary(row))">查看任务</el-button>
+                  <el-button link type="primary" size="small" @click="openClaimStatistics(row)">领取统计</el-button>
                   <el-button v-if="taskPendingCreationCount(row)" link type="warning" size="small" :disabled="!canOpenPendingCreationTask(row)" @click="openPendingCreationTask(row)">处理待创建（{{ taskPendingCreationCount(row) }}）</el-button>
                   <template v-if="!isMultiMarketTask(row)">
                     <el-button v-if="taskPrimary(row).detail.batch.status === 'PUBLISHED'" link type="primary" size="small" :loading="verifyingPublicationIds.has(String(taskPrimary(row).detail.batch.id))" @click="inspectPublication(taskPrimary(row))">{{ missingConfigurations(taskPrimary(row)).length ? '处理缺失配置' : '查看核验结果' }}</el-button>
@@ -1978,8 +1924,8 @@ onUnmounted(() => {
             <p class="field-note">日充值只核验开始兑换日前一天的充值金额；代理类型将按生效首日生成“9-02代理全部 / 9-02代理存款200”名称，并导出代理模板样式。兑换码实际有效期以上方规则为准。</p>
           </el-form-item>
           <el-form-item v-if="isPreviousDayDeposit() && form.remoteMarketId" class="code-group-form__code-type" label="当前编辑盘口的日充值标签方案">
-            <el-tag type="info">{{ previousDayProfileLabel }}</el-tag>
-            <p class="field-note">标签方案由盘口自动决定：RajWin 使用 Win 的 3,000 档默认标签 ID 901996；RajLuck、RajSpin 使用 Luck Spin 的 901994。充值 0 档为所有用户，仍请同步当前盘口标签后确认。</p>
+            <el-tag type="info">使用当前盘口标签与档位配置</el-tag>
+            <p class="field-note">所有已配置可用账号的盘口均可创建日充值兑换码。优先使用已保存预设；默认档位按当前盘口标签的充值区间匹配，未匹配的档位请手动选择标签。充值 0 档为所有用户。</p>
           </el-form-item>
           <el-form-item class="code-group-form__market" label="盘口" required>
             <el-select v-model="form.remoteMarketIds" :loading="remoteConnectionsLoading" multiple collapse-tags collapse-tags-tooltip filterable placeholder="选择一个或多个盘口" @change="changeRemoteMarkets">
@@ -2070,36 +2016,21 @@ onUnmounted(() => {
       <template #footer><el-button @click="codeGroupDialogVisible = false">取消</el-button><el-button type="primary" :loading="working" @click="createCodeGroup">开始生成</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="publishDialogVisible" title="选择发布方式" width="680px" destroy-on-close :close-on-click-modal="!publishing" :close-on-press-escape="!publishing" :show-close="!publishing">
-      <el-radio-group v-model="publishForm.mode" :disabled="publishing" aria-label="发布方式">
-        <el-radio value="IMMEDIATE">立即发布（默认）</el-radio>
-        <el-radio value="SCHEDULED">定时发布</el-radio>
-        <el-radio value="EXTERNAL" :disabled="publishTarget && publishRows(publishTarget).some(isRepairing)">远端后台发布</el-radio>
-      </el-radio-group>
-      <template v-if="publishForm.mode === 'EXTERNAL' && publishTarget">
-        <el-alert type="info" :closable="false" title="在各盘口远端管理后台完成发布后，回到这里核验并下载。" description="请使用下方对应账号，在后台发布本批次配置，然后从后台发布任务列表复制任务 ID。系统会核验发布结果及配置，不会再次提交发布。定时发布需等待远端执行完成。" show-icon />
-        <el-form label-position="top" class="external-publication-form">
-          <el-form-item v-for="row in publishRows(publishTarget)" :key="String(row.detail.batch.id)" :label="`${remoteMarketLabel(row)} · 账号 ${row.detail.batch.remoteConnectionName || '—'} · ${row.detail.batch.remoteOptions?.publishEnvironment === 'prod' ? '生产环境' : '测试环境'}`">
-            <a v-if="remoteBackendUrl(row)" :href="remoteBackendUrl(row)" target="_blank" rel="noopener noreferrer">打开远端管理后台</a>
-            <p v-else class="field-note">请打开该盘口已配置的远端管理后台。</p>
-            <el-input v-model="externalTaskIds[String(row.detail.batch.id)]" :disabled="publishing" maxlength="255" :aria-label="`${remoteMarketLabel(row)} 远端发布任务 ID`" placeholder="发布完成后填写远端发布任务 ID" />
-            <p v-if="externalPublicationResults[String(row.detail.batch.id)]" class="field-note" role="status">{{ externalPublicationResults[String(row.detail.batch.id)] }}</p>
-          </el-form-item>
-        </el-form>
-      </template>
-      <p v-else class="field-note publish-dialog__intro">{{ isMultiMarketPublishTarget(publishTarget) ? '将按盘口顺序串行执行；每个盘口仅发布其远端账号下尚未发布的配置。' : '默认先尝试立即发布；若被已有定时任务阻止，会先显示具体印度时间，确认后才转为定时发布。' }}</p>
+    <el-dialog v-model="publishDialogVisible" title="选择发布方式" width="560px" destroy-on-close>
+      <p class="field-note publish-dialog__intro">{{ isMultiMarketPublishTarget(publishTarget) ? '将按盘口顺序串行执行；每个盘口仅发布其远端账号下尚未发布的配置。' : '默认先尝试立即发布；若被已有定时任务阻止，会先显示具体印度时间，确认后才转为定时发布。' }}</p>
       <el-alert v-if="publishTarget && publishRows(publishTarget).some(isRepairing)" type="warning" :closable="false" title="补齐发布会发布该账号下所有尚未发布的兑换码；已发布的配置不会重新下载。若上次发布结果不确定，请先到远端后台核对。" />
-      <el-collapse v-if="publishForm.mode !== 'EXTERNAL'" v-model="publishOptionsOpen" class="advanced-options publish-options">
+      <el-collapse v-model="publishOptionsOpen" class="advanced-options publish-options">
         <el-collapse-item name="publish">
           <template #title><el-icon><Setting /></el-icon><span>发布相关设置（默认：立即发布，冲突时提示定时发布）</span></template>
           <el-form label-width="112px">
+            <el-form-item label="发布方式"><el-radio-group v-model="publishForm.mode"><el-radio value="IMMEDIATE">立即发布（默认）</el-radio><el-radio value="SCHEDULED">定时发布</el-radio></el-radio-group></el-form-item>
             <el-form-item v-if="publishForm.mode === 'SCHEDULED'" label="发布时间" required><el-date-picker v-model="publishForm.scheduledTime" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" placeholder="选择印度时间" style="width: 100%" /><p class="field-note">远端按印度时间（Asia/Kolkata）执行；撤销必须早于该时间。</p></el-form-item>
             <el-form-item v-if="publishForm.mode === 'IMMEDIATE'" label="失败后转定时"><el-switch v-model="publishForm.fallbackToScheduled" inline-prompt active-text="开" inactive-text="关" /><p class="field-note">默认开启。仅在远端明确拒绝立即发布且提示已有定时任务时，才会逐次提示定时时间；每次均须确认。</p></el-form-item>
             <el-alert v-if="publishForm.mode === 'IMMEDIATE' && publishForm.fallbackToScheduled" type="info" :closable="false" title="发生定时任务冲突时，依次提供约 15、30、60 分钟后的印度时间及最早领取日 00:00:00；到期前无法执行的时间会跳过。" />
           </el-form>
         </el-collapse-item>
       </el-collapse>
-      <template #footer><el-button :disabled="publishing" @click="publishDialogVisible = false">{{ publishForm.mode === 'EXTERNAL' ? '关闭' : '取消' }}</el-button><el-button type="primary" :loading="publishing" @click="submitPublish">{{ publishForm.mode === 'EXTERNAL' ? '核验并下载兑换码' : '确认发布' }}</el-button></template>
+      <template #footer><el-button @click="publishDialogVisible = false">取消</el-button><el-button type="primary" :loading="publishing" @click="submitPublish">确认发布</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="verificationDialogVisible" title="发布与下载检查" width="760px" append-to-body>
@@ -2168,6 +2099,7 @@ onUnmounted(() => {
         </div>
         <el-table ref="failedIssueTable" :data="selectedGroup.detail.issues" row-key="id" class="group-detail-table" @selection-change="updateSelectedFailedIssues">
           <el-table-column type="selection" width="48" :selectable="isFailedRemoteCreation" />
+          <el-table-column prop="remoteConfigurationId" label="远端配置 ID" min-width="140" show-overflow-tooltip><template #default="{ row }">{{ row.remoteConfigurationId || '—' }}</template></el-table-column>
           <el-table-column label="开始兑换日" width="118"><template #default="{ row }">{{ formatDate(row.claimDate) }}</template></el-table-column>
           <el-table-column label="远端生效日期" min-width="220"><template #default="{ row }">{{ issueValidityLabel(selectedGroup.detail.batch, row.claimDate) }}</template></el-table-column>
           <el-table-column label="充值档位" min-width="150"><template #default="{ row }">{{ row.tierName || `充值 ≥ ${formatAmount(row.minDepositAmount)}` }}</template></el-table-column>
@@ -2192,31 +2124,28 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.external-publication-form { margin-top: 16px; }
-.external-publication-form a { color: #315efb; margin-bottom: 8px; }
-.external-publication-form .el-input { margin-top: 8px; }
 .publication-status-cell { display: flex; flex-direction: column; align-items: center; gap: 5px; }
-.publication-status-cell small { color: #65748b; }
-.publication-status-cell .creation-status-summary { display: -webkit-box; overflow: hidden; max-width: 100%; color: #9a3412; font-size: 12px; line-height: 15px; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.publication-status-cell small { color: var(--theme-text-muted, #65748b); }
+.publication-status-cell .creation-status-summary { display: -webkit-box; overflow: hidden; max-width: 100%; color: var(--theme-warning, #9a3412); font-size: 12px; line-height: 15px; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .redemption-alert { margin-bottom: 18px; }
 .code-group-list { overflow: hidden; }
-.code-group-list__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 19px 20px 16px; border-bottom: 1px solid #eaecf0; }
-.code-group-list__heading h3 { margin: 0; color: #101828; font-size: 15px; }
-.code-group-list__heading p { margin: 5px 0 0; color: #667085; font-size: 12px; }
-.code-group-list__count { padding-top: 3px; color: #667085; font-size: 12px; white-space: nowrap; }
+.code-group-list__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 19px 20px 16px; border-bottom: 1px solid var(--theme-border, #eaecf0); }
+.code-group-list__heading h3 { margin: 0; color: var(--theme-text-strong, #101828); font-size: 15px; }
+.code-group-list__heading p { margin: 5px 0 0; color: var(--theme-text-muted, #667085); font-size: 12px; }
+.code-group-list__count { padding-top: 3px; color: var(--theme-text-muted, #667085); font-size: 12px; white-space: nowrap; }
 .code-group-virtual-table { height: clamp(360px, calc(100vh - 320px), 640px); min-width: 0; }
 .code-group-loading { min-height: 190px; }
-.code-group-table { --el-table-header-bg-color: #f9fafb; --el-table-border-color: #eaecf0; --el-table-row-hover-bg-color: #f8fbff; }
-.code-group-table :deep(.el-table-v2__header-cell) { color: #667085; font-size: 12px; font-weight: 600; }
-.code-group-table :deep(.el-table-v2__row-cell) { padding: 0 12px; color: #475467; font-size: 12px; }
-.code-group-list__pagination { display: flex; justify-content: flex-end; padding: 14px 20px; border-top: 1px solid #eaecf0; }
+.code-group-table { --el-table-header-bg-color: var(--theme-surface-muted, #f9fafb); --el-table-border-color: var(--theme-border, #eaecf0); --el-table-row-hover-bg-color: var(--theme-info-bg, #f8fbff); }
+.code-group-table :deep(.el-table-v2__header-cell) { color: var(--theme-text-muted, #667085); font-size: 12px; font-weight: 600; }
+.code-group-table :deep(.el-table-v2__row-cell) { padding: 0 12px; color: var(--theme-text, #475467); font-size: 12px; }
+.code-group-list__pagination { display: flex; justify-content: flex-end; padding: 14px 20px; border-top: 1px solid var(--theme-border, #eaecf0); }
 .group-name { display: grid; gap: 5px; }
-.group-name strong { color: #182230; font-size: 13px; }
-.group-name span { overflow: hidden; color: #98a2b3; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.group-name strong { color: var(--theme-text-strong, #182230); font-size: 13px; }
+.group-name span { overflow: hidden; color: var(--theme-text-muted, #98a2b3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .virtual-cell { display: block; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .virtual-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; width: 100%; }
 .virtual-actions :deep(.el-button + .el-button) { margin-left: 0; }
-.group-progress { color: #475467; font-size: 12px; white-space: nowrap; }
+.group-progress { color: var(--theme-text, #475467); font-size: 12px; white-space: nowrap; }
 .code-group-form__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
 .code-group-form__grid--options { grid-template-columns: 1.15fr 1fr 1fr; }
 .code-group-form__date-range { grid-column: 1 / -1; }
@@ -2224,44 +2153,44 @@ onUnmounted(() => {
 .code-group-form__code-type { grid-column: 1 / -1; }
 .code-group-form__market { grid-column: 1 / -1; }
 .date-presets { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-.date-presets span { color: #667085; font-size: 12px; }
-.validity-editor { width: 100%; padding: 13px 14px; border: 1px solid #d0d5dd; border-radius: 9px; background: #fff; }
+.date-presets span { color: var(--theme-text-muted, #667085); font-size: 12px; }
+.validity-editor { width: 100%; padding: 13px 14px; border: 1px solid var(--theme-border, #d0d5dd); border-radius: 9px; background: var(--theme-surface, #fff); }
 .validity-editor__offsets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
-.validity-editor__offsets label { display: grid; grid-template-columns: auto auto minmax(110px, 1fr) auto; align-items: center; gap: 8px; color: #475467; font-size: 13px; }
-.validity-editor__formula { color: #667085; white-space: nowrap; }
-.validity-preview { display: grid; gap: 7px; margin-top: 12px; padding: 10px 12px; border-radius: 7px; background: #f5f8ff; color: #344054; font-size: 12px; }
+.validity-editor__offsets label { display: grid; grid-template-columns: auto auto minmax(110px, 1fr) auto; align-items: center; gap: 8px; color: var(--theme-text, #475467); font-size: 13px; }
+.validity-editor__formula { color: var(--theme-text-muted, #667085); white-space: nowrap; }
+.validity-preview { display: grid; gap: 7px; margin-top: 12px; padding: 10px 12px; border-radius: 7px; background: var(--theme-info-bg, #f5f8ff); color: var(--theme-text, #344054); font-size: 12px; }
 .validity-preview__heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.validity-preview__heading strong { color: #175cd3; font-size: 13px; }
-.validity-preview__heading span { color: #667085; }
+.validity-preview__heading strong { color: var(--theme-info, #175cd3); font-size: 13px; }
+.validity-preview__heading span { color: var(--theme-text-muted, #667085); }
 .validity-preview__row { display: grid; grid-template-columns: 90px minmax(150px, 1fr) auto minmax(150px, 1fr); align-items: center; gap: 8px; }
-.validity-preview__row code { padding: 3px 6px; border: 1px solid #d1e0ff; border-radius: 4px; background: #fff; color: #1849a9; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; }
-.field-note { margin: 6px 0 0; color: #667085; font-size: 12px; line-height: 1.5; }
-.field-note strong { color: #344054; font-weight: 600; }
-.field-note--danger { color: #b42318; }
-.field-unit { margin-left: 7px; color: #667085; font-size: 13px; }
-.tier-panel { margin: 10px 0 18px; padding: 15px; background: #f9fafb; border: 1px solid #eaecf0; border-radius: 10px; }
+.validity-preview__row code { padding: 3px 6px; border: 1px solid var(--theme-info-border, #d1e0ff); border-radius: 4px; background: var(--theme-surface, #fff); color: var(--theme-info, #1849a9); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; }
+.field-note { margin: 6px 0 0; color: var(--theme-text-muted, #667085); font-size: 12px; line-height: 1.5; }
+.field-note strong { color: var(--theme-text, #344054); font-weight: 600; }
+.field-note--danger { color: var(--theme-danger, #b42318); }
+.field-unit { margin-left: 7px; color: var(--theme-text-muted, #667085); font-size: 13px; }
+.tier-panel { margin: 10px 0 18px; padding: 15px; background: var(--theme-surface-muted, #f9fafb); border: 1px solid var(--theme-border, #eaecf0); border-radius: 10px; }
 .tier-panel__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
 .tier-panel__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.tier-panel__heading strong { color: #344054; font-size: 14px; }
-.tier-panel__heading p { margin: 5px 0 0; color: #667085; font-size: 12px; }
+.tier-panel__heading strong { color: var(--theme-text, #344054); font-size: 14px; }
+.tier-panel__heading p { margin: 5px 0 0; color: var(--theme-text-muted, #667085); font-size: 12px; }
 .tier-panel__preset-copy { margin-left: 7px; }
-.tier-editor { overflow: hidden; border: 1px solid #eaecf0; border-radius: 8px; background: #fff; }
+.tier-editor { overflow: hidden; border: 1px solid var(--theme-border, #eaecf0); border-radius: 8px; background: var(--theme-surface, #fff); }
 .tier-editor__header, .tier-editor__row { display: grid; grid-template-columns: minmax(132px, .72fr) minmax(300px, 1.8fr) minmax(138px, .82fr) minmax(138px, .82fr) 44px; align-items: center; gap: 10px; padding: 9px 11px; }
-.tier-editor__header { color: #667085; font-size: 12px; font-weight: 600; background: #f2f4f7; }
-.tier-editor__row { border-top: 1px solid #f2f4f7; }
-.tier-editor__all-users { min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 11px; color: #344054; border: 1px solid #d0d5dd; border-radius: 4px; background: #f9fafb; }
-.tier-editor__all-users span { color: #98a2b3; font-size: 12px; white-space: nowrap; }
-.advanced-options { border-top: 1px solid #eaecf0; }
-.advanced-options :deep(.el-collapse-item__header) { gap: 8px; color: #344054; font-weight: 600; }
-.advanced-options__fixed { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 2px 0 14px; color: #667085; font-size: 12px; }
-.advanced-options__fixed span { padding: 5px 8px; border: 1px solid #eaecf0; border-radius: 6px; background: #f9fafb; }
+.tier-editor__header { color: var(--theme-text-muted, #667085); font-size: 12px; font-weight: 600; background: var(--theme-surface-muted, #f2f4f7); }
+.tier-editor__row { border-top: 1px solid var(--theme-surface-muted, #f2f4f7); }
+.tier-editor__all-users { min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 11px; color: var(--theme-text, #344054); border: 1px solid var(--theme-border, #d0d5dd); border-radius: 4px; background: var(--theme-surface-muted, #f9fafb); }
+.tier-editor__all-users span { color: var(--theme-text-muted, #98a2b3); font-size: 12px; white-space: nowrap; }
+.advanced-options { border-top: 1px solid var(--theme-border, #eaecf0); }
+.advanced-options :deep(.el-collapse-item__header) { gap: 8px; color: var(--theme-text, #344054); font-weight: 600; }
+.advanced-options__fixed { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 2px 0 14px; color: var(--theme-text-muted, #667085); font-size: 12px; }
+.advanced-options__fixed span { padding: 5px 8px; border: 1px solid var(--theme-border, #eaecf0); border-radius: 6px; background: var(--theme-surface-muted, #f9fafb); }
 .advanced-options__toggle-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
-.submit-hint { margin: 0; color: #667085; font-size: 12px; }
+.submit-hint { margin: 0; color: var(--theme-text-muted, #667085); font-size: 12px; }
 .group-detail-summary { margin-bottom: 18px; }
-.repair-action-strip { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; padding: 12px 14px; border: 1px solid #fed7aa; border-radius: 8px; background: #fffbeb; color: #9a3412; font-size: 13px; }
+.repair-action-strip { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; padding: 12px 14px; border: 1px solid var(--theme-warning-border, #fed7aa); border-radius: 8px; background: var(--theme-warning-bg, #fffbeb); color: var(--theme-warning, #9a3412); font-size: 13px; }
 .group-detail-error { margin-bottom: 14px; }
-.group-detail-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; color: #667085; font-size: 13px; }
-.group-detail-table { --el-table-header-bg-color: #f9fafb; --el-table-border-color: #eaecf0; }
+.group-detail-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; color: var(--theme-text-muted, #667085); font-size: 13px; }
+.group-detail-table { --el-table-header-bg-color: var(--theme-surface-muted, #f9fafb); --el-table-border-color: var(--theme-border, #eaecf0); }
 .task-market-tabs { margin-bottom: 8px; }
 .task-detail-note { margin: 0 0 14px; }
 .drawer-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 18px 0; }

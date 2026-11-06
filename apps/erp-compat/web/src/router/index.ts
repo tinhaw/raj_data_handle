@@ -20,6 +20,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'reports', name: 'reports', component: () => import('@/modules/reports/ReportsPage.vue'), meta: { title: '汇总报表' } },
       { path: 'imports', name: 'imports', component: () => import('@/modules/imports/ImportCenterPage.vue'), meta: { title: '导入中心' } },
       { path: 'redemption', name: 'redemption', component: () => import('@/modules/redemption/RedemptionCampaignPage.vue'), meta: { title: '兑换码管理' } },
+      { path: 'redemption/:taskId/claim-statistics', name: 'redemption-claim-statistics', component: () => import('@/modules/redemption/RedemptionClaimStatisticsPage.vue'), meta: { title: '兑换码领取统计' } },
       { path: 'remote-connections', name: 'remote-connections', component: () => import('@/modules/redemption/RemoteConnectionsPage.vue'), meta: { title: '远端连接' } },
       { path: 'operators', name: 'operators', component: () => import('@/modules/operators/OperatorsPage.vue'), meta: { title: '投放公司管理' } },
       { path: 'users', name: 'users', component: () => import('@/modules/users/UsersPage.vue'), meta: { title: '用户与权限' } },

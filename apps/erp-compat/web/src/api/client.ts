@@ -1,3 +1,4 @@
+import type { ClaimStatistics, ClaimSchedule, ClaimRun, ClaimCode, ClaimRecord, ClaimPage } from './claimStatistics'
 import type { PublicationVerification } from '@/modules/redemption/publicationStatus'
 import axios, { AxiosError } from 'axios'
 import type {
@@ -734,6 +735,18 @@ function updateUserRequest(user: UpdateUserInput) {
   }
 }
 
+const claimPath = (taskId: string | number) => `/redemption-campaigns/tasks/${taskId}/claim-statistics`
+export const claimStatisticsApi = {
+  statistics: (id: string, params: Record<string, unknown> = {}) => request<ClaimStatistics>(() => apiClient.get(claimPath(id), { params })),
+  settings: (id: string) => request<ClaimSchedule>(() => apiClient.get(`${claimPath(id)}/sync-settings`)),
+  saveSettings: (id: string, payload: { enabled: boolean; intervalMinutes: number; rowVersion: number }) => request<ClaimSchedule>(() => apiClient.put(`${claimPath(id)}/sync-settings`, payload)),
+  sync: (id: string) => request<ClaimRun>(() => apiClient.post(`${claimPath(id)}/sync`)),
+  progress: (id: string) => request<ClaimRun>(() => apiClient.get(`/redemption-campaigns/claim-statistic-syncs/${id}`)),
+  codes: (id: string, params: Record<string, unknown>) => request<ClaimPage<ClaimCode>>(() => apiClient.get(`${claimPath(id)}/codes`, { params })),
+  records: (id: string, params: Record<string, unknown>) => request<ClaimPage<ClaimRecord>>(() => apiClient.get(`/redemption-campaigns/tasks/${id}/claim-records`, { params })),
+  export: (id: string, params: Record<string, unknown>) => requestDownload(() => apiClient.get(`${claimPath(id)}/export`, { params, responseType: 'blob', timeout: 120_000 }), `领取统计-${id}.xlsx`),
+}
+
 export const api = {
   auth: {
     me: async () => normalizeUser(await request<unknown>(() => apiClient.get('/auth/me'))),
@@ -850,7 +863,6 @@ export const api = {
     publishBatch: async (batchId: string | number, rowVersion?: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/publish`, { rowVersion }))),
     publishRemoteBatch: async (batchId: string | number, rowVersion: number | undefined, mode: 'IMMEDIATE' | 'SCHEDULED' = 'IMMEDIATE', scheduledTime?: string, fallbackToScheduled = true) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/remote-publish`, { rowVersion, mode, scheduledTime, fallbackToScheduled }))),
     verifyRemotePublication: async (batchId: string | number) => request<PublicationVerification>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/remote-publish/verify`)),
-    adoptExternalPublication: async (batchId: string | number, rowVersion: number | undefined, remotePublishTaskId: string) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/external-publication`, { rowVersion, remotePublishTaskId }))),
     startMissingConfigurationRepair: async (batchId: string | number, rowVersion?: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/missing-configurations/repair`, { rowVersion }))),
     cancelScheduledPublish: async (batchId: string | number, rowVersion?: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/remote-publish/cancel`, { rowVersion }))),
     recoverRemotePublish: async (batchId: string | number, rowVersion?: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/remote-publish/recover`, { rowVersion }))),

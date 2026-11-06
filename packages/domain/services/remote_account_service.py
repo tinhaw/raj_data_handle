@@ -61,8 +61,10 @@ REMOTE_ACCOUNT_CAPABILITIES: dict[str, str] = {
     "ERP_REDEMPTION_PUBLISH": "ERP 兑换码远端发布",
     "ERP_REDEMPTION_CANCEL": "ERP 兑换码远端取消发布",
     "ERP_REDEMPTION_DOWNLOAD": "ERP 兑换码下载",
+    "ERP_REDEMPTION_CLAIM_READ": "ERP 兑换码领取记录读取",
 }
 MANAGED_CREDENTIAL_MODE = "MANAGED"
+OPT_IN_CAPABILITIES = frozenset({"ERP_REDEMPTION_CLAIM_READ"})
 LEGACY_SOURCE_CREDENTIAL_MODE = "LEGACY_SOURCE"
 REWARD_PRESET_REDEMPTION_TYPES = (
     "SEVEN_DAY_DEPOSIT",
@@ -158,7 +160,7 @@ def _grant_all_capabilities(
             RemoteAccountCapability(
                 account_id=account_id,
                 capability=capability,
-                enabled=True,
+                enabled=capability not in OPT_IN_CAPABILITIES,
                 updated_by=actor_user_id,
             )
             for capability in REMOTE_ACCOUNT_CAPABILITIES
@@ -186,12 +188,12 @@ async def _ensure_all_capabilities(
                 RemoteAccountCapability(
                     account_id=account_id,
                     capability=capability,
-                    enabled=True,
+                    enabled=capability not in OPT_IN_CAPABILITIES,
                     updated_by=actor_user_id,
                 )
             )
             changed = True
-        elif not row.enabled:
+        elif not row.enabled and capability not in OPT_IN_CAPABILITIES:
             row.enabled = True
             row.updated_by = actor_user_id
             changed = True
@@ -485,8 +487,11 @@ async def update_remote_account_capabilities(
     unknown = set(request.capabilities) - set(REMOTE_ACCOUNT_CAPABILITIES)
     if unknown:
         raise RemoteAccountValidationError("包含不支持的远端账号能力。")
-    if any(not enabled for enabled in request.capabilities.values()):
-        raise RemoteAccountValidationError("统一远端账号固定拥有全部业务能力，不能单独停用能力。")
+    if any(
+        not enabled and capability not in OPT_IN_CAPABILITIES
+        for capability, enabled in request.capabilities.items()
+    ):
+        raise RemoteAccountValidationError("统一远端账号的基础业务能力不能单独停用。")
     rows = {
         row.capability: row
         for row in await session.scalars(
@@ -495,8 +500,12 @@ async def update_remote_account_capabilities(
     }
     changed: list[str] = []
     for capability in REMOTE_ACCOUNT_CAPABILITIES:
-        enabled = True
         row = rows.get(capability)
+        enabled = (
+            request.capabilities.get(capability, bool(row and row.enabled))
+            if capability in OPT_IN_CAPABILITIES
+            else True
+        )
         if row is None:
             session.add(
                 RemoteAccountCapability(
@@ -562,7 +571,11 @@ async def delete_legacy_remote_account(
             )
         )
     )
-    if not all(_capability_map(capability_rows).values()):
+    if not all(
+        enabled
+        for capability, enabled in _capability_map(capability_rows).items()
+        if capability not in OPT_IN_CAPABILITIES
+    ):
         raise RemoteAccountValidationError("当前默认账号尚未获得全部功能，不能删除历史账号。")
 
     batch_references = int(

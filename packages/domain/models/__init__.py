@@ -61,8 +61,22 @@ from packages.domain.models.entities import (
     WithdrawOrderSnapshot,
     WithdrawScoringSnapshot,
 )
+from packages.domain.models.redemption_claims import (
+    RedemptionClaimDaily,
+    RedemptionClaimGroup,
+    RedemptionClaimLease,
+    RedemptionClaimRecord,
+    RedemptionClaimRun,
+    RedemptionClaimSchedule,
+)
 
 __all__ = [
+    "RedemptionClaimDaily",
+    "RedemptionClaimGroup",
+    "RedemptionClaimLease",
+    "RedemptionClaimRecord",
+    "RedemptionClaimRun",
+    "RedemptionClaimSchedule",
     "AppUser",
     "AuthSession",
     "Base",

@@ -52,15 +52,22 @@ MAX_EXPORT_BYTES = 16 * 1024 * 1024
 
 
 class ErpRedemptionRemoteHttpError(ValueError):
-    pass
+    def __init__(
+        self, message: str, *, fallback_allowed: bool = False, retryable: bool = False
+    ) -> None:
+        super().__init__(message)
+        self.fallback_allowed = fallback_allowed
+        self.retryable = retryable
 
 
 @dataclass(frozen=True, slots=True)
 class ErpRemoteAccountReadGrant:
     account_id: str
     source_id: str
-    operation: Literal["CHECK", "TAGS"]
-    capability: Literal["ERP_REMOTE_CHECK", "ERP_TAG_READ", "ERP_TAG_SYNC"]
+    operation: Literal["CHECK", "TAGS", "CLAIMS"]
+    capability: Literal[
+        "ERP_REMOTE_CHECK", "ERP_TAG_READ", "ERP_TAG_SYNC", "ERP_REDEMPTION_CLAIM_READ"
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +122,24 @@ def _success_payload(response: httpx.Response) -> object:
         code = payload.get("code")
         if payload.get("success") is False or (code is not None and str(code) not in {"0", "200"}):
             raise ErpRedemptionRemoteHttpError(
-                _clean(payload.get("message")) or "远端管理后台请求失败。"
+                _clean(payload.get("message")) or "远端管理后台请求失败。",
+                fallback_allowed=str(code).upper()
+                in {
+                    "401",
+                    "403",
+                    "419",
+                    "440",
+                    "429",
+                    "500",
+                    "502",
+                    "503",
+                    "504",
+                    "TOKEN_EXPIRED",
+                    "FORBIDDEN",
+                    "UNAUTHORIZED",
+                }
+                or (payload.get("success") is False and str(code) in {"None", "0", "200"}),
+                retryable=str(code) in {"429", "500", "502", "503", "504"},
             )
     return payload
 
@@ -205,10 +229,12 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
             raise ErpRedemptionRemoteHttpError("远端执行授权与账号或操作不匹配。")
 
     def _assert_read_grant(
-        self, grant: ErpRemoteAccountReadGrant, operation: Literal["CHECK", "TAGS"]
+        self, grant: ErpRemoteAccountReadGrant, operation: Literal["CHECK", "TAGS", "CLAIMS"]
     ) -> None:
-        capability_valid = (operation == "CHECK" and grant.capability == "ERP_REMOTE_CHECK") or (
-            operation == "TAGS" and grant.capability in {"ERP_TAG_READ", "ERP_TAG_SYNC"}
+        capability_valid = (
+            (operation == "CHECK" and grant.capability == "ERP_REMOTE_CHECK")
+            or (operation == "TAGS" and grant.capability in {"ERP_TAG_READ", "ERP_TAG_SYNC"})
+            or (operation == "CLAIMS" and grant.capability == "ERP_REDEMPTION_CLAIM_READ")
         )
         if (
             grant.account_id != self.account_id
@@ -240,7 +266,9 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
                 )
                 return self._token
             except RemoteSessionError as exc:
-                raise ErpRedemptionRemoteHttpError(str(exc)) from exc
+                raise ErpRedemptionRemoteHttpError(
+                    str(exc), fallback_allowed=exc.fallback_allowed
+                ) from exc
         if self._token and not force:
             return self._token
         self._token = await self._login_uncached()
@@ -258,14 +286,21 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
                 },
             )
         except (httpx.HTTPError, ValueError) as exc:
-            raise ErpRedemptionRemoteHttpError("远端登录失败。") from exc
+            raise ErpRedemptionRemoteHttpError("远端登录失败。", fallback_allowed=True) from exc
         if response.status_code == 429:
-            raise ErpRedemptionRemoteHttpError("远端登录次数受限（429）。")
+            raise ErpRedemptionRemoteHttpError("远端登录次数受限（429）。", fallback_allowed=True)
         if response.status_code >= 400:
-            raise ErpRedemptionRemoteHttpError("远端登录返回非成功 HTTP 状态。")
-        token = _extract_token(_success_payload(response))
+            raise ErpRedemptionRemoteHttpError(
+                "远端登录返回非成功 HTTP 状态。", fallback_allowed=True
+            )
+        try:
+            token = _extract_token(_success_payload(response))
+        except ErpRedemptionRemoteHttpError as exc:
+            raise ErpRedemptionRemoteHttpError("远端登录失败。", fallback_allowed=True) from exc
         if not token:
-            raise ErpRedemptionRemoteHttpError("远端登录响应中没有访问令牌。")
+            raise ErpRedemptionRemoteHttpError(
+                "远端登录响应中没有访问令牌。", fallback_allowed=True
+            )
         return token
 
     async def _request(
@@ -288,7 +323,9 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
                 params=params,
             )
         except httpx.HTTPError as exc:
-            raise ErpRedemptionRemoteHttpError("无法连接远端管理后台。") from exc
+            raise ErpRedemptionRemoteHttpError(
+                "无法连接远端管理后台。", fallback_allowed=True, retryable=True
+            ) from exc
         if response_requires_relogin(response) and allow_relogin:
             await self._login(force=True)
             return await self._request(
@@ -302,10 +339,15 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
         if response_requires_relogin(response):
             if self._remote_session:
                 await self._remote_session.reject(token)
-            raise ErpRedemptionRemoteHttpError("重新登录后远端仍拒绝会话，已停止重试。")
+            raise ErpRedemptionRemoteHttpError(
+                "重新登录后远端仍拒绝会话，已停止重试。", fallback_allowed=True
+            )
         if response.status_code >= 400:
             raise ErpRedemptionRemoteHttpError(
-                f"远端管理后台返回 HTTP {response.status_code}。"
+                f"远端管理后台返回 HTTP {response.status_code}。",
+                fallback_allowed=response.status_code in {401, 403, 419, 440, 429}
+                or response.status_code >= 500,
+                retryable=response.status_code == 429 or response.status_code >= 500,
             )
         request_id = _clean(response.headers.get("x-request-id"))
         return (response.content if bytes_response else _success_payload(response), request_id)

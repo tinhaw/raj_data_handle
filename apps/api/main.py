@@ -22,6 +22,7 @@ from apps.api.routers.erp_redemption import router as erp_redemption_router
 from apps.api.routers.erp_reports import router as erp_reports_router
 from apps.api.routers.notifications import router as notifications_router
 from apps.api.routers.payment_templates import router as payment_templates_router
+from apps.api.routers.redemption_claims import router as redemption_claims_router
 from apps.api.routers.remote_accounts import router as remote_accounts_router
 from apps.api.routers.remote_market_monitor import (
     router as remote_market_monitor_router,
@@ -93,6 +94,7 @@ app.include_router(erp_imports_router, prefix=settings.api_prefix)
 app.include_router(erp_reports_router, prefix=settings.api_prefix)
 app.include_router(erp_redemption_router, prefix=settings.api_prefix)
 app.include_router(remote_accounts_router, prefix=settings.api_prefix)
+app.include_router(redemption_claims_router, prefix=settings.api_prefix)
 app.include_router(payment_templates_router, prefix=settings.api_prefix)
 app.include_router(remote_market_monitor_router, prefix=settings.api_prefix)
 app.include_router(remote_market_monitor_system_router, prefix=settings.api_prefix)

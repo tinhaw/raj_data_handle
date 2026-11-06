@@ -57,12 +57,24 @@ const router = createRouter({
     },
     {
       path: '/erp/redemption',
+      name: 'redemption',
       component: () => import('../components/ErpCompatibilityModule.vue'),
       meta: {
         navKey: '/erp/redemption',
         title: '兑换码管理',
         erpPermission: 'ERP_REDEMPTION_VIEW',
         erpCompatComponent: '../../../erp-compat/web/src/modules/redemption/RedemptionCampaignPage.vue',
+      },
+    },
+    {
+      path: '/erp/redemption/:taskId/claim-statistics',
+      name: 'redemption-claim-statistics',
+      component: () => import('../components/ErpCompatibilityModule.vue'),
+      meta: {
+        navKey: '/erp/redemption',
+        title: '兑换码领取统计',
+        erpPermission: 'ERP_REDEMPTION_VIEW',
+        erpCompatComponent: '../../../erp-compat/web/src/modules/redemption/RedemptionClaimStatisticsPage.vue',
       },
     },
     {
