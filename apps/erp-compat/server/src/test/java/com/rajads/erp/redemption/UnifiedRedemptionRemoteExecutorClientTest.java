@@ -40,7 +40,8 @@ class UnifiedRedemptionRemoteExecutorClientTest {
             assertThat(exchange.getRequestHeaders().getFirst("Upgrade")).isNull();
             JsonNode request = objectMapper.readTree(exchange.getRequestBody());
             assertThat(request.path("options").path("single_key_limit").asInt()).isEqualTo(3);
-            assertThat(request.path("options").path("key_number").asInt()).isEqualTo(5);
+            assertThat(request.path("options").path("key_number").asInt()).isEqualTo(1);
+            assertThat(request.path("gift_code").asText()).isEqualTo("0905raj7days100");
             assertThat(request.path("valid_from").asText()).isEqualTo("2026-09-06");
             assertThat(request.path("valid_to").asText()).isEqualTo("2026-09-07");
             assertThat(request.path("execution_confirmed").asBoolean()).isTrue();
@@ -76,9 +77,9 @@ class UnifiedRedemptionRemoteExecutorClientTest {
                                 BigDecimal.valueOf(5),
                                 new RemoteCreationOptions(
                                         "test", 5, 5, null, null, null,
-                                        5, 1, 3, false, true, true, 1,
+                                        1, 1, 3, false, true, true, 1,
                                         true, 1, true, 1
-                                )
+                                ), "0905raj7days100"
                         );
 
         assertThat(created.configurationId()).isEqualTo("remote-123");

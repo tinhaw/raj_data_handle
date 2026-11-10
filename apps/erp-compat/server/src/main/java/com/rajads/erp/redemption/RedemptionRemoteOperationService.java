@@ -70,7 +70,7 @@ public class RedemptionRemoteOperationService {
         try {
             UnifiedRedemptionRemoteExecutorClient.CreatedConfiguration created = executor.create(
                     context.account().id(), issueId, context.description(), context.claimDate(), context.validFrom(), context.validTo(), context.labelIds(),
-                    context.bonusMin(), context.bonusMax(), context.options());
+                    context.bonusMin(), context.bonusMax(), context.options(), context.giftCode());
             receivedId = created.configurationId();
             receivedGroupKey = created.groupKey();
             return required(tx().execute(status -> completeCreate(
@@ -102,7 +102,7 @@ public class RedemptionRemoteOperationService {
         try {
             RemoteGiftCodeBackendClient.CreatedConfiguration created = remoteClient.create(requireEnabledConnection(requireBatch(context.batchId())),
                     new RemoteGiftCodeBackendClient.CreateConfigurationRequest(context.description(), context.labelIds(), context.allUsers(),
-                            context.bonusMin(), context.bonusMax(), context.claimDate(), context.validFrom(), context.validTo(), context.options()));
+                            context.bonusMin(), context.bonusMax(), context.claimDate(), context.validFrom(), context.validTo(), context.options(), context.giftCode()));
             receivedId = created.configurationId();
             String groupKey = null;
             String lookupError = null;
@@ -416,6 +416,15 @@ public class RedemptionRemoteOperationService {
         issue.setRemoteMarketId(account.marketId());
         List<Long> labels = labelIds(issue);
         boolean allUsers = labels.isEmpty();
+        RemoteCreationOptions options = options(batch);
+        RedemptionCodeType type = batch.getRedemptionType();
+        // Older multi-code batches still use their saved ordinary-code contract.
+        String giftCode = type != null && type.usesSpecialCode() && options.keyNumber() == 1
+                ? type.specialCode(issue.getClaimDate(), issue.getMinDepositAmount()) : null;
+        if (giftCode != null && issueRepository.countByBatchIdAndClaimDateAndMinDepositAmount(
+                batch.getId(), issue.getClaimDate(), issue.getMinDepositAmount()) > 1) {
+            throw ApiException.conflict("DUPLICATE_SPECIAL_CODE", "同批次同日存在相同充值门槛，会生成重复的特殊兑换码");
+        }
         issue.setWorkflowStatus("CREATING_REMOTE");
         issue.setState("PENDING");
         issue.setRemoteError(null);
@@ -424,7 +433,7 @@ public class RedemptionRemoteOperationService {
         LocalDate validFrom = issue.getClaimDate().plusDays(batch.getValidFromDayOffset() == null ? 0 : batch.getValidFromDayOffset());
         LocalDate validTo = issue.getClaimDate().plusDays(batch.getValidToDayOffset() == null ? 0 : batch.getValidToDayOffset());
         return new RemoteTaskContext(batch.getId(), account, remoteDescription(batch, issue), labels, allUsers,
-                issue.getBonusAmount(), issue.getBonusMaxAmount(), issue.getClaimDate(), validFrom, validTo, options(batch));
+                issue.getBonusAmount(), issue.getBonusMaxAmount(), issue.getClaimDate(), validFrom, validTo, options, giftCode);
     }
 
     private Long completeCreate(Long issueId, String configurationId, String groupKey, String warning) {
@@ -873,7 +882,7 @@ public class RedemptionRemoteOperationService {
     private record RemoteTaskContext(Long batchId, RedemptionRemoteDirectory.Account account, String description, List<Long> labelIds, boolean allUsers,
                                      java.math.BigDecimal bonusMin, java.math.BigDecimal bonusMax, java.time.LocalDate claimDate,
                                      java.time.LocalDate validFrom, java.time.LocalDate validTo,
-                                     RemoteCreationOptions options) { }
+                                     RemoteCreationOptions options, String giftCode) { }
     private record RemoteBatchContext(Long accountId, RedemptionRemoteConnection connection, RemoteCreationOptions options, boolean scheduled,
                                       LocalDateTime scheduledTime, String note, String publishTaskId,
                                       boolean fallbackToScheduled) { }

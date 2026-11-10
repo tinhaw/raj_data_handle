@@ -66,7 +66,8 @@ public class UnifiedRedemptionRemoteExecutorClient {
             List<Long> labelIds,
             BigDecimal bonusAmount,
             BigDecimal bonusMaxAmount,
-            RemoteCreationOptions options) {
+            RemoteCreationOptions options,
+            String giftCode) {
         if (accountId == null || issueId == null) {
             throw ApiException.badRequest("UNIFIED_REMOTE_CREATE_INVALID", "统一远端创建缺少账号或任务 ID");
         }
@@ -81,6 +82,7 @@ public class UnifiedRedemptionRemoteExecutorClient {
         payload.put("bonus_amount", bonusAmount);
         payload.put("bonus_max_amount", bonusMaxAmount);
         payload.put("options", options(options));
+        if (giftCode != null) payload.put("gift_code", giftCode);
         // The browser action that called this endpoint is the one confirmed
         // operator action. The main API checks this intent again before it
         // obtains a credential envelope or opens a remote HTTP client.

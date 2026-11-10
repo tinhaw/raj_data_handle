@@ -92,7 +92,7 @@ class RedemptionRemoteIdentityHttpTest {
             verify(executor, never()).download(anyLong(), anyLong(), anyString(), any(), anyInt());
         }
         verify(executor, never()).publish(anyLong(), anyLong(), anyString(), anyBoolean(), any(), anyBoolean());
-        verify(executor, never()).create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any());
+        verify(executor, never()).create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any(), any());
         verify(executor, never()).cancelScheduledPublish(anyLong(), anyLong(), anyString());
         verifyNoInteractions(standalone, gate);
     }
@@ -138,7 +138,7 @@ class RedemptionRemoteIdentityHttpTest {
                 .andExpect(status().isConflict());
         verify(executor, never()).download(anyLong(), anyLong(), anyString(), any(), anyInt());
 
-        when(executor.create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any()))
+        when(executor.create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any(), any()))
                 .thenReturn(new UnifiedRedemptionRemoteExecutorClient.CreatedConfiguration("new-repair-id", "new-group", null));
         create(session, issueId, false).andExpect(status().isOk());
         assertThat(jdbc.queryForMap("select status,remote_publish_task_id from erp_compat_redemption_code_batches where id=?", batchId))
@@ -194,7 +194,7 @@ class RedemptionRemoteIdentityHttpTest {
         long issueA2 = groupA2.at("/issues/0/id").asLong();
         jdbc.update("update erp_compat_redemption_code_batches set remote_connection_id=? where id=?", accountA, groupA.at("/batch/id").asLong());
         jdbc.update("update erp_compat_redemption_code_batches set remote_connection_id=? where id=?", accountA2, groupA2.at("/batch/id").asLong());
-        when(executor.create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any()))
+        when(executor.create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any(), any()))
                 .thenReturn(new UnifiedRedemptionRemoteExecutorClient.CreatedConfiguration("1632-scope", "group-scope", null));
 
         create(session, issueA, false).andExpect(status().isOk());
@@ -209,7 +209,7 @@ class RedemptionRemoteIdentityHttpTest {
                 .containsEntry("workflow_status", "FAILED").containsEntry("remote_reference_id", "1632-scope")
                 .containsEntry("remote_configuration_id", null);
         create(session, issueA2, true).andExpect(status().isConflict());
-        verify(executor, times(3)).create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any());
+        verify(executor, times(3)).create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any(), eq("0905raj7days0"));
         verifyNoInteractions(standalone);
     }
 
@@ -439,9 +439,9 @@ class RedemptionRemoteIdentityHttpTest {
         return send(session, "/api/v1/redemption-campaigns/groups", """
                 {"code":"%s","name":"%s","claimDateFrom":"2026-09-05","claimDateTo":"2026-09-05","lookbackDays":7,
                  "tiers":[{"displayName":"全部用户","minDepositAmount":0,"bonusAmount":1,"bonusMaxAmount":3,"sortOrder":1}],
-                 "remoteMarketId":%s,"redemptionType":"SEVEN_DAY_DEPOSIT","tierUserTypes":["ALL_USERS"],"tierLabelIds":[[]],
+                 "remoteMarketId":%s,"redemptionType":"%s","tierUserTypes":["ALL_USERS"],"tierLabelIds":[[]],
                  "remoteOptions":{"publishEnvironment":"test","flowTimes":5,"creationIntervalSeconds":5,"keyNumber":%d,"singleUserLimit":1,"singleKeyLimit":2,"requireBindBankCard":false,"requireBindPhone":true,"checkUuid":true,"uuidRewardLimit":1,"checkLoginIp":true,"loginIpRewardLimit":1,"checkRegisterIp":true,"registerIpRewardLimit":1}}
-                """.formatted(code, code, market, keyNumber));
+                """.formatted(code, code, market, keyNumber == 1 ? "SEVEN_DAY_DEPOSIT" : "AGENT", keyNumber));
     }
 
     private JsonNode send(MockHttpSession session, String path, String content) throws Exception {

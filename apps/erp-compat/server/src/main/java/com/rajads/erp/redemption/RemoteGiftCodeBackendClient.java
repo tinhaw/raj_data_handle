@@ -77,7 +77,14 @@ public class RemoteGiftCodeBackendClient {
         payload.put("group_desc", input.description());
         payload.put("reward_min", input.bonusMin());
         payload.put("reward_max", input.bonusMax());
-        payload.put("key_number", String.valueOf(options.keyNumber()));
+        if (input.giftCode() == null) {
+            payload.put("key_number", String.valueOf(options.keyNumber()));
+        } else {
+            payload.put("gift_type", 1);
+            payload.put("gift_code", input.giftCode());
+            payload.put("reward_condition_type", 0);
+            payload.put("refresh_flag", 0);
+        }
         payload.put("single_user_limit", options.singleUserLimit());
         payload.put("single_key_limit", options.singleKeyLimit());
         payload.put("uuid_reward_limit", options.uuidRewardLimit());
@@ -401,7 +408,13 @@ public class RemoteGiftCodeBackendClient {
     private record AuthenticatedResponse<T>(RedemptionRemoteConnection connection, HttpResponse<T> response) { }
     public record RemoteTag(long id, String name) { }
     public record CreateConfigurationRequest(String description, List<Long> labelIds, boolean allUsers, BigDecimal bonusMin, BigDecimal bonusMax,
-                                             LocalDate claimDate, LocalDate validFrom, LocalDate validTo, RemoteCreationOptions options) { }
+                                             LocalDate claimDate, LocalDate validFrom, LocalDate validTo,
+                                             RemoteCreationOptions options, String giftCode) {
+        public CreateConfigurationRequest(String description, List<Long> labelIds, boolean allUsers, BigDecimal bonusMin, BigDecimal bonusMax,
+                                          LocalDate claimDate, LocalDate validFrom, LocalDate validTo, RemoteCreationOptions options) {
+            this(description, labelIds, allUsers, bonusMin, bonusMax, claimDate, validFrom, validTo, options, null);
+        }
+    }
     public record CreatedConfiguration(String configurationId, String groupKey) { }
     public static final class RemoteGiftCodeException extends RuntimeException { public RemoteGiftCodeException(String message) { super(message); } }
 }

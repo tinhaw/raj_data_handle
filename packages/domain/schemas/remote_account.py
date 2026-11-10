@@ -194,6 +194,7 @@ class ErpCompatibilityRemoteCreateRequest(ApiSchema):
     bonus_amount: Decimal = Field(ge=0, max_digits=24, decimal_places=8)
     bonus_max_amount: Decimal = Field(ge=0, max_digits=24, decimal_places=8)
     options: ErpCompatibilityRemoteCreateOptions
+    gift_code: str | None = Field(default=None, max_length=255, pattern=r"^[A-Za-z0-9]+$")
     execution_confirmed: bool = False
 
     @field_validator("label_ids")
@@ -205,6 +206,8 @@ class ErpCompatibilityRemoteCreateRequest(ApiSchema):
 
     @model_validator(mode="after")
     def validate_remote_confirmation(self) -> ErpCompatibilityRemoteCreateRequest:
+        if self.gift_code is not None and self.options.key_number != 1:
+            raise ValueError("特殊兑换码每组只能生成 1 个码。")
         if self.bonus_max_amount < self.bonus_amount:
             raise ValueError("兑换金额上限不能小于下限。")
         valid_from = self.valid_from or self.claim_date

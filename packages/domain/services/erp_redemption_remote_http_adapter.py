@@ -8,6 +8,7 @@ semantics available without enabling remote writes during code deployment.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import BytesIO
@@ -425,6 +426,11 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
     ) -> RemoteCreateResult:
         self._assert_grant(grant, "CREATE")
         options = command.options
+        special_code = command.gift_code
+        if special_code is not None and (
+            options.key_number != 1 or re.fullmatch(r"[A-Za-z0-9]+", special_code) is None
+        ):
+            raise ErpRedemptionRemoteHttpError("特殊兑换码每组仅支持一个英文字母或数字码串。")
         all_users = not command.label_ids
         valid_from = command.valid_from or command.claim_date
         valid_to = command.valid_to or command.claim_date
@@ -437,7 +443,7 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
             raise ErpRedemptionRemoteHttpError("远端兑换金额仅支持整数，请调整兑换金额上下限。")
         payload: dict[str, Any] = {
             # Remote gift-code kind is separate from our deposit/agent campaign type.
-            "gift_type": 0,
+            "gift_type": 1 if special_code is not None else 0,
             # Match the console default: audience tags apply without extra claim conditions.
             "reward_condition_type": 0,
             "refresh_flag": 0,
@@ -458,7 +464,6 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
             "group_desc": command.description,
             "reward_min": int(command.bonus_amount),
             "reward_max": int(command.bonus_max_amount),
-            "key_number": str(options.key_number),
             "single_user_limit": options.single_user_limit,
             "single_key_limit": options.single_key_limit,
             "uuid_reward_limit": options.uuid_reward_limit,
@@ -469,6 +474,10 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
                 f"{valid_to:%Y-%m-%d} 23:59:59",
             ],
         }
+        if special_code is not None:
+            payload["gift_code"] = special_code
+        else:
+            payload["key_number"] = str(options.key_number)
         for key, value in {
             "activity_recharge": options.activity_recharge,
             "activity_recharge_count": options.activity_recharge_count,
@@ -480,9 +489,16 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
         configuration_id = _first_text(response, "data.id", "id")
         if not configuration_id:
             raise ErpRedemptionRemoteHttpError("远端创建接口未返回配置 ID。")
+        group_key = _first_text(response, "data.group_key", "data.groupKey")
+        if not group_key:
+            try:
+                group_key = await self._find_group_key(configuration_id)
+            except ErpRedemptionRemoteHttpError:
+                # Keep the successful save receipt. Download can retry the lookup.
+                group_key = None
         return RemoteCreateResult(
             remote_configuration_id=configuration_id,
-            remote_group_key=await self._find_group_key(configuration_id),
+            remote_group_key=group_key,
             remote_request_id=request_id,
         )
 
@@ -598,12 +614,17 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
                     row = configs.get(ref.configuration_id)
                     verified.state = "MISSING"
                     if row is not None:
+                        count = (
+                            "1"
+                            if str(row.get("gift_type")) == "1" and _first_text(row, "gift_code")
+                            else str(row.get("key_number"))
+                        )
                         verified.state = (
                             "MATCHED"
                             if (
                                 bool(ref.group_key)
                                 and _first_text(row, "group_key", "groupKey") == ref.group_key
-                                and str(row.get("key_number")) == str(ref.key_number)
+                                and count == str(ref.key_number)
                             )
                             else "MISMATCH"
                         )

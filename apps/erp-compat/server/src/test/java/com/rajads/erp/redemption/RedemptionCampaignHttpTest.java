@@ -36,6 +36,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -129,6 +130,7 @@ class RedemptionCampaignHttpTest {
         verify(remoteGiftCodeBackendClient).create(any(), allUsersRequest.capture());
         assertThat(allUsersRequest.getValue().allUsers()).isTrue();
         assertThat(allUsersRequest.getValue().labelIds()).isEmpty();
+        assertThat(allUsersRequest.getValue().giftCode()).isEqualTo("0820raj7days500");
         assertThat(allUsersRequest.getValue().validFrom()).isEqualTo(java.time.LocalDate.of(2026, 8, 21));
         assertThat(allUsersRequest.getValue().validTo()).isEqualTo(java.time.LocalDate.of(2026, 8, 22));
 
@@ -181,7 +183,7 @@ class RedemptionCampaignHttpTest {
                                 {"code":"previous_day_aug","name":"前一天充值兑换码组","claimDateFrom":"2026-08-18","claimDateTo":"2026-08-18","lookbackDays":7,
                                  "tiers":[{"displayName":"前一天充值 0（所有用户）","minDepositAmount":0,"bonusAmount":1,"bonusMaxAmount":3,"sortOrder":1},{"displayName":"前一天充值 200–999","minDepositAmount":200,"bonusAmount":7,"bonusMaxAmount":9,"sortOrder":2}],
                                  "remoteMarketId":%s,"redemptionType":"PREVIOUS_DAY_DEPOSIT","tierUserTypes":["ALL_USERS","LABEL_USERS"],"tierLabelIds":[[],[901991]],
-                                 "remoteOptions":{"publishEnvironment":"test","flowTimes":5,"creationIntervalSeconds":5,"keyNumber":1,"singleUserLimit":1,"singleKeyLimit":3000,"requireBindBankCard":false,"requireBindPhone":true,"checkUuid":true,"uuidRewardLimit":1,"checkLoginIp":true,"loginIpRewardLimit":1,"checkRegisterIp":true,"registerIpRewardLimit":1}}
+                                 "remoteOptions":{"publishEnvironment":"test","flowTimes":5,"creationIntervalSeconds":5,"keyNumber":1,"singleUserLimit":1,"singleKeyLimit":3,"requireBindBankCard":false,"requireBindPhone":true,"checkUuid":true,"uuidRewardLimit":1,"checkLoginIp":true,"loginIpRewardLimit":1,"checkRegisterIp":true,"registerIpRewardLimit":1}}
                                 """.formatted(marketId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.batch.redemptionType").value("PREVIOUS_DAY_DEPOSIT"))
@@ -201,13 +203,22 @@ class RedemptionCampaignHttpTest {
         ArgumentCaptor<RemoteGiftCodeBackendClient.CreateConfigurationRequest> createRequest = ArgumentCaptor.forClass(RemoteGiftCodeBackendClient.CreateConfigurationRequest.class);
         verify(remoteGiftCodeBackendClient).create(any(), createRequest.capture());
         assertThat(createRequest.getValue().description()).isEqualTo("NEW-818存款0");
+        assertThat(createRequest.getValue().giftCode()).isEqualTo("0818rajfree");
         assertThat(createRequest.getValue().allUsers()).isTrue();
         assertThat(createRequest.getValue().labelIds()).isEmpty();
+
+        long depositIssueId = data(groupResult).at("/issues/1/id").asLong();
+        when(remoteGiftCodeBackendClient.create(any(), any())).thenReturn(new RemoteGiftCodeBackendClient.CreatedConfiguration("previous-day-200", null));
+        when(remoteGiftCodeBackendClient.findGroupKey(any(), any(), any())).thenReturn("previous-day-200-group");
+        mockMvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + depositIssueId + "/remote-create").session(session)
+                        .with(SecurityMockMvcRequestPostProcessors.csrf()))
+                .andExpect(status().isOk());
+        verify(remoteGiftCodeBackendClient).create(any(), argThat(request -> "0818raj200".equals(request.giftCode())));
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"PREVIOUS_DAY_DEPOSIT", "SEVEN_DAY_DEPOSIT", "AGENT"})
-    void sameThresholdTiersKeepTheirOwnAudienceAndRewards(String redemptionType) throws Exception {
+    void sharedThresholdsAreRejectedForSpecialCodesAndPreservedForAgentCodes(String redemptionType) throws Exception {
         MockHttpSession session = login();
         long marketId = data(mockMvc.perform(post("/api/v1/redemption-remote-markets").session(session)
                         .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON).content("""
@@ -222,14 +233,19 @@ class RedemptionCampaignHttpTest {
         when(remoteGiftCodeBackendClient.tags(any())).thenReturn(List.of(
                 new RemoteGiftCodeBackendClient.RemoteTag(5001, "游戏总局数0")));
 
-        JsonNode created = data(mockMvc.perform(post("/api/v1/redemption-campaigns/groups").session(session)
+        var result = mockMvc.perform(post("/api/v1/redemption-campaigns/groups").session(session)
                         .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON).content("""
                                 {"code":"shared_%s","name":"Shared threshold group","claimDateFrom":"2026-11-01","claimDateTo":"2026-11-02","lookbackDays":7,
                                  "tiers":[{"displayName":"全部用户","minDepositAmount":0,"bonusAmount":5,"bonusMaxAmount":7,"sortOrder":1},{"displayName":"游戏总局数0","minDepositAmount":0.00,"bonusAmount":5,"bonusMaxAmount":17,"sortOrder":2}],
                                  "remoteMarketId":%s,"redemptionType":"%s","tierUserTypes":["ALL_USERS","LABEL_USERS"],"tierLabelIds":[[],[5001]],
-                                 "remoteOptions":{"publishEnvironment":"test","flowTimes":5,"creationIntervalSeconds":5,"keyNumber":1,"singleUserLimit":1,"singleKeyLimit":3000,"requireBindBankCard":false,"requireBindPhone":true,"checkUuid":true,"uuidRewardLimit":1,"checkLoginIp":true,"loginIpRewardLimit":1,"checkRegisterIp":true,"registerIpRewardLimit":1}}
-                                """.formatted(redemptionType, marketId, redemptionType)))
-                .andExpect(status().isOk()).andReturn());
+                                 "remoteOptions":{"publishEnvironment":"test","flowTimes":5,"creationIntervalSeconds":5,"keyNumber":1,"singleUserLimit":1,"singleKeyLimit":3,"requireBindBankCard":false,"requireBindPhone":true,"checkUuid":true,"uuidRewardLimit":1,"checkLoginIp":true,"loginIpRewardLimit":1,"checkRegisterIp":true,"registerIpRewardLimit":1}}
+                                """.formatted(redemptionType, marketId, redemptionType)));
+        if (!"AGENT".equals(redemptionType)) {
+            result.andExpect(status().isBadRequest());
+            verify(remoteGiftCodeBackendClient, never()).create(any(), any());
+            return;
+        }
+        JsonNode created = data(result.andExpect(status().isOk()).andReturn());
         long batchId = created.at("/batch/id").asLong();
         long campaignId = created.at("/batch/campaignId").asLong();
         JsonNode campaign = data(mockMvc.perform(get("/api/v1/redemption-campaigns/" + campaignId).session(session))
@@ -452,7 +468,7 @@ class RedemptionCampaignHttpTest {
         long tierId = campaign.at("/tiers/0/id").asLong();
         MvcResult batchResult = mockMvc.perform(post("/api/v1/redemption-campaigns/batches").session(session)
                         .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"campaignId\":" + campaignId + ",\"claimDateFrom\":\"2026-08-22\",\"claimDateTo\":\"2026-08-22\",\"remoteConnectionId\":" + connectionId + ",\"tierLabelIds\":{\"" + tierId + "\":[901026]},\"remoteOptions\":{\"publishEnvironment\":\"test\",\"flowTimes\":5,\"creationIntervalSeconds\":5,\"keyNumber\":" + keyNumber + ",\"singleUserLimit\":1,\"singleKeyLimit\":2,\"requireBindBankCard\":false,\"requireBindPhone\":true,\"checkUuid\":true,\"uuidRewardLimit\":1,\"checkLoginIp\":true,\"loginIpRewardLimit\":1,\"checkRegisterIp\":true,\"registerIpRewardLimit\":1}}"))
+                        .content("{\"campaignId\":" + campaignId + ",\"claimDateFrom\":\"2026-08-22\",\"claimDateTo\":\"2026-08-22\",\"redemptionType\":\"AGENT\",\"remoteConnectionId\":" + connectionId + ",\"tierLabelIds\":{\"" + tierId + "\":[901026]},\"remoteOptions\":{\"publishEnvironment\":\"test\",\"flowTimes\":5,\"creationIntervalSeconds\":5,\"keyNumber\":" + keyNumber + ",\"singleUserLimit\":1,\"singleKeyLimit\":2,\"requireBindBankCard\":false,\"requireBindPhone\":true,\"checkUuid\":true,\"uuidRewardLimit\":1,\"checkLoginIp\":true,\"loginIpRewardLimit\":1,\"checkRegisterIp\":true,\"registerIpRewardLimit\":1}}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.batch.remoteConnectionName").value("remote-admin"))
                 .andExpect(jsonPath("$.data.batch.remoteOptions.flowTimes").value(5))
@@ -472,7 +488,8 @@ class RedemptionCampaignHttpTest {
                 .andReturn();
         ArgumentCaptor<RemoteGiftCodeBackendClient.CreateConfigurationRequest> createRequest = ArgumentCaptor.forClass(RemoteGiftCodeBackendClient.CreateConfigurationRequest.class);
         verify(remoteGiftCodeBackendClient).create(any(), createRequest.capture());
-        assertThat(createRequest.getValue().description()).isEqualTo("NEW-815到821存款100");
+        assertThat(createRequest.getValue().description()).isEqualTo("8-22代理存款100");
+        assertThat(createRequest.getValue().giftCode()).isNull();
         assertThat(createRequest.getValue().options().keyNumber()).isEqualTo(keyNumber);
         JsonNode createdDetail = data(createdResult);
         when(remoteGiftCodeBackendClient.publishAll(any(), any(), anyBoolean(), any())).thenReturn("17687");

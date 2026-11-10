@@ -214,6 +214,8 @@ public class RedemptionService {
             for (RedemptionCampaignTier tier : tiers) validateLabelIds(redemptionType, tier, tierLabelIds.get(tier.getId()));
         }
         int dates = Math.toIntExact(ChronoUnit.DAYS.between(request.claimDateFrom(), request.claimDateTo()) + 1);
+        Set<String> specialCodes = remoteConnection != null && redemptionType.usesSpecialCode()
+                ? new HashSet<>() : null;
         RedemptionCodeBatch batch = new RedemptionCodeBatch();
         batch.setCampaignId(campaign.getId());
         batch.setClaimDateFrom(request.claimDateFrom());
@@ -233,6 +235,9 @@ public class RedemptionService {
         List<RedemptionCodeIssue> tasks = new ArrayList<>();
         for (LocalDate date = request.claimDateFrom(); !date.isAfter(request.claimDateTo()); date = date.plusDays(1)) {
             for (RedemptionCampaignTier tier : tiers) {
+                if (specialCodes != null && !specialCodes.add(redemptionType.specialCode(date, tier.getMinDepositAmount()))) {
+                    throw ApiException.badRequest("DUPLICATE_SPECIAL_CODE", "所选日期和充值门槛会生成重复的特殊兑换码，请调整档位或日期范围");
+                }
                 RedemptionCodeIssue issue = newIssue(campaign, tier, date);
                 issue.setBatchId(batch.getId());
                 if (remoteConnection != null) issue.setRemoteMarketId(remoteConnection.marketId());
@@ -576,6 +581,9 @@ public class RedemptionService {
 
     private void applyRemoteOptions(RedemptionCodeBatch batch, RedemptionDtos.RemoteCreationOptionsRequest request) {
         if (request == null) throw ApiException.badRequest("REMOTE_BATCH_OPTIONS_REQUIRED", "请填写本批次的远端创建参数");
+        if (batch.getRedemptionType().usesSpecialCode() && !Integer.valueOf(1).equals(request.keyNumber())) {
+            throw ApiException.badRequest("SPECIAL_CODE_COUNT", "特殊兑换码每组只能生成 1 个码");
+        }
         batch.setRemotePublishEnvironment(request.publishEnvironment());
         batch.setRemoteFlowTimes(request.flowTimes());
         batch.setRemoteCreationIntervalSeconds(request.creationIntervalSeconds());

@@ -4,6 +4,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
@@ -23,6 +24,7 @@ public interface RedemptionCodeIssueRepository extends JpaRepository<RedemptionC
             + "from RedemptionCodeIssue i where i.campaignId = :campaignId and i.state = 'GENERATED'")
     long countImportedCodesByCampaignId(@Param("campaignId") Long campaignId);
     long countByBatchIdAndWorkflowStatus(Long batchId, String workflowStatus);
+    long countByBatchIdAndClaimDateAndMinDepositAmount(Long batchId, LocalDate claimDate, BigDecimal minDepositAmount);
     List<RedemptionCodeIssue> findByBatchIdOrderByClaimDateAscCampaignTierIdAsc(Long batchId);
     List<RedemptionCodeIssue> findByBatchIdInOrderByBatchIdAscClaimDateAscCampaignTierIdAsc(Collection<Long> batchIds);
     List<RedemptionCodeIssue> findByBatchIdAndRemoteConfigurationIdIn(Long batchId, Collection<String> remoteConfigurationIds);

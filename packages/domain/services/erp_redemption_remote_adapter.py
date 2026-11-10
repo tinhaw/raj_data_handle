@@ -48,6 +48,7 @@ class RemoteCreateCommand:
     options: RemoteCreationOptions
     valid_from: date | None = None
     valid_to: date | None = None
+    gift_code: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

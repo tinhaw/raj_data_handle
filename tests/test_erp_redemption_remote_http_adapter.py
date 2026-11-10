@@ -33,7 +33,7 @@ def _options() -> RemoteCreationOptions:
         activity_id=None,
         key_number=1,
         single_user_limit=1,
-        single_key_limit=2000,
+        single_key_limit=3,
         require_bind_bank_card=False,
         require_bind_phone=True,
         check_uuid=True,
@@ -60,8 +60,13 @@ def test_download_rejects_incomplete_duplicate_or_invalid_codes(codes, expected_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("minimum,maximum", [("10", "10"), ("5.00", "7.00")])
-async def test_http_adapter_maps_current_cloud_create_contract(minimum, maximum) -> None:
+@pytest.mark.parametrize(
+    "minimum,maximum,gift_code,lookup_status",
+    [("10", "10", None, 200), ("5.00", "7.00", "RW123ABC", 200), ("5", "7", "RW123ABC", 503)],
+)
+async def test_http_adapter_maps_current_cloud_create_contract(
+    minimum, maximum, gift_code, lookup_status
+) -> None:
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -74,7 +79,7 @@ async def test_http_adapter_maps_current_cloud_create_contract(minimum, maximum)
                     500,
                     json={"message": "Argument #3 ($money) must be of type int, string given"},
                 )
-            if captured.get("gift_type") != 0:
+            if captured.get("gift_type") != int(gift_code is not None):
                 return httpx.Response(
                     200,
                     json={"success": False, "message": "兑换码类型 字段是必须的"},
@@ -92,7 +97,7 @@ async def test_http_adapter_maps_current_cloud_create_contract(minimum, maximum)
             return httpx.Response(200, json={"success": True, "data": {"id": "cfg-1"}})
         if request.url.path == "/api/common/giftCodeConfig/index":
             return httpx.Response(
-                200,
+                lookup_status,
                 json={
                     "success": True,
                     "data": {"items": [{"id": "cfg-1", "group_key": "group-1"}]},
@@ -128,13 +133,20 @@ async def test_http_adapter_maps_current_cloud_create_contract(minimum, maximum)
                 bonus_amount=Decimal(minimum),
                 bonus_max_amount=Decimal(maximum),
                 options=_options(),
+                gift_code=gift_code,
             ),
         )
     assert result.remote_configuration_id == "cfg-1"
-    assert result.remote_group_key == "group-1"
+    assert result.remote_group_key == ("group-1" if lookup_status == 200 else None)
     assert captured["reward_min"] == int(Decimal(minimum))
     assert captured["reward_max"] == int(Decimal(maximum))
-    assert captured["gift_type"] == 0
+    assert captured["gift_type"] == int(gift_code is not None)
+    if gift_code is not None:
+        assert captured["gift_code"] == gift_code
+        assert "key_number" not in captured
+    else:
+        assert captured["key_number"] == "1"
+        assert "gift_code" not in captured
     assert captured["reward_condition_type"] == 0
     assert captured["refresh_flag"] == 0
     assert captured["label_array"] == [10, 20]
@@ -186,7 +198,7 @@ async def test_http_adapter_maps_all_users_with_empty_audience_lists() -> None:
                 label_ids=(),
                 bonus_amount=Decimal("5.00"),
                 bonus_max_amount=Decimal("7.00"),
-                options=replace(_options(), key_number=50, single_key_limit=500),
+                options=replace(_options(), key_number=50),
             ),
         )
 
@@ -202,7 +214,7 @@ async def test_http_adapter_maps_all_users_with_empty_audience_lists() -> None:
     assert type(captured["reward_min"]) is int and captured["reward_min"] == 5
     assert type(captured["reward_max"]) is int and captured["reward_max"] == 7
     assert captured["key_number"] == "50"
-    assert captured["single_key_limit"] == 500
+    assert captured["single_key_limit"] == 3
 
 
 @pytest.mark.asyncio

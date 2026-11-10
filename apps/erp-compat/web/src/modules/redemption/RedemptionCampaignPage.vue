@@ -345,6 +345,9 @@ function marketIdentities(marketId?: string | number) {
 const selectedRemoteConnection = computed(() => remoteConnectionForMarket(form.value.remoteMarketId))
 const selectedMarketIdentities = computed(() => marketIdentities(form.value.remoteMarketId))
 const isRajWinMarket = computed(() => selectedMarketIdentities.value.some((value) => value === 'rajwin'))
+const usesSpecialCode = computed(() => form.value.redemptionType === 'SEVEN_DAY_DEPOSIT'
+  || form.value.redemptionType === 'PREVIOUS_DAY_DEPOSIT')
+const codesPerGroup = computed(() => usesSpecialCode.value ? 1 : form.value.remoteOptions.keyNumber)
 
 function hasPermission(permission: string) {
   const user = session.user
@@ -1194,7 +1197,7 @@ function wait(milliseconds: number) {
 
 function validateForm() {
   const keyNumber = form.value.remoteOptions.keyNumber
-  if (!Number.isInteger(keyNumber) || keyNumber < 1 || keyNumber > 1000) return '每组兑换码数量请输入 1–1000 的整数'
+  if (!usesSpecialCode.value && (!Number.isInteger(keyNumber) || keyNumber < 1 || keyNumber > 1000)) return '每组兑换码数量请输入 1–1000 的整数'
   const [from, to] = form.value.dateRange || []
   if (!from || !to || to < from) return '请选择有效的兑换日期范围'
   const [validFromDayOffset, validToDayOffset] = validityOffsets.value
@@ -1208,6 +1211,11 @@ function validateForm() {
     const draft = marketTierDrafts.value[marketKey(marketId)]
     if (!remoteConnectionForMarket(marketId)) return `${label} 暂无可用远端账号，请前往“远端连接”完成账号配置`
     if (!draft?.tiers.length) return `${label} 请先配置至少一个充值档位`
+    if (usesSpecialCode.value) {
+      const amounts = draft.tiers.map((tier) => tier.minDepositAmount)
+      if (amounts.some((amount) => !Number.isInteger(amount) || amount < 0)) return `${label} 的特殊兑换码充值门槛必须是非负整数`
+      if (new Set(amounts).size !== amounts.length) return `${label} 的相同充值门槛会生成重复的特殊兑换码，请调整档位`
+    }
     if (draft.tiers.some((tier) => tier.userType === 'LABEL_USERS' && !tier.labelIds.length)) return `${label} 的标签用户档位必须选择至少一个标签 ID`
     if (isPreviousDayDeposit() && draft.tiers.some((tier) => tier.userType === 'LABEL_USERS')) {
       if (!draft.remoteTagsLoaded) return `${label} 的标签尚未加载成功，请重新加载后再创建`
@@ -1227,7 +1235,7 @@ async function createCodeGroup() {
   if (message) { ElMessage.warning(message); return }
   try {
     await ElMessageBox.confirm(
-      `系统会将 ${form.value.remoteMarketIds.length} 个盘口汇总为一条任务，并按盘口顺序串行创建 ${expectedTaskCount()} 组远端配置，每组 ${form.value.remoteOptions.keyNumber} 个码，共 ${expectedTaskCount() * form.value.remoteOptions.keyNumber} 个兑换码；生效规则为“${validityRuleSummary.value}”。后续发布仍按盘口分别执行全量发布，并可能发布该盘口所有待发布的兑换码配置，请确认各远端后台不存在不应发布的内容。`,
+      `系统会将 ${form.value.remoteMarketIds.length} 个盘口汇总为一条任务，并按盘口顺序串行创建 ${expectedTaskCount()} 组远端配置，每组 ${codesPerGroup.value} 个${usesSpecialCode.value ? '特殊' : '普通'}兑换码，共 ${expectedTaskCount() * codesPerGroup.value} 个；生效规则为“${validityRuleSummary.value}”。后续发布仍按盘口分别执行全量发布，并可能发布该盘口所有待发布的兑换码配置，请确认各远端后台不存在不应发布的内容。`,
       '确认批量生成兑换码组',
       { type: 'warning', confirmButtonText: '确认并开始生成', cancelButtonText: '取消' },
     )
@@ -1266,7 +1274,7 @@ async function createCodeGroup() {
         redemptionType: form.value.redemptionType,
         tierUserTypes: draft.tiers.map((tier) => tier.userType),
         tierLabelIds: draft.tiers.map((tier) => tier.userType === 'ALL_USERS' ? [] : tier.labelIds),
-        remoteOptions: form.value.remoteOptions,
+        remoteOptions: { ...form.value.remoteOptions, keyNumber: codesPerGroup.value },
       }
       try {
         created.push(await api.redemption.createGroup(input))
@@ -1990,7 +1998,8 @@ onUnmounted(() => {
               </el-form-item>
               <el-form-item label="流水倍数"><el-input-number v-model="form.remoteOptions.flowTimes" :min="0" :max="1000" controls-position="right" /></el-form-item>
               <el-form-item label="串行间隔时间"><el-input-number v-model="form.remoteOptions.creationIntervalSeconds" :min="1" :max="60" controls-position="right" /><span class="field-unit">秒</span><p class="field-note">每条远端配置创建请求的最小间隔，默认 5 秒。</p></el-form-item>
-              <el-form-item label="每组兑换码数量（邀请码数量）"><el-input-number v-model="form.remoteOptions.keyNumber" :min="1" :max="1000" :precision="0" step-strictly controls-position="right" /><p class="field-note">默认 1，可填写 1–1000。每个“开始兑换日 × 档位”生成一组，每组包含此数量的独立兑换码。</p></el-form-item>
+              <el-form-item v-if="usesSpecialCode" label="特殊兑换码"><p class="field-note">{{ isPreviousDayDeposit() ? '每组 1 个码，例如 1110rajfree 或 1110raj200。' : '每组 1 个码，例如 1110raj7days100。' }}</p></el-form-item>
+              <el-form-item v-else label="普通兑换码每组数量"><el-input-number v-model="form.remoteOptions.keyNumber" :min="1" :max="1000" :precision="0" step-strictly controls-position="right" /><p class="field-note">默认 1，可填写 1–1000。每个“开始兑换日 × 档位”生成一组，每组包含此数量的独立兑换码。</p></el-form-item>
               <el-form-item label="最低累计充值金额"><el-input-number v-model="form.remoteOptions.activityRecharge" :min="0" :max="100000000" :precision="2" controls-position="right" placeholder="不限制" /></el-form-item>
               <el-form-item label="最低充值次数"><el-input-number v-model="form.remoteOptions.activityRechargeCount" :min="0" :max="100000" controls-position="right" placeholder="不限制" /></el-form-item>
               <el-form-item label="关联活动 ID"><el-input-number v-model="form.remoteOptions.activityId" :min="1" :max="999999999999" controls-position="right" placeholder="不关联" /></el-form-item>
@@ -2011,7 +2020,7 @@ onUnmounted(() => {
             <p class="field-note">最低累计充值金额、最低充值次数和关联活动 ID 默认不限制；留空时创建请求会省略对应字段。</p>
           </el-collapse-item>
         </el-collapse>
-        <p v-if="form.remoteMarketIds.length" class="submit-hint">已选择 {{ form.remoteMarketIds.length }} 个盘口，共创建 {{ expectedTaskCount() }} 组远端配置，每组 {{ form.remoteOptions.keyNumber || 1 }} 个码，预计 {{ expectedTaskCount() * (form.remoteOptions.keyNumber || 1) }} 个兑换码。远端生效时间：{{ validityRuleSummary }}。全部创建完成后，可在任务列表按盘口分别选择发布方式。</p>
+        <p v-if="form.remoteMarketIds.length" class="submit-hint">已选择 {{ form.remoteMarketIds.length }} 个盘口，共创建 {{ expectedTaskCount() }} 组远端配置，预计 {{ expectedTaskCount() * (codesPerGroup || 1) }} 个兑换码。远端生效时间：{{ validityRuleSummary }}。全部创建完成后，可在任务列表按盘口分别选择发布方式。</p>
       </el-form>
       <template #footer><el-button @click="codeGroupDialogVisible = false">取消</el-button><el-button type="primary" :loading="working" @click="createCodeGroup">开始生成</el-button></template>
     </el-dialog>

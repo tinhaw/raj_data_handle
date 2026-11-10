@@ -48,7 +48,9 @@ def _settings() -> Settings:
     )
 
 
-def _payload(account_id: int, key_number: int = 1) -> ErpCompatibilityRemoteCreateRequest:
+def _payload(
+    account_id: int, key_number: int = 1, gift_code: str | None = None
+) -> ErpCompatibilityRemoteCreateRequest:
     return ErpCompatibilityRemoteCreateRequest(
         account_id=account_id,
         issue_id=42,
@@ -59,12 +61,13 @@ def _payload(account_id: int, key_number: int = 1) -> ErpCompatibilityRemoteCrea
         label_ids=[901091],
         bonus_amount=Decimal("1"),
         bonus_max_amount=Decimal("3"),
+        gift_code=gift_code,
         options=ErpCompatibilityRemoteCreateOptions(
             publish_environment="test",
             flow_times=5,
             key_number=key_number,
             single_user_limit=1,
-            single_key_limit=2000,
+            single_key_limit=3,
             require_bind_bank_card=False,
             require_bind_phone=True,
             check_uuid=True,
@@ -79,9 +82,19 @@ def _payload(account_id: int, key_number: int = 1) -> ErpCompatibilityRemoteCrea
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key_number", [1, 5, 50])
+@pytest.mark.parametrize(
+    "key_number,gift_code",
+    [
+        (1, "0908raj7days100"),
+        (1, "0908rajfree"),
+        (1, "0908raj200"),
+        (1, None),
+        (5, None),
+        (50, None),
+    ],
+)
 async def test_compatibility_create_uses_mapped_unified_account_without_legacy_secret(
-    key_number: int,
+    key_number: int, gift_code: str | None
 ) -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
@@ -89,8 +102,9 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
     factory = async_sessionmaker(engine, expire_on_commit=False)
     settings = _settings()
     captured: dict[str, object] = {}
+    special = gift_code is not None
     login_count = 0
-    codes = [f"TEST-CODE-{index}" for index in range(key_number)]
+    codes = [gift_code] if gift_code else [f"TEST-CODE-{index}" for index in range(key_number)]
     workbook = Workbook()
     workbook.active.append(["兑换码号码"])
     for code in codes:
@@ -110,7 +124,7 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
             captured.update(json.loads(request.content))
             if any(type(captured.get(field)) is not int for field in ("reward_min", "reward_max")):
                 return httpx.Response(500, json={"message": "money must be of type int"})
-            if captured.get("gift_type") != 0:
+            if captured.get("gift_type") != int(special):
                 return httpx.Response(
                     200,
                     json={"success": False, "message": "兑换码类型 字段是必须的"},
@@ -183,7 +197,7 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
 
         result = await execute_compatibility_remote_create(
             session,
-            payload=_payload(compatibility_id, key_number),
+            payload=_payload(compatibility_id, key_number, gift_code),
             actor_user_id=1,
             settings=settings,
             transport=httpx.MockTransport(handler),
@@ -235,7 +249,7 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
     assert result.remote_group_key == "group-1"
     assert result.remote_request_id == "create-1"
     assert captured["label_array"] == [901091]
-    assert captured["gift_type"] == 0
+    assert captured["gift_type"] == int(special)
     assert captured["reward_condition_type"] == 0
     assert captured["refresh_flag"] == 0
     assert captured["no_label_array"] == []
@@ -244,7 +258,13 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
     assert captured["no_face_channel"] == []
     assert type(captured["reward_min"]) is int and captured["reward_min"] == 1
     assert type(captured["reward_max"]) is int and captured["reward_max"] == 3
-    assert int(captured["key_number"]) == key_number
+    assert captured["single_key_limit"] == 3
+    if special:
+        assert "key_number" not in captured
+        assert captured["gift_code"] == gift_code
+    else:
+        assert "gift_code" not in captured
+        assert int(captured["key_number"]) == key_number
     await engine.dispose()
 
 

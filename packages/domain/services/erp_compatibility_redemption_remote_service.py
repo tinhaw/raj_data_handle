@@ -156,6 +156,7 @@ async def execute_compatibility_remote_create(
                     options=_options(payload),
                     valid_from=payload.valid_from or payload.claim_date,
                     valid_to=payload.valid_to or payload.claim_date,
+                    gift_code=payload.gift_code,
                 ),
             )
     except (

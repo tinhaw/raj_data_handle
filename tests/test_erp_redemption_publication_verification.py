@@ -92,6 +92,7 @@ async def test_remote_status_is_authoritative_and_missing_config_is_not_success(
     "scenario,expected",
     [
         ("matched", "MATCHED"),
+        ("special", "MATCHED"),
         ("group_changed", "MISMATCH"),
         ("count_changed", "MISMATCH"),
         ("wrong_environment", "UNKNOWN"),
@@ -127,12 +128,18 @@ async def test_checks_identity_environment_config_type_group_count_and_all_pages
                         "key_number": 1 if scenario == "count_changed" else 200,
                     }
                 ]
+                if scenario == "special":
+                    items[0].pop("key_number")
+                    items[0].update(gift_type=1, gift_code="RW123ABC")
         return httpx.Response(
             200, json={"data": {"items": items, "pageInfo": {"currentPage": page, "totalPage": 2}}}
         )
 
+    request = payload()
+    if scenario == "special":
+        request.configurations[0].key_number = 1
     async with adapter(handler) as remote:
-        result = await remote.verify_publication(grant=grant(), payload=payload())
+        result = await remote.verify_publication(grant=grant(), payload=request)
     assert result.configurations[0].state == expected
     assert result.publication_state == ("UNKNOWN" if expected == "UNKNOWN" else "COMPLETED")
 
