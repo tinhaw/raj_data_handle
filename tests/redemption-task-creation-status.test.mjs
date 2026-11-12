@@ -27,6 +27,7 @@ function fixture() {
     canGenerate: { value: true }, working: { value: false }, continuingCreationBatchId: { value: undefined },
     processingGroupIds: { value: new Set() }, groupKey: String,
     publicationCheck: row => row.check,
+    publicationCheckErrors: { value: {} },
     publicationLabel: check => check?.publicationState === 'COMPLETED' ? '发布完成' : '发布待核验',
     codeAcquisitionStatus: row => row.detail.batch.status === 'COMPLETED' ? '兑换码已入库' : '等待发布核验',
     isScheduledPublish: row => row.detail.batch.remotePublishMode === 'SCHEDULED',
@@ -42,6 +43,18 @@ function fixture() {
   return { task, context, spin: task.members[2] }
 }
 
+test('pending rewards override a completed shared owner and stale completed batch presentation', () => {
+  const { context } = fixture()
+  for (const state of ['REWARD_CHECK_REQUIRED', 'REWARD_CONFIRM_REQUIRED']) {
+    const row = member(61, 'COMPLETED')
+    row.detail.issues[0].workflowStatus = state
+    const task = { members: [row, member(62, 'COMPLETED')] }
+    assert.equal(context.isSuccess(row), false)
+    assert.notEqual(context.taskStatus(task).text, '生成成功')
+    assert.match(context.groupStatus(row).text, /奖励/)
+  }
+})
+
 test('149 created and one pending alongside two completed markets is actionable in the list', () => {
   const { task, context, spin } = fixture()
   assert.equal(context.taskStatus(task).text, '待继续创建')
@@ -53,6 +66,21 @@ test('149 created and one pending alongside two completed markets is actionable 
   assert.equal(context.canOpenPendingCreationTask(task), true)
   assert.match(source, /class="creation-status-summary"[^\n]+taskCreationSummary\(row\)/)
   assert.match(source, /@click="openPendingCreationTask\(row\)">处理待创建/)
+})
+
+test('explicit pending review is separated from unknown receipts without permitting more creation', () => {
+  const { task, context, spin } = fixture()
+  Object.assign(spin.detail.issues[148], { workflowStatus: 'FAILED', creationNeedsReconciliation: true,
+    creationAwaitingRemoteReview: true, remoteError: '远端创建结果未确认：待远端主管审核。配置触发风控规则' })
+  Object.assign(spin.detail.issues[147], { workflowStatus: 'FAILED', creationNeedsReconciliation: true })
+  assert.equal(context.taskStatus(task).text, '待远端主管审核')
+  assert.equal(context.groupStatus(spin).text, '待远端主管审核')
+  assert.match(context.groupProgress(spin), /1 条待远端主管审核，1 条结果待核对/)
+  assert.match(context.taskProgress(task), /1 条待远端主管审核，1 条结果待核对/)
+  assert.match(context.taskCreationSummary(task), /1 条待远端主管审核，1 条结果待核对/)
+  assert.match(context.issueRemark(spin.detail.issues[148]), /触发风控规则/)
+  assert.equal(context.failedRemoteCreationIssues(spin).length, 0)
+  assert.equal(context.canOpenPendingCreationTask(task), false)
 })
 
 test('published siblings cannot hide an unfinished market', () => {
@@ -141,4 +169,22 @@ test('the list recovery entry opens fresh details directly on RajSpin without an
   assert.equal(context.selectedGroup.value.detail.batch.id, 63)
   assert.equal(context.activeTaskBatchId.value, '63')
   assert.equal(context.detailDrawerVisible.value, true)
+})
+
+test('invalid receipts are shown as unconfirmed and excluded from success and retry counts', () => {
+  const { task, context, spin } = fixture()
+  spin.detail.issues[0].remoteConfigurationId = '-1'
+  spin.detail.issues[0].creationNeedsReconciliation = true
+  spin.detail.issues[1].workflowStatus = 'FAILED'
+  spin.detail.issues[1].remoteReferenceId = '-1'
+  spin.detail.issues[1].creationNeedsReconciliation = true
+  spin.detail.issues[2].workflowStatus = 'FAILED'
+  assert.equal(context.taskStatus(task).text, '创建结果待核对')
+  assert.equal(context.groupStatus(spin).text, '创建结果待核对')
+  assert.match(context.taskProgress(task), /446 \/ 450.*1 个失败.*2 条结果待核对/)
+  assert.match(context.groupProgress(spin), /146 \/ 150.*1 个失败.*2 条结果待核对/)
+  assert.equal(context.failedRemoteCreationIssues(spin).length, 1)
+  assert.equal(context.canOpenPendingCreationTask(task), false)
+  assert.match(context.groupRemark(spin), /回执无效.*暂停重试和发布/)
+  assert.doesNotMatch(context.groupRemark(spin), /远端配置已创建/)
 })

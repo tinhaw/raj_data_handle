@@ -67,6 +67,15 @@ const router = createRouter({
       },
     },
     {
+      path: '/erp/redemption/:taskId',
+      name: 'redemption-task-detail',
+      component: () => import('../components/ErpCompatibilityModule.vue'),
+      meta: {
+        navKey: '/erp/redemption', title: '兑换码任务明细', erpPermission: 'ERP_REDEMPTION_VIEW',
+        erpCompatComponent: '../../../erp-compat/web/src/modules/redemption/RedemptionTaskDetailPage.vue',
+      },
+    },
+    {
       path: '/erp/redemption/:taskId/claim-statistics',
       name: 'redemption-claim-statistics',
       component: () => import('../components/ErpCompatibilityModule.vue'),

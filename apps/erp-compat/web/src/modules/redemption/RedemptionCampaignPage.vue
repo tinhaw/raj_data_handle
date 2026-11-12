@@ -104,7 +104,15 @@ const rewardTierPresetLoading = ref(false)
 const rewardTierPresetSaving = ref(false)
 const codeGroupDialogVisible = ref(false)
 const publishDialogVisible = ref(false)
-const detailDrawerVisible = ref(false)
+const detailMode = computed(() => route.name === 'redemption-task-detail')
+const narrowTaskDetail = ref(false)
+function resizeTaskDetail() { narrowTaskDetail.value = window.innerWidth <= 900 }
+const detailSearch = ref('')
+const detailDate = ref('')
+const detailStatus = ref('')
+const detailPane = ref('configurations')
+const selectedDeletionIds = ref<Array<string | number>>([])
+const deletionPanelKey = ref(0)
 const advancedOptionsOpen = ref<string[]>([])
 const publishOptionsOpen = ref<string[]>([])
 const campaigns = ref<RedemptionCampaign[]>([])
@@ -131,7 +139,7 @@ const taskDuplicateReviews = new Map<string, RedemptionDuplicateReview>()
 let duplicateReviewResolve: ((confirmed: boolean) => void) | undefined
 
 
-const taskDeletionTarget = ref<{ taskId: string | number; taskNumber: string }>()
+const taskDeletionTarget = ref<{ taskId: string | number; taskNumber: string; issueIds?: Array<string | number>; startNew?: boolean }>()
 const selectedTaskId = computed(() => selectedTaskMembers.value[0]?.detail.batch.taskId ?? selectedTaskMembers.value[0]?.detail.batch.id)
 const selectedTaskDisplayId = computed(() => selectedTaskMembers.value[0]?.detail.batch.taskNumber || String(selectedTaskId.value ?? '—'))
 const publishTarget = ref<CodeGroupRow | CodeGroupTask>()
@@ -664,6 +672,7 @@ function updateSelectedFailedIssues(selection: RedemptionCodeIssue[]) {
 }
 function clearFailedIssueSelection() {
   selectedFailedIssueIds.value = []
+  selectedDeletionIds.value = []
   failedIssueTable.value?.clearSelection()
 }
 function groupRemark(row: CodeGroupRow) {
@@ -725,7 +734,7 @@ function taskSummary(task: CodeGroupTask) {
   return `子任务 ${taskBatchNumbers(task)} · 包含 ${task.members.length} 个盘口，按选择顺序串行执行`
 }
 function taskMemberLabel(member: CodeGroupRow) {
-  return `${remoteMarketLabel(member)} · 子任务 ${subtaskDisplayId(member)}`
+  return member.detail.batch.remoteMarketName || member.detail.batch.remoteMarketCode || subtaskDisplayId(member)
 }
 function subtaskDisplayId(member: CodeGroupRow | undefined) {
   if (!member) return '—'
@@ -806,7 +815,7 @@ function canOpenPendingCreationTask(task: CodeGroupTask) {
 async function openPendingCreationTask(task: CodeGroupTask) {
   if (!canOpenPendingCreationTask(task)) return
   const member = taskPendingCreationMembers(task)[0]
-  if (member) await openTaskDetail(task, member.detail.batch.id)
+  if (member) await navigateTaskDetail(task.taskId, member.detail.batch.id)
 }
 function taskProgress(task: CodeGroupTask) {
   if (!isMultiMarketTask(task)) return groupProgress(taskPrimary(task))
@@ -1002,6 +1011,7 @@ async function loadMarketTierConfiguration() {
 }
 
 async function loadCodeGroups() {
+  if (detailMode.value) { await loadTaskDetail(); return }
   loading.value = true
   codeGroupLoadError.value = ''
   try {
@@ -1416,7 +1426,7 @@ async function createCodeGroup() {
   const creationIntent = JSON.stringify({ form: form.value, tiers: form.value.remoteMarketIds.map(id => marketTierDrafts.value[marketKey(id)].tiers) })
   if (!await checkCreationDuplicates()) return
   try {
-    await ElMessageBox.confirm(
+    if (!duplicateCreationReview.value?.confirmed) await ElMessageBox.confirm(
       `系统会将 ${form.value.remoteMarketIds.length} 个盘口汇总为一条任务，并按盘口顺序串行创建 ${expectedTaskCount()} 组远端配置，每组 ${codesPerGroup.value} 个${usesSpecialCode.value ? '特殊' : '普通'}兑换码，共 ${expectedTaskCount() * codesPerGroup.value} 个；生效规则为“${validityRuleSummary.value}”。后续发布仍按盘口分别执行全量发布，并可能发布该盘口所有待发布的兑换码配置，请确认各远端后台不存在不应发布的内容。`,
       '确认批量生成兑换码组',
       { type: 'warning', confirmButtonText: '确认并开始生成', cancelButtonText: '取消' },
@@ -1788,12 +1798,54 @@ async function loadFullGroup(row: CodeGroupRow): Promise<CodeGroupRow> {
 }
 
 async function openGroupDetail(row: CodeGroupRow) {
-  clearFailedIssueSelection()
-  selectedTaskMembers.value = [{ campaign: row.campaign, detail: await api.redemption.batch(row.detail.batch.id) }]
-  selectedGroup.value = selectedTaskMembers.value[0]
-  activeTaskBatchId.value = String(selectedGroup.value.detail.batch.id)
-  detailDrawerVisible.value = true
+  await navigateTaskDetail(row.detail.batch.taskId || row.detail.batch.id, row.detail.batch.id)
 }
+function navigateTaskDetail(taskId: string | number, batchId?: string | number) {
+  return router.push({ name: 'redemption-task-detail', params: { taskId }, query: {
+    batch: batchId, returnPage: codeGroupTaskCurrentPage.value, returnPageSize: codeGroupTaskPageSize.value,
+    returnTableScroll: taskTableScroll.value,
+  } })
+}
+function returnToTaskList() {
+  return router.push({ name: 'redemption', query: { page: route.query.returnPage, pageSize: route.query.returnPageSize, tableScroll: route.query.returnTableScroll } })
+}
+async function loadTaskDetail() {
+  loading.value = true; codeGroupLoadError.value = ''
+  try {
+    const data = await api.redemption.taskDetail(String(route.params.taskId))
+    const campaignById = new Map(data.campaigns.map(c => [String(c.id), c]))
+    const members = data.batches.flatMap(detail => { const campaign = campaignById.get(String(detail.batch.campaignId)); return campaign ? [{ campaign, detail }] : [] })
+    campaigns.value = data.campaigns; codeGroups.value = members; selectedTaskMembers.value = members
+    const batchId = String(route.query.batch || activeTaskBatchId.value)
+    selectedGroup.value = members.find(m => String(m.detail.batch.id) === batchId) || members[0]
+    activeTaskBatchId.value = String(selectedGroup.value?.detail.batch.id || '')
+    clearFailedIssueSelection()
+    if (!members.length) codeGroupLoadError.value = '此任务暂无配置'
+  } catch (error) { codeGroupLoadError.value = error instanceof Error ? error.message : '任务读取失败，请重试' }
+  finally { loading.value = false }
+}
+const filteredDetailIssues = computed(() => (selectedGroup.value?.detail.issues || []).filter(issue => {
+  const text = detailSearch.value.trim().toLowerCase()
+  return (!text || [issue.remoteConfigurationId, issue.redemptionCode, issue.tierName, issue.remoteConfigurationName, issue.remoteConfigurationRemark, issueRemark(issue)].some(value => String(value || '').toLowerCase().includes(text)))
+    && (!detailDate.value || issue.claimDate === detailDate.value)
+    && (!detailStatus.value || issueStatus(issue).text === detailStatus.value)
+}))
+const detailStatusOptions = computed(() => [...new Set((selectedGroup.value?.detail.issues || []).map(issue => issueStatus(issue).text))])
+function selectableDetailIssue(issue: RedemptionCodeIssue) {
+  return isFailedRemoteCreation(issue) || Boolean(canGenerate.value && issue.remoteConfigurationId && !deletionHeld(issue))
+}
+function updateDetailSelection(rows: RedemptionCodeIssue[]) {
+  updateSelectedFailedIssues(rows)
+  selectedDeletionIds.value = rows.filter(i => i.remoteConfigurationId && !deletionHeld(i)).map(i => i.id)
+}
+function showTaskDeletion(issueIds?: Array<string | number>, startNew = true) {
+  if (selectedTaskId.value == null || !canGenerate.value) return
+  if (issueIds && !issueIds.length) return
+  taskDeletionTarget.value = { taskId: selectedTaskId.value, taskNumber: selectedTaskDisplayId.value, issueIds: issueIds ? [...issueIds] : undefined, startNew }
+  deletionPanelKey.value++; detailPane.value = 'deletion'
+}
+function closeTaskDeletion() { taskDeletionTarget.value = undefined; detailPane.value = 'configurations' }
+watch([detailSearch, detailDate, detailStatus], clearFailedIssueSelection)
 
 async function openTaskDetail(task: CodeGroupTask, preferredBatchId?: string | number) {
   clearFailedIssueSelection()
@@ -1804,7 +1856,7 @@ async function openTaskDetail(task: CodeGroupTask, preferredBatchId?: string | n
   selectedTaskMembers.value = members
   selectedGroup.value = members.find(member => String(member.detail.batch.id) === String(preferredBatchId)) || members[0]
   activeTaskBatchId.value = selectedGroup.value ? String(selectedGroup.value.detail.batch.id) : ''
-  detailDrawerVisible.value = true
+
 }
 
 function selectTaskMember(batchId: string | number) {
@@ -1812,6 +1864,7 @@ function selectTaskMember(batchId: string | number) {
   if (member) {
     clearFailedIssueSelection()
     selectedGroup.value = member
+    if (detailMode.value) void router.replace({ query: { ...route.query, batch: String(batchId) } })
   }
 }
 
@@ -1966,6 +2019,7 @@ async function applyRewardPolicies() {
 const deletingIssueId = ref<string | number>()
 async function deleteRemoteConfiguration(issue: RedemptionCodeIssue) {
   if (!canGenerate.value || deletingIssueId.value || !issue.remoteConfigurationId) return
+  if (detailMode.value) { showTaskDeletion([issue.id]); return }
   deletingIssueId.value = issue.id
   try {
     if (deletionHeld(issue)) {
@@ -2435,20 +2489,25 @@ async function regenerateMissingConfigurations(row: CodeGroupRow) {
 }
 
 onMounted(async () => {
+  resizeTaskDetail()
+  window.addEventListener('resize', resizeTaskDetail)
   indiaNow.value = indiaNowText()
   indiaClock = window.setInterval(() => { indiaNow.value = indiaNowText() }, 15_000)
-  await Promise.all([loadCodeGroups(), loadRemoteConnections()])
+  if (detailMode.value) await loadTaskDetail()
+  else await Promise.all([loadCodeGroups(), loadRemoteConnections()])
   await nextTick()
   taskTable.value?.scrollToTop(taskTableScroll.value)
 })
 
 onUnmounted(() => {
+  window.removeEventListener('resize', resizeTaskDetail)
   if (indiaClock) window.clearInterval(indiaClock)
 })
 </script>
 
 <template>
-  <section class="redemption-page">
+  <section class="redemption-page" :class="{ 'task-detail-page': detailMode }">
+    <template v-if="!detailMode">
     <div class="page-title-row">
       <div>
         <h2>兑换码管理</h2>
@@ -2517,7 +2576,7 @@ onUnmounted(() => {
                 <span v-else-if="column.key === 'remark'" class="virtual-cell" :title="taskRemark(row)">{{ taskRemark(row) }}</span>
                 <span v-else-if="column.key === 'createdAt'" class="virtual-cell">{{ formatDateTime(taskCreatedAt(row)) }}</span>
                 <div v-else-if="column.key === 'actions'" class="virtual-actions">
-                  <el-button link type="primary" size="small" :loading="row.members.some(isProcessing)" @click="isMultiMarketTask(row) ? openTaskDetail(row) : openGroupDetail(taskPrimary(row))">查看任务</el-button>
+                  <el-button link type="primary" size="small" :loading="row.members.some(isProcessing)" @click="navigateTaskDetail(row.taskId)">查看任务</el-button>
                   <el-button link type="primary" size="small" @click="openClaimStatistics(row)">领取统计</el-button>
                   <el-button v-if="canGenerate && taskRecoveries(row).length" link type="warning" size="small" @click="openTaskRecovery(row)">重试并重建（{{ taskRecoveries(row).length }}）</el-button>
                   <el-button v-if="canGenerate" link type="primary" size="small" @click="openTaskRewardPolicies(row)">核验实际奖励</el-button>
@@ -2556,6 +2615,7 @@ onUnmounted(() => {
       <el-empty v-else-if="!codeGroupLoadError" :image-size="68" description="还没有兑换码组，点击右上角“批量生成兑换码组”开始创建" />
     </article>
 
+    </template>
     <el-dialog v-model="codeGroupDialogVisible" title="批量生成兑换码组" width="1040px" destroy-on-close :close-on-click-modal="!checkingDuplicates && !working" :close-on-press-escape="!checkingDuplicates && !working" :show-close="!checkingDuplicates && !working">
       <el-form label-position="top" class="code-group-form" :disabled="checkingDuplicates || working">
         <div class="code-group-form__grid">
@@ -2704,7 +2764,7 @@ onUnmounted(() => {
 
     <el-dialog v-model="duplicateDialogVisible" title="发现同码记录，请确认是否继续创建" width="1000px" append-to-body @close="finishDuplicateReview(false)">
       <el-alert type="warning" :closable="false" show-icon title="发现同码记录。阅览并确认后，仍可按本次任务参数继续创建。" />
-      <p class="field-note">以下 {{ duplicateConflicts.length }} 条同码记录集中确认一次，无需逐码确认。确认随任务保存，刷新页面、继续创建和重试均会沿用；只有新增或实质变化的冲突才需重新阅览。</p>
+      <p class="field-note">以下 {{ duplicateConflicts.length }} 条同码记录集中确认一次，无需逐码确认。确认随任务保存，刷新页面、继续创建和重试均会沿用；同一任务不因历史同码记录变化再次要求确认。</p>
       <p class="field-note">本地记录是历史资料，不代表远端配置仍然存在或仍是表中奖励。管理员在远端删除后，本系统可能尚未记录；无需删除本地历史记录才能继续。</p>
       <p class="field-note">本次确认用于创建新配置；旧记录会保留，不会自动复用旧配置。若远端仍有同码，可能拒绝创建；系统会展示实际结果，结果不明时暂停。</p>
       <el-table :data="duplicateConflicts" max-height="420" :row-key="row => `${row.marketId}:${row.code}:${row.issueId || row.configurationId}`">
@@ -2764,7 +2824,7 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
-    <RedemptionTaskDeletionDialog v-if="taskDeletionTarget" :key="String(taskDeletionTarget.taskId)" :task-id="taskDeletionTarget.taskId" :task-number="taskDeletionTarget.taskNumber" @close="taskDeletionTarget = undefined" @changed="refreshRecoveryGroups" />
+    <RedemptionTaskDeletionDialog v-if="taskDeletionTarget && !detailMode" :key="String(taskDeletionTarget.taskId)" :task-id="taskDeletionTarget.taskId" :task-number="taskDeletionTarget.taskNumber" @close="taskDeletionTarget = undefined" @changed="refreshRecoveryGroups" />
     <el-dialog v-model="rewardPolicyDialog" title="核验并对齐实际奖励" width="900px" :close-on-click-modal="!applyingRewardPolicy" :close-on-press-escape="!applyingRewardPolicy" :show-close="!applyingRewardPolicy">
     <el-alert :title="rewardPolicyProgress || '正在读取远端实际奖励'" type="warning" :closable="false" show-icon />
     <el-table :data="rewardPolicyPlans" max-height="450">
@@ -2790,7 +2850,13 @@ onUnmounted(() => {
     </template>
   </el-dialog>
 
-  <el-drawer v-model="detailDrawerVisible" :title="selectedTaskMembers.length > 1 ? `任务 ${selectedTaskDisplayId} · 多盘口兑换码组任务明细` : (selectedGroup ? `任务 ${selectedTaskDisplayId} · ${selectedGroup.campaign.name} · 任务明细` : '兑换码组任务明细')" size="720px">
+  <article v-if="detailMode" class="task-detail-workspace" v-loading="loading">
+    <header class="task-detail-heading">
+      <div><el-button link @click="returnToTaskList">← 返回任务列表</el-button><h2>任务 {{ selectedTaskDisplayId }} <span>兑换码明细</span></h2></div>
+      <div class="task-detail-actions"><el-button :icon="Refresh" :loading="loading" @click="loadTaskDetail">刷新</el-button><el-button v-if="canGenerate" @click="showTaskDeletion(undefined, false)">删除进度 / 恢复</el-button><el-button v-if="canGenerate && selectedGroup" type="danger" plain @click="showTaskDeletion()">删除整任务配置</el-button></div>
+    </header>
+    <el-alert v-if="codeGroupLoadError" :title="codeGroupLoadError" type="error" :closable="false" show-icon />
+
       <template v-if="selectedGroup">
         <el-tabs v-if="selectedTaskMembers.length > 1" v-model="activeTaskBatchId" class="task-market-tabs" @tab-change="selectTaskMember">
           <el-tab-pane v-for="member in selectedTaskMembers" :key="member.detail.batch.id" :name="String(member.detail.batch.id)" :label="taskMemberLabel(member)" />
@@ -2805,12 +2871,19 @@ onUnmounted(() => {
           <el-button v-if="canContinueRepair(selectedGroup)" type="warning" :loading="resolvingMissingBatchId === selectedGroup.detail.batch.id || publishing" @click="handleRepairAction(selectedGroup)">{{ repairActionLabel(selectedGroup) }}</el-button>
         </div>
         <div v-if="selectedGroup.detail.issues.some(canReuseExistingConfiguration)" class="repair-action-strip">
-          <span>创建时阅览确认过的同码记录会随任务保存，刷新页面、继续创建和重试会自动沿用。仅新增或实质变化的冲突需要重新确认。</span>
+          <span>创建时阅览确认过的同码记录会随任务保存，刷新页面、继续创建和重试会自动沿用；同一任务不因历史同码记录变化再次要求确认。</span>
           <el-button type="primary" :loading="checkingRewardPolicy" :disabled="applyingRewardPolicy" @click="inspectRewardPolicies()">核验并对齐实际奖励</el-button>
           <el-button type="warning" :loading="checkingRecovery" :disabled="rebuildingMissing" @click="inspectMissingConfigurations()">核验缺失 / 重试重建</el-button>
           <el-button type="primary" :loading="reusingConfigurations" :disabled="isProcessing(selectedGroup)" @click="reuseExistingConfigurations()">核验并复用已有配置</el-button>
         </div>
-        <el-descriptions :column="2" border class="group-detail-summary">
+        <div class="task-summary-strip">
+          <div><span>当前盘口</span><strong>{{ remoteMarketLabel(selectedGroup) }}</strong></div>
+          <div><span>兑换类型 / 日期</span><strong>{{ redemptionTypeLabel(selectedGroup.detail.batch.redemptionType) }}</strong><small>{{ formatDate(selectedGroup.detail.batch.claimDateFrom) }} 至 {{ formatDate(selectedGroup.detail.batch.claimDateTo) }}</small></div>
+          <div><span>配置进度</span><strong>{{ confirmedConfigurationCount(selectedGroup) }} / {{ selectedGroup.detail.issues.length }}</strong><small>{{ codeAcquisitionStatus(selectedGroup) }}</small></div>
+          <div><span>发布状态</span><el-tag :type="groupStatus(selectedGroup).type">{{ groupStatus(selectedGroup).text }}</el-tag></div>
+        </div>
+        <details class="task-parameters"><summary>查看完整任务参数、标签与核验说明</summary>
+        <el-descriptions :column="narrowTaskDetail ? 1 : 3" border class="group-detail-summary">
           <el-descriptions-item label="任务编号">{{ selectedTaskDisplayId }}</el-descriptions-item>
           <el-descriptions-item label="操作人">{{ selectedGroup.detail.batch.operatorUsername || '—' }}</el-descriptions-item>
           <el-descriptions-item label="子任务编号">{{ subtaskDisplayId(selectedGroup) }}</el-descriptions-item>
@@ -2829,24 +2902,44 @@ onUnmounted(() => {
           <el-descriptions-item label="发布时间" :span="2">{{ publishTime(selectedGroup) }}</el-descriptions-item>
           <el-descriptions-item v-if="groupRemark(selectedGroup) !== '—'" label="备注" :span="2">{{ groupRemark(selectedGroup) }}</el-descriptions-item>
         </el-descriptions>
+        </details>
         <el-alert v-if="selectedGroup.detail.batch.remotePublishError" class="group-detail-error" type="error" :closable="false" show-icon>{{ selectedGroup.detail.batch.remotePublishError }}</el-alert>
+        <div class="task-detail-views"><el-button :type="detailPane === 'configurations' ? 'primary' : 'default'" @click="closeTaskDeletion">配置列表（{{ selectedGroup.detail.issues.length }}）</el-button><el-button v-if="canGenerate" :type="detailPane === 'deletion' ? 'primary' : 'default'" @click="showTaskDeletion(undefined, false)">删除进度与结果</el-button></div>
+        <RedemptionTaskDeletionDialog v-if="detailPane === 'deletion' && taskDeletionTarget" :key="deletionPanelKey" :task-id="taskDeletionTarget.taskId" :task-number="taskDeletionTarget.taskNumber" :issue-ids="taskDeletionTarget.issueIds" :start-new="taskDeletionTarget.startNew" embedded read-only-open @close="closeTaskDeletion" @changed="refreshRecoveryGroups" />
+        <section v-if="detailPane === 'configurations'" class="task-configurations">
+        <div class="task-config-filters">
+          <el-input v-model="detailSearch" clearable placeholder="搜索兑换码、配置 ID 或档位" aria-label="搜索配置" />
+          <el-date-picker v-model="detailDate" type="date" clearable value-format="YYYY-MM-DD" placeholder="开始兑换日" aria-label="筛选开始兑换日" />
+          <el-select v-model="detailStatus" clearable placeholder="全部状态" aria-label="筛选配置状态"><el-option v-for="status in detailStatusOptions" :key="status" :value="status" :label="status" /></el-select>
+          <span>{{ filteredDetailIssues.length }} / {{ selectedGroup.detail.issues.length }} 条配置</span>
+        </div>
+        <div class="task-selection-bar"><span>已选 {{ selectedDeletionIds.length }} 条可删除配置</span><el-button v-if="canGenerate" type="danger" :disabled="!selectedDeletionIds.length" @click="showTaskDeletion(selectedDeletionIds)">删除已选（{{ selectedDeletionIds.length }}）</el-button><el-button :disabled="!selectedDeletionIds.length && !selectedFailedIssueCount" @click="clearFailedIssueSelection">清除选择</el-button></div>
         <div v-if="failedRemoteCreationCount" class="group-detail-toolbar">
           <span>当前盘口有 {{ failedRemoteCreationCount }} 条远端配置生成失败；勾选后可批量重试。</span>
           <el-button type="warning" :disabled="!selectedFailedIssueCount || isRepairing(selectedGroup)" :loading="retryingSelectedFailedTasks" @click="retrySelectedFailedRemoteCreations">批量重试已选（{{ selectedFailedIssueCount }}）</el-button>
         </div>
-        <el-table ref="failedIssueTable" :data="selectedGroup.detail.issues" row-key="id" class="group-detail-table" @selection-change="updateSelectedFailedIssues">
-          <el-table-column type="selection" width="48" :selectable="isFailedRemoteCreation" />
-          <el-table-column prop="remoteConfigurationId" label="远端配置 ID" min-width="140" show-overflow-tooltip><template #default="{ row }">{{ row.remoteConfigurationId || '—' }}</template></el-table-column>
+        <p class="field-note">展开行首箭头可查看完整生效时间、配置备注、标签与核验说明。</p>
+        <el-table ref="failedIssueTable" :data="filteredDetailIssues" row-key="id" class="group-detail-table" height="clamp(320px, 56vh, 780px)" @selection-change="updateDetailSelection">
+          <el-table-column type="selection" width="44" fixed="left" :selectable="selectableDetailIssue" />
+          <el-table-column type="expand" width="44"><template #default="{ row }"><dl class="configuration-expanded">
+            <div><dt>远端配置名称</dt><dd>{{ row.remoteConfigurationName || '—' }}</dd></div>
+            <div><dt>远端生效日期</dt><dd>{{ issueValidityLabel(selectedGroup.detail.batch, row.claimDate) }}</dd></div>
+            <div><dt>兑换码 / 完整内容</dt><dd>{{ row.redemptionCode || '尚未下载' }}</dd></div>
+            <div><dt>远端配置备注</dt><dd>{{ row.remoteConfigurationRemark || '—' }}</dd></div>
+            <div><dt>状态与错误说明</dt><dd>{{ issueRemark(row) || issueStatus(row).text }}</dd></div>
+            <div><dt>复用关联 / 核验说明</dt><dd>{{ row.recovery?.reason || reuseCheckErrors[String(row.id)] || reuseOrigin(row) || '—' }}</dd></div>
+            <div><dt>标签 ID</dt><dd>{{ row.remoteLabelIds?.join('、') || '全部用户 / 无标签' }}</dd></div>
+          </dl></template></el-table-column>
+          <el-table-column prop="remoteConfigurationId" label="配置 ID" width="88"><template #default="{ row }">{{ row.remoteConfigurationId || '—' }}</template></el-table-column>
+          <el-table-column label="兑换码" min-width="160"><template #default="{ row }"><strong class="configuration-code">{{ row.redemptionCode || '尚未下载' }}</strong></template></el-table-column>
           <el-table-column label="开始兑换日" width="118"><template #default="{ row }">{{ formatDate(row.claimDate) }}</template></el-table-column>
-          <el-table-column label="远端生效日期" min-width="220"><template #default="{ row }">{{ issueValidityLabel(selectedGroup.detail.batch, row.claimDate) }}</template></el-table-column>
           <el-table-column label="充值档位" min-width="150"><template #default="{ row }">{{ row.tierName || `充值 ≥ ${formatAmount(row.minDepositAmount)}` }}</template></el-table-column>
-          <el-table-column label="兑换金额" width="128"><template #default="{ row }">{{ formatAmount(row.bonusAmount) }}–{{ formatAmount(row.bonusMaxAmount || row.bonusAmount) }}</template></el-table-column>
-          <el-table-column label="单兑换码领取次数" width="154"><template #default="{ row }">{{ reusedIssueLimitLabel(selectedGroup, row) }}</template></el-table-column>
+          <el-table-column label="任务奖励" width="110"><template #default="{ row }">{{ formatAmount(row.bonusAmount) }}–{{ formatAmount(row.bonusMaxAmount || row.bonusAmount) }}</template></el-table-column>
+          <el-table-column label="每码领取上限" width="116"><template #default="{ row }">{{ reusedIssueLimitLabel(selectedGroup, row) }}</template></el-table-column>
           <el-table-column label="状态" width="116"><template #default="{ row }"><el-tag :type="issueStatus(row).type" size="small">{{ issueStatus(row).text }}</el-tag></template></el-table-column>
-          <el-table-column label="兑换码 / 备注" min-width="180"><template #default="{ row }"><span style="white-space: pre-line">{{ row.redemptionCode || issueRemark(row) || '—' }}</span></template></el-table-column>
-          <el-table-column label="复用关联 / 核验说明" min-width="220"><template #default="{ row }">{{ row.recovery?.reason || reuseCheckErrors[String(row.id)] || reuseOrigin(row) || '—' }}</template></el-table-column>
-          <el-table-column label="操作" width="220"><template #default="{ row }"><el-button v-if="canGenerate && row.remoteConfigurationId" link type="danger" :loading="deletingIssueId === row.id" :disabled="Boolean(deletingIssueId)" @click="deleteRemoteConfiguration(row)">{{ deletionHeld(row) ? '核对删除结果' : '删除配置' }}</el-button><el-button v-if="canGenerate && !deletionHeld(row)" link type="primary" :disabled="checkingRewardPolicy || applyingRewardPolicy" @click="inspectRewardPolicies(row)">核验奖励</el-button><el-button v-if="canGenerate && !deletionHeld(row)" link type="warning" :disabled="checkingRecovery || rebuildingMissing" @click="inspectMissingConfigurations(row)">{{ row.recovery ? '核验 / 重试重建' : '核验缺失' }}</el-button><el-button v-if="canCreatePendingRemoteConfiguration(row)" link type="primary" :loading="retryingIssueId === row.id" @click="createOnePendingRemoteConfiguration(row)">创建此配置</el-button><el-button v-if="canReuseExistingConfiguration(row)" link type="primary" :loading="reusingConfigurations" @click="reuseExistingConfigurations(row)">核验复用</el-button><el-button v-if="canRetryRemoteCreation(row)" link type="primary" :loading="retryingIssueId === row.id" :disabled="retryingSelectedFailedTasks" @click="retryRemoteCreation(row)">{{ row.workflowStatus === 'CREATING_REMOTE' ? '恢复重试' : '重试创建' }}</el-button></template></el-table-column>
+          <el-table-column label="操作" width="188" :fixed="narrowTaskDetail ? undefined : 'right'"><template #default="{ row }"><div class="configuration-row-actions"><el-button v-if="canGenerate && row.remoteConfigurationId" link type="danger" :loading="deletingIssueId === row.id" :disabled="Boolean(deletingIssueId)" @click="deleteRemoteConfiguration(row)">{{ deletionHeld(row) ? '核对删除结果' : '删除配置' }}</el-button><el-button v-if="canGenerate && !deletionHeld(row)" link type="primary" :disabled="checkingRewardPolicy || applyingRewardPolicy" @click="inspectRewardPolicies(row)">核验奖励</el-button><el-button v-if="canGenerate && !deletionHeld(row)" link type="warning" :disabled="checkingRecovery || rebuildingMissing" @click="inspectMissingConfigurations(row)">{{ row.recovery ? '核验 / 重试重建' : '核验缺失' }}</el-button><el-button v-if="canCreatePendingRemoteConfiguration(row)" link type="primary" :loading="retryingIssueId === row.id" @click="createOnePendingRemoteConfiguration(row)">创建此配置</el-button><el-button v-if="canReuseExistingConfiguration(row)" link type="primary" :loading="reusingConfigurations" @click="reuseExistingConfigurations(row)">核验复用</el-button><el-button v-if="canRetryRemoteCreation(row)" link type="primary" :loading="retryingIssueId === row.id" :disabled="retryingSelectedFailedTasks" @click="retryRemoteCreation(row)">{{ row.workflowStatus === 'CREATING_REMOTE' ? '恢复重试' : '重试创建' }}</el-button></div></template></el-table-column>
         </el-table>
+        </section>
         <div class="drawer-actions">
           <el-button v-if="hasPendingPublishReservation(selectedGroup)" type="warning" :loading="recoveringPublishId === selectedGroup.detail.batch.id" @click="recoverPublishReservation(selectedGroup)">恢复发布</el-button>
           <el-button v-else-if="selectedGroup.detail.batch.status === 'READY_TO_PUBLISH'" type="primary" @click="openPublishDialog(selectedGroup)">选择发布方式</el-button>
@@ -2857,11 +2950,51 @@ onUnmounted(() => {
           <el-button v-if="isSuccess(selectedGroup) && canExport" type="primary" :icon="Download" :loading="exportingId === selectedGroup.detail.batch.id" @click="exportGroup(selectedGroup)">下载当前盘口 Excel</el-button>
         </div>
       </template>
-    </el-drawer>
+    </article>
   </section>
 </template>
 
 <style scoped>
+
+.task-detail-workspace { min-width: 0; }
+.task-detail-heading, .task-detail-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.task-detail-heading { margin-bottom: 20px; }
+.task-detail-heading h2 { margin: 8px 0 0; font-size: 24px; color: var(--theme-text-strong, var(--el-text-color-primary)); }
+.task-detail-heading h2 { overflow-wrap: anywhere; }
+.task-detail-heading h2 span { font-size: 16px; font-weight: 400; color: var(--el-text-color-secondary); }
+.task-summary-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; padding: 16px; border: 1px solid var(--el-border-color); background: var(--el-bg-color); border-radius: 8px; }
+.task-summary-strip > div { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+.task-summary-strip span, .task-summary-strip small { color: var(--el-text-color-secondary); font-size: 12px; }
+.task-summary-strip strong { font-size: 14px; font-weight: 600; color: var(--el-text-color-primary); font-variant-numeric: tabular-nums; }
+.task-parameters { margin: 12px 0 20px; }
+.task-parameters summary { cursor: pointer; padding: 8px 0; color: var(--el-color-primary); font-size: 13px; }
+.task-detail-views { display: flex; gap: 8px; margin-bottom: 16px; }
+.task-detail-views :deep(.el-button + .el-button), .task-selection-bar :deep(.el-button + .el-button) { margin-left: 0; }
+.task-config-filters { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.task-config-filters > .el-input { width: 300px; }
+.task-config-filters > .el-select { width: 180px; }
+.task-config-filters > span, .task-selection-bar > span { color: var(--el-text-color-secondary); font-size: 13px; }
+.task-selection-bar { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
+.configuration-row-actions { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.configuration-row-actions :deep(.el-button + .el-button) { margin-left: 0; }
+.configuration-expanded { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px 24px; margin: 0; padding: 16px 24px; }
+.configuration-expanded dt { color: var(--el-text-color-secondary); font-size: 12px; margin-bottom: 6px; }
+.configuration-expanded dd { margin: 0; color: var(--el-text-color-primary); white-space: pre-wrap; overflow-wrap: anywhere; }
+.configuration-code { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 13px; overflow-wrap: anywhere; }
+.group-detail-table :deep(.cell) { white-space: normal; overflow-wrap: anywhere; line-height: 1.55; }
+.task-detail-workspace .repair-action-strip { flex-wrap: wrap; }
+.task-detail-workspace .drawer-actions { flex-wrap: wrap; }
+@media (max-width: 900px) {
+  .task-summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .configuration-expanded { grid-template-columns: minmax(0, 1fr); padding: 16px; max-width: calc(100vw - 112px); box-sizing: border-box; }
+  .task-detail-heading h2 { font-size: 20px; }
+  .task-config-filters > .el-input, .task-config-filters > .el-select { width: 100%; }
+  .task-detail-views { flex-wrap: wrap; }
+  .task-detail-actions { justify-content: flex-start; }
+  .task-detail-actions :deep(.el-button + .el-button) { margin-left: 0; }
+  .task-selection-bar { flex-wrap: wrap; }
+}
+
 .publication-status-cell { display: flex; flex-direction: column; align-items: center; gap: 5px; }
 .publication-status-cell small { color: var(--theme-text-muted, #65748b); }
 .publication-status-cell .creation-status-summary { display: -webkit-box; overflow: hidden; max-width: 100%; color: var(--theme-warning, #9a3412); font-size: 12px; line-height: 15px; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }

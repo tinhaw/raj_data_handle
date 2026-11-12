@@ -162,6 +162,20 @@ class RedemptionDeletionHttpTest {
   }
   verify(executor,never()).deletion(any(),any(),any(),eq("execute"),any());
  }
+
+ @Test void executionRejectionKeepsItsReasonInThePausedJobAndAuditWithoutReplay() throws Exception {
+  var f=multiFixture("REMOTE_DENIED");var plan=bulkConfirm(f,bulkPreview(f));
+  when(executor.deletion(any(),any(),any(),eq("execute"),any()))
+   .thenThrow(com.rajads.erp.shared.ApiException.conflict("REMOTE_DELETE_REJECTED","远端删除请求未通过：远端管理后台返回 HTTP 403。"));
+  plan=bulkNext(f,plan);
+  assertThat(plan.path("status").asText()).isEqualTo("PAUSED");
+  assertThat(plan.at("/items/0/status").asText()).isEqualTo("UNKNOWN");
+  assertThat(plan.at("/items/0/message").asText()).contains("HTTP 403","禁止重发");
+  assertThat(jdbc.queryForObject("select after_json from erp_compat_audit_logs where action='REDEMPTION_DELETE_UNKNOWN' order by id desc limit 1",String.class))
+   .contains("REMOTE_DELETE_REJECTED","HTTP 403");
+  bulkNext(f,plan);
+  verify(executor,times(1)).deletion(any(),any(),any(),eq("execute"),any());
+ }
  @Test void configurationScopeChangesAfterConfirmationPauseAllFurtherDeletes() throws Exception {
   var f=multiFixture("LATE_SCOPE");var plan=bulkConfirm(f,bulkPreview(f));
   jdbc.update("update erp_compat_redemption_code_issues set remote_configuration_id='9999' where id=?",f.owner());
@@ -248,6 +262,134 @@ class RedemptionDeletionHttpTest {
   assertThat(jdbc.queryForObject("select remote_deletion_state from erp_compat_redemption_code_issues where id=?",String.class,f.owner())).isEqualTo("DELETED");
   mvc.perform(post(path(f,"reconcile")).session(f.session()).with(csrf())).andExpect(status().isOk());
   mvc.perform(post("/api/v1/redemption-campaigns/code-tasks/"+f.alias()+"/recovery-check").session(f.session()).with(csrf()).contentType(MediaType.APPLICATION_JSON).content("{}")).andExpect(status().isConflict());
+ }
+
+ @Test void interruptedDeletionRechecksAndResumesOnlyRemainingAfterFreshConfirmation() throws Exception {
+  var f=multiFixture("RESUME_DONE");var original=bulkConfirm(f,bulkPreview(f));
+  var paused=bulkNext(f,original); // one completed; browser then closed
+  assertThat(paused.at("/items/0/status").asText()).isEqualTo("DELETED");
+  assertThat(paused.at("/items/1/status").asText()).isEqualTo("CHECKED");
+  var reopened=bulkPreview(f);
+  assertThat(reopened.at("/items/0/status").asText()).isEqualTo("DELETED");
+  assertThat(reopened.at("/items/0/plan/observation/state").asText()).isEqualTo("ABSENT");
+  assertThat(reopened.at("/items/1/plan/observation/state").asText()).isEqualTo("PRESENT");
+  assertThat(reopened.at("/items/1/plan/observation/checkedAt").asText()).isNotBlank();
+  // Stale tab, re-open, and preflight cannot execute the remaining configuration.
+  bulkNext(f,original);bulkNext(f,reopened);
+  verify(executor,times(1)).deletion(any(),any(),eq("3403"),eq("execute"),any());
+  verify(executor,never()).deletion(any(),any(),eq("3404"),eq("execute"),any());
+  var done=bulkNext(f,bulkConfirm(f,reopened));
+  assertThat(done.path("status").asText()).isEqualTo("FINISHED");
+  assertThat(done.at("/items/1/status").asText()).isEqualTo("DELETED");
+  verify(executor,times(1)).deletion(any(),any(),eq("3404"),eq("execute"),any());
+ }
+ @Test void presentUnknownIsDurableAndExcludedWhileOtherUnsubmittedItemsCanContinue() throws Exception {
+  var f=multiFixture("RESUME_UNKNOWN");var plan=bulkConfirm(f,bulkPreview(f));
+  when(executor.deletion(any(),any(),eq("3403"),eq("execute"),any())).thenThrow(new RuntimeException("synthetic lost response"));
+  plan=bulkNext(f,plan);
+  var reopened=bulkPreview(f);
+  assertThat(reopened.at("/items/0/status").asText()).isEqualTo("UNKNOWN");
+  assertThat(reopened.at("/items/0/plan/observation/state").asText()).isEqualTo("PRESENT");
+  assertThat(reopened.at("/items/0/message").asText()).contains("仍存在","暂不重发");
+  assertThat(reopened.at("/items/1/status").asText()).isEqualTo("CHECKED");
+  // Persisted facts survive a separate read; original approval fingerprint is unchanged.
+  var loaded=mapper.readTree(mvc.perform(get(bulkPath(f)).session(f.session())).andExpect(status().isOk())
+      .andReturn().getResponse().getContentAsString()).path("data");
+  assertThat(loaded.at("/items/0/plan/observation")).isEqualTo(reopened.at("/items/0/plan/observation"));
+  assertThat(loaded.at("/items/0/plan/remote/fingerprint").asText()).isEqualTo("a".repeat(64));
+  plan=bulkNext(f,bulkConfirm(f,reopened));
+  assertThat(plan.path("status").asText()).isEqualTo("PAUSED");
+  assertThat(plan.at("/items/1/status").asText()).isEqualTo("DELETED");
+  var confirmed=mapper.readTree(jdbc.queryForObject("select after_json from erp_compat_audit_logs where action='REDEMPTION_TASK_DELETE_CONFIRMED' and entity_id=? order by id desc limit 1",String.class,reopened.path("id").asText()));
+  assertThat(confirmed.at("/approvedItems/0/configurationId").asText()).isEqualTo("3404");
+  assertThat(confirmed.at("/approvedItems").size()).isEqualTo(1);
+  assertThat(confirmed.at("/excludedItems/0/status").asText()).isEqualTo("UNKNOWN");
+  verify(executor,times(1)).deletion(any(),any(),eq("3403"),eq("execute"),any());
+  verify(executor,times(1)).deletion(any(),any(),eq("3404"),eq("execute"),any());
+ }
+ @Test void lostDeleteResponseThenAbsenceIsRecoveredWithoutReplay() throws Exception {
+  var f=multiFixture("RESUME_ABSENT");var plan=bulkConfirm(f,bulkPreview(f));
+  when(executor.deletion(any(),any(),eq("3403"),eq("execute"),any())).thenThrow(new RuntimeException("synthetic lost response"));
+  bulkNext(f,plan);
+  when(executor.deletion(any(),any(),eq("3403"),eq("preview"),isNull())).thenReturn(bulkRemote("3403","ABSENT","a"));
+  var reopened=bulkPreview(f);
+  assertThat(reopened.at("/items/0/status").asText()).isEqualTo("DELETED");
+  assertThat(reopened.at("/items/0/plan/observation/state").asText()).isEqualTo("ABSENT");
+  assertThat(bulkNext(f,bulkConfirm(f,reopened)).path("status").asText()).isEqualTo("FINISHED");
+  verify(executor,times(1)).deletion(any(),any(),eq("3403"),eq("execute"),any());
+ }
+ @Test void changedIdentityOrReadFailureNeverBecomesDeletionOrReplay() throws Exception {
+  var f=fixture("OBSERVE_CHANGED");var preview=send(f.session(),path(f,"preview"),"{}");
+  when(executor.deletion(any(),any(),eq("3403"),eq("execute"),any())).thenThrow(new RuntimeException("synthetic lost response"));
+  apply(f,preview).andExpect(status().isConflict());
+  var replacement=(com.fasterxml.jackson.databind.node.ObjectNode)remote("PRESENT");replacement.put("fingerprint","b".repeat(64));
+  when(executor.deletion(any(),any(),eq("3403"),eq("preview"),isNull())).thenReturn(replacement);
+  var changed=send(f.session(),path(f,"reconcile"),"{}");
+  assertThat(changed.path("status").asText()).isEqualTo("UNKNOWN");
+  assertThat(changed.at("/observation/state").asText()).isEqualTo("IDENTITY_CHANGED");
+  assertThat(changed.at("/remote/fingerprint").asText()).isEqualTo("a".repeat(64));
+  when(executor.deletion(any(),any(),eq("3403"),eq("preview"),isNull())).thenThrow(new RuntimeException("synthetic read timeout"));
+  var unavailable=send(f.session(),path(f,"reconcile"),"{}");
+  assertThat(unavailable.at("/observation/state").asText()).isEqualTo("UNAVAILABLE");
+  assertThat(unavailable.path("status").asText()).isEqualTo("UNKNOWN");
+  apply(f,preview).andExpect(status().isConflict());
+  verify(executor,times(1)).deletion(any(),any(),any(),eq("execute"),any());
+ }
+ @Test void activeRequestAndChangedScopeCannotPrepareAnotherDeletion() throws Exception {
+  var f=multiFixture("RESUME_BUSY");var plan=bulkConfirm(f,bulkPreview(f));
+  jdbc.update("update erp_compat_redemption_task_deletions set busy=true where id=?",plan.path("id").asLong());
+  var same=send(f.session(),bulkPath(f)+"/preview","{}");
+  assertThat(same.path("id")).isEqualTo(plan.path("id"));
+  mvc.perform(post(bulkPath(f)+"/"+plan.path("id").asLong()+"/reconcile").session(f.session()).with(csrf())).andExpect(status().isConflict());
+  jdbc.update("update erp_compat_redemption_task_deletions set busy=false where id=?",plan.path("id").asLong());
+  jdbc.update("update erp_compat_redemption_code_issues set remote_configuration_id='9999' where id=?",f.owner());
+  mvc.perform(post(bulkPath(f)+"/preview").session(f.session()).with(csrf())).andExpect(status().isConflict());
+  verify(executor,never()).deletion(any(),any(),any(),eq("execute"),any());
+ }
+
+ @Test void taskDetailReturnsOnlyRequestedTaskAndCanBeReadWithoutRemoteWrites() throws Exception {
+  var f=multiFixture("DETAIL_PAGE");
+  var result=mapper.readTree(mvc.perform(get("/api/v1/redemption-campaigns/tasks/"+taskId(f)).session(f.session()))
+      .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data");
+  assertThat(result.path("batches").size()).isEqualTo(1);
+  assertThat(result.at("/batches/0/batch/id").asLong()).isEqualTo(f.batch());
+  assertThat(result.at("/batches/0/issues").size()).isEqualTo(2);
+  assertThat(result.path("campaigns").size()).isEqualTo(1);
+  mvc.perform(get("/api/v1/redemption-campaigns/tasks/999999999").session(f.session())).andExpect(status().isNotFound());
+  verifyNoInteractions(executor);
+ }
+ @Test void selectedDeletionCannotExpandOnResumeOrReachOtherTasks() throws Exception {
+  var f=multiFixture("SELECTED");
+  for(String body:java.util.List.of("{\"issueIds\":[]}","{\"issueIds\":["+f.owner()+"]}","{\"issueIds\":[null]}")) {
+   mvc.perform(post(bulkPath(f)+"/preview").session(f.session()).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isBadRequest());
+  }
+  verifyNoInteractions(executor);
+  var plan=send(f.session(),bulkPath(f)+"/preview","{\"issueIds\":["+f.alias()+","+f.alias()+"]}");
+  plan=bulkNext(f,plan);
+  assertThat(plan.path("items").size()).isEqualTo(1);
+  assertThat(plan.path("selectedOnly").asBoolean()).isTrue();
+  assertThat(plan.at("/items/0/configurationId").asText()).isEqualTo("3403");
+  when(executor.deletion(any(),any(),eq("3403"),eq("execute"),any())).thenThrow(new RuntimeException("synthetic lost response"));
+  plan=bulkNext(f,bulkConfirm(f,plan));
+  var resumed=send(f.session(),bulkPath(f)+"/preview","{\"resumeJobId\":"+plan.path("id").asLong()+"}");
+  resumed=bulkNext(f,resumed);
+  assertThat(resumed.path("items").size()).isEqualTo(1);
+  assertThat(resumed.at("/items/0/status").asText()).isEqualTo("UNKNOWN");
+  verify(executor,never()).deletion(any(),any(),eq("3404"),any(),any());
+  verify(executor,times(1)).deletion(any(),any(),eq("3403"),eq("execute"),any());
+  mvc.perform(post(bulkPath(f)+"/preview").session(f.session()).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+     .content("{\"resumeJobId\":"+plan.path("id").asLong()+",\"issueIds\":["+f.alias()+"]}")).andExpect(status().isConflict());
+ }
+ @Test void selectedDeletionFinishesOnlyApprovedItemsAndCannotReplaceActiveScope() throws Exception {
+  var f=multiFixture("SELECTED_DONE");
+  var plan=send(f.session(),bulkPath(f)+"/preview","{\"issueIds\":["+f.alias()+"]}");
+  mvc.perform(post(bulkPath(f)+"/preview").session(f.session()).with(csrf()).contentType(MediaType.APPLICATION_JSON).content("{}")).andExpect(status().isConflict());
+  plan=bulkNext(f,plan);bulkNext(f,plan);
+  verify(executor,never()).deletion(any(),any(),any(),eq("execute"),any());
+  plan=bulkNext(f,bulkConfirm(f,plan));
+  assertThat(plan.path("status").asText()).isEqualTo("FINISHED");
+  verify(executor,times(1)).deletion(any(),any(),eq("3403"),eq("execute"),any());
+  verify(executor,never()).deletion(any(),any(),eq("3404"),any(),any());
  }
 
     private long market(MockHttpSession session, String code) throws Exception {

@@ -124,7 +124,7 @@ class RedemptionDuplicateCheckHttpTest {
         verify(executor, times(1)).create(any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any());
     }
 
-    @Test void staleApprovalRollsBackNewGroupAndChangedHistoricalRewardInvalidatesSavedReview() throws Exception {
+    @Test void staleInitialApprovalRollsBackButSavedTaskAcknowledgementSurvivesHistoricalChanges() throws Exception {
         var old = setup("DURABLE_CHANGE"); long owner = old.at("/issues/0/id").asLong(); registered(owner);
         long market = marketOf(owner);
         var preview = send(login(), "/api/v1/redemption-campaigns/groups/duplicate-check", draft(market, false));
@@ -139,10 +139,21 @@ class RedemptionDuplicateCheckHttpTest {
         input.set("duplicateReview", mapper.valueToTree(java.util.Map.of("confirmed", true, "fingerprints", java.util.Map.of(Long.toString(owner), preview.at("/conflicts/0/reviewFingerprint").asText()))));
         var created = send(login(), "/api/v1/redemption-campaigns/groups", mapper.writeValueAsString(input));
         jdbc.update("update erp_compat_redemption_code_issues set bonus_max_amount=7 where id=?", owner);
-        assertThat(send(login(), "/api/v1/redemption-campaigns/batches/"+created.at("/batch/id").asLong()+"/creation-duplicate-check", "{}").path("reviewConfirmed").asBoolean()).isFalse();
-        mvc.perform(post("/api/v1/redemption-campaigns/code-tasks/"+created.at("/issues/0/id").asLong()+"/remote-create").session(login()).with(csrf()))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("LOCAL_REDEMPTION_DUPLICATE"));
-        verifyNoInteractions(executor, standalone);
+        long batch = created.at("/batch/id").asLong(), task = created.at("/batch/taskId").asLong();
+        assertThat(send(login(), "/api/v1/redemption-campaigns/batches/"+batch+"/creation-duplicate-check", "{}").path("reviewConfirmed").asBoolean()).isTrue();
+        // A repeat confirmation is idempotent, even with the old browser fingerprint.
+        send(login(), "/api/v1/redemption-campaigns/batches/"+batch+"/creation-duplicate-review", mapper.writeValueAsString(input.path("duplicateReview")));
+        assertThat(jdbc.queryForObject("select count(*) from erp_compat_audit_logs where action='REDEMPTION_TASK_DUPLICATES_CONFIRMED' and entity_id=?", Integer.class, Long.toString(task))).isEqualTo(1);
+        when(executor.create(any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any()))
+                .thenThrow(com.rajads.erp.shared.ApiException.badRequest("REMOTE_CREATE_FAILED", "指定兑换码串已被使用，请更换~"));
+        mvc.perform(post("/api/v1/redemption-campaigns/code-tasks/"+created.at("/issues/0/id").asLong()+"/remote-create").session(login()).with(csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(input.path("duplicateReview"))))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("REMOTE_CREATE_FAILED"));
+        // Confirmation cannot turn a remote rejection into success or silently choose reuse/update/delete.
+        verify(executor, times(1)).create(any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any());
+        verifyNoMoreInteractions(executor);
+        verifyNoInteractions(standalone);
+        assertThat(send(login(), "/api/v1/redemption-campaigns/batches/"+batch+"/creation-duplicate-check", "{}").path("reviewConfirmed").asBoolean()).isTrue();
     }
 
     @Test void localPreviewFindsUndownloadedConfigAndDoesNotReadOrWriteRemote() throws Exception {

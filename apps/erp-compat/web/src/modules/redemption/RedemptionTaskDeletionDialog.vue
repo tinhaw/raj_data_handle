@@ -4,7 +4,7 @@ import { ElMessageBox } from 'element-plus'
 import { api } from '@/api/client'
 import type { RedemptionTaskDeletionView } from '@/api/types'
 
-const props = defineProps<{ taskId: string | number; taskNumber: string }>()
+const props = defineProps<{ taskId: string | number; taskNumber: string; issueIds?: Array<string | number>; startNew?: boolean; embedded?: boolean; readOnlyOpen?: boolean }>()
 const emit = defineEmits<{ close: []; changed: [] }>()
 const plan = ref<RedemptionTaskDeletionView>()
 const working = ref(false)
@@ -14,6 +14,9 @@ const acknowledged = ref(false)
 let closed = false
 onUnmounted(() => { closed = true })
 const readyCount = computed(() => plan.value?.items.filter(item => item.status === 'CHECKED').length || 0)
+const presentCount = computed(() => plan.value?.items.filter(item => item.status !== 'DELETED' && item.plan?.observation?.state === 'PRESENT').length || 0)
+const unexecutedCount = computed(() => plan.value?.items.filter(item => ['WAITING', 'CHECKED', 'BLOCKED', 'SKIPPED'].includes(item.status)).length || 0)
+const excludedCount = computed(() => totalCount.value - readyCount.value)
 const keptCount = computed(() => plan.value?.items.filter(item => item.status === 'KEPT').length || 0)
 const deletedCount = computed(() => plan.value?.items.filter(item => item.status === 'DELETED').length || 0)
 const blockedCount = computed(() => plan.value?.items.filter(item => item.status === 'BLOCKED').length || 0)
@@ -23,7 +26,7 @@ const totalCount = computed(() => plan.value?.items.length || 0)
 const skippedCount = computed(() => plan.value?.items.filter(item => item.status === 'SKIPPED').length || 0)
 const executionStage = computed(() => Boolean(plan.value && (['RUNNING', 'PAUSED', 'FINISHED'].includes(plan.value.status) || unknownCount.value)))
 const stageTitle = computed(() => {
-  if (!plan.value) return '正在准备删除前预检'
+  if (!plan.value) return props.readOnlyOpen && !props.startNew ? '暂无删除进度' : '正在准备删除前预检'
   if (plan.value.status === 'CHECKING') return `删除前预检中（${checkedCount.value}/${totalCount.value}），尚未开始删除`
   if (plan.value.status === 'CHECKED') {
     if (readyCount.value) return '预检结束，等待你确认删除'
@@ -31,15 +34,35 @@ const stageTitle = computed(() => {
   }
   if (plan.value.status === 'RUNNING') return working.value || plan.value.busy ? '正在执行已确认的删除' : '删除已确认，等待继续处理'
   if (plan.value.status === 'PAUSED') return '删除已暂停，请先核对结果'
-  if (plan.value.status === 'FINISHED') return '本轮删除处理结束'
+  if (plan.value.status === 'FINISHED') return deletedCount.value === totalCount.value ? '全部配置已确认删除或不存在' : '本轮可执行项已处理，其他项未删除'
   return '本轮预检已结束，请重新预检'
 })
-const progressPercent = computed(() => Math.round((plan.value?.status === 'CHECKING' ? checkedCount.value : totalCount.value - readyCount.value - (plan.value?.items.filter(item => item.status === 'WAITING').length || 0)) / (totalCount.value || 1) * 100))
+const progressPercent = computed(() => Math.round((plan.value?.status === 'CHECKING' ? checkedCount.value : deletedCount.value) / (totalCount.value || 1) * 100))
 const permissionBlocked = computed(() => plan.value?.items.some(item => item.status === 'BLOCKED' && item.message?.includes('兑换码永久删除')) || false)
 const otherTasks = computed(() => [...new Set(plan.value?.items.flatMap(item => item.sharedTasks) || [])].filter(id => id !== props.taskNumber))
 const canConfirm = computed(() => plan.value?.status === 'CHECKED' && readyCount.value > 0 && acknowledged.value && enteredTaskNumber.value.trim() === props.taskNumber && !working.value)
 function statusLabel(status: string) {
-  return ({ WAITING: '等待核验', CHECKED: '已核验，待确认', SKIPPED: '未创建配置', BLOCKED: '检查未通过，未删除', UNKNOWN: '结果待核对', KEPT: '已核验并明确保留', DELETED: '已删除 / 已不存在' } as Record<string, string>)[status] || status
+  return ({ WAITING: '等待核验', CHECKED: '未执行 · 预检通过', SKIPPED: '未创建配置', BLOCKED: '检查未通过，未删除', UNKNOWN: '请求已提交或可能已提交 · 暂不重发', KEPT: '已核验并明确保留', DELETED: '已删除 / 已不存在' } as Record<string, string>)[status] || status
+}
+function existenceLabel(item: RedemptionTaskDeletionView['items'][number]) {
+  if (item.status === 'DELETED') return '已确认不存在'
+  return ({ PRESENT: '仍存在（上次核对）', ABSENT: '已确认不存在', IDENTITY_CHANGED: '身份或参数变化', UNAVAILABLE: '本次无法确认' } as Record<string, string>)[item.plan?.observation?.state || ''] || '尚未核对'
+}
+function checkedTime(value?: string) {
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString()
+}
+async function prepareRemaining() {
+  if (!plan.value || working.value) return
+  await run(async () => {
+    enteredTaskNumber.value = ''; acknowledged.value = false
+    // Reconcile is read-only, including a lost response. No DELETE is sent by this action.
+    plan.value = await api.redemption.reconcileTaskDeletion(plan.value!)
+    if (closed) return
+    plan.value = await api.redemption.previewTaskDeletion(props.taskId, undefined, plan.value!.id)
+    if (plan.value.status === 'CHECKING') await advance()
+  })
 }
 async function advance() {
   while (!closed && plan.value && ['CHECKING', 'RUNNING'].includes(plan.value.status)) {
@@ -54,13 +77,6 @@ async function run(action: () => Promise<void>) {
   try { await action() }
   catch (failure) { error.value = failure instanceof Error ? failure.message : '请求未完成，请刷新进度或核对结果；不要重复提交删除' }
   finally { working.value = false; emit('changed') }
-}
-async function preview() {
-  await run(async () => {
-    enteredTaskNumber.value = ''; acknowledged.value = false
-    plan.value = await api.redemption.previewTaskDeletion(props.taskId)
-    if (plan.value.status === 'CHECKING') await advance()
-  })
 }
 async function confirm() {
   if (!canConfirm.value || !plan.value) return
@@ -94,16 +110,24 @@ async function keepConfiguration(issueId: string | number, sharedTasks: string[]
 async function resume() { await run(advance) }
 onMounted(async () => {
   await run(async () => {
+    if (props.startNew) {
+      plan.value = await api.redemption.previewTaskDeletion(props.taskId, props.issueIds)
+      if (plan.value.status === 'CHECKING') await advance()
+      return
+    }
     const latest = await api.redemption.latestTaskDeletion(props.taskId)
     if (latest) { plan.value = latest; if (latest.status === 'CHECKING' && !latest.busy) await advance() }
-    else { plan.value = await api.redemption.previewTaskDeletion(props.taskId); await advance() }
+    else if (!props.readOnlyOpen) { plan.value = await api.redemption.previewTaskDeletion(props.taskId); await advance() }
+
   })
 })
 </script>
 
 <template>
-  <el-dialog :model-value="true" :title="`批量删除 · 任务 ${taskNumber}`" width="min(1120px, calc(100vw - 32px))" :close-on-click-modal="false" @close="emit('close')">
-    <p class="scope-note">范围：该任务全部盘口、全部日期和档位的远端配置，共享配置只处理一次。本地历史记录保留。</p>
+  <component :is="embedded ? 'section' : 'el-dialog'" :class="{ 'embedded-deletion': embedded }" :model-value="true" :title="`批量删除 · 任务 ${taskNumber}`" width="min(1120px, calc(100vw - 32px))" :close-on-click-modal="false" @close="emit('close')">
+    <h3 v-if="embedded">删除进度与结果</h3>
+    <el-empty v-if="!plan && !working && !error && readOnlyOpen" description="该任务还没有批量删除记录；可在配置列表勾选后删除，或选择删除整任务配置。" :image-size="64" />
+    <p class="scope-note">范围：{{ plan?.selectedOnly || issueIds ? '仅本次选择的配置' : '该任务全部盘口、全部日期和档位的配置' }}，共享配置只处理一次。本地历史记录保留。</p>
     <el-alert type="warning" :closable="false" show-icon title="永久删除远端配置后，本系统将阻止相关任务继续发布、下载及自动重建。已发布兑换码是否立即失效尚未验证。" />
     <el-alert v-if="otherTasks.length" class="section-gap" type="error" :closable="false" show-icon :title="`同时影响其他共享任务：${otherTasks.join('、')}`" />
     <el-alert v-if="error" class="section-gap" type="error" :closable="false" :title="error" />
@@ -116,7 +140,9 @@ onMounted(async () => {
     <div v-if="plan" class="result-counts section-gap" aria-live="polite">
       <span>已删除 / 已确认不存在 <strong>{{ deletedCount }}</strong></span>
       <span v-if="keptCount">已明确保留 <strong>{{ keptCount }}</strong></span>
-      <span>检查未通过 <strong>{{ blockedCount }}</strong></span>
+      <span>仍存在（上次核对） <strong>{{ presentCount }}</strong></span>
+      <span>未执行 <strong>{{ unexecutedCount }}</strong></span>
+      <span>预检受阻 <strong>{{ blockedCount }}</strong></span>
       <span>结果待核对 <strong>{{ unknownCount }}</strong></span>
       <span>{{ executionStage ? '尚待执行' : '可确认删除' }} <strong>{{ readyCount }}</strong></span>
       <span v-if="skippedCount">未创建配置 {{ skippedCount }}</span>
@@ -127,33 +153,42 @@ onMounted(async () => {
       请由具备账号管理权限的管理员，在对应盘口和账号上开启“兑换码永久删除”能力。开启后返回此处重新预检，每次删除仍需确认。
       <el-link type="primary" href="/erp/remote-connections" target="_blank" rel="noopener">打开盘口与远端账号</el-link>
     </div>
+    <p v-if="plan" class="scope-note section-gap">“存在性”来自原配置 ID 的只读核对，“未执行”表示尚未提交删除，两者可能重叠。核对时间按当前浏览器时区显示；超时或无权限不会算作已删除。</p>
+    <el-alert v-if="unknownCount" class="section-gap" type="warning" :closable="false" show-icon
+      :title="`${unknownCount} 项旧请求结果尚未确定，本轮继续时将排除。可先核对并预检其余项，确认后继续；不会重复提交这些旧请求。`" />
     <el-table :data="plan?.items || []" max-height="400" row-key="issueId" class="section-gap" empty-text="正在准备删除范围…">
       <el-table-column label="盘口 / 兑换日" min-width="160"><template #default="{ row }">{{ row.plan?.parameters.marketName || '—' }}<br>{{ row.plan?.parameters.claimDate || '—' }}</template></el-table-column>
       <el-table-column prop="configurationId" label="配置 ID" width="100" />
       <el-table-column label="兑换码 / 奖励" min-width="155"><template #default="{ row }">{{ row.plan?.remote.giftCode || row.plan?.parameters.code || row.plan?.remote.description || '—' }}<br><span v-if="row.plan">任务奖励 {{ row.plan.parameters.bonusMin }}–{{ row.plan.parameters.bonusMax }}</span></template></el-table-column>
       <el-table-column label="共享任务" min-width="150"><template #default="{ row }">{{ row.sharedTasks.join('、') || '—' }}</template></el-table-column>
-      <el-table-column label="状态 / 说明" min-width="240"><template #default="{ row }"><strong>{{ statusLabel(row.status) }}</strong><div>{{ row.message }}</div><el-button v-if="row.status === 'UNKNOWN'" link type="primary" :disabled="working" @click="keepConfiguration(row.issueId, row.sharedTasks)">核验并明确保留</el-button></template></el-table-column>
+      <el-table-column label="远端存在性 / 核对时间" min-width="185"><template #default="{ row }"><strong>{{ existenceLabel(row) }}</strong><div>{{ checkedTime(row.plan?.observation?.checkedAt) }}</div><div v-if="row.plan?.observation">{{ row.plan.observation.message }}</div></template></el-table-column>
+      <el-table-column label="执行状态 / 说明" min-width="240"><template #default="{ row }"><strong>{{ statusLabel(row.status) }}</strong><div>{{ row.message }}</div><el-button v-if="row.status === 'UNKNOWN'" link type="primary" :disabled="working" @click="keepConfiguration(row.issueId, row.sharedTasks)">核验并明确保留</el-button></template></el-table-column>
     </el-table>
     <div v-if="plan?.status === 'CHECKED' && readyCount" class="confirmation section-gap">
-      <p v-if="blockedCount" class="scope-note">仅确认删除通过预检的 {{ readyCount }} 项；检查未通过的 {{ blockedCount }} 项保持未执行。</p>
-      <el-checkbox v-model="acknowledged">已核对全部配置及共享任务影响，确认永久删除</el-checkbox>
+      <p class="scope-note">本次仅处理通过预检的 {{ readyCount }} 项；排除 {{ excludedCount }} 项（已删除、明确保留、结果不明或预检受阻）。上表清单及共享影响均属于本次确认范围。</p>
+      <el-checkbox v-model="acknowledged">已核对剩余 {{ readyCount }} 项及共享任务影响，同意排除其他 {{ excludedCount }} 项并继续删除</el-checkbox>
       <el-input v-model="enteredTaskNumber" :placeholder="`请输入任务编号 ${taskNumber}`" aria-label="输入任务编号确认批量删除" :disabled="working" />
     </div>
     <p v-if="executionStage" class="scope-note section-gap">关闭窗口会停止提交后续删除；当前已提交的请求仍会完成核验。再次打开可查看进度。结果不明时只读核对，不重复删除。</p>
     <p v-else class="scope-note section-gap">当前处于删除前预检阶段。关闭只结束预检；只有勾选确认、输入正确任务编号并点击“确认永久删除”后，才会提交删除。</p>
-    <template #footer>
+    <div class="deletion-actions">
       <el-button @click="emit('close')">{{ working ? (executionStage ? '关闭并停止后续删除' : '关闭并停止后续预检') : '关闭' }}</el-button>
       <el-button v-if="plan" :disabled="working" @click="refresh">刷新进度</el-button>
       <el-button v-if="plan && (plan.busy || ['PAUSED', 'RUNNING'].includes(plan.status))" :disabled="working" @click="reconcile">只读核对结果</el-button>
-      <el-button v-if="plan?.status === 'RUNNING' && !plan.busy" type="danger" :disabled="working" @click="resume">继续已确认删除</el-button>
-      <el-button v-if="plan && ['CHECKED', 'PAUSED', 'FINISHED', 'STOPPED'].includes(plan.status)" :disabled="working" @click="preview">重新预检未完成项</el-button>
+
+      <el-button v-if="plan && ['CHECKED', 'PAUSED', 'RUNNING', 'FINISHED', 'STOPPED'].includes(plan.status)" :disabled="working" @click="prepareRemaining">核对并预检剩余项</el-button>
       <el-button v-if="plan?.status === 'CHECKING' && !plan.busy" :disabled="working" @click="resume">继续预检</el-button>
       <el-button v-if="plan?.status === 'CHECKED' && readyCount" type="danger" :disabled="!canConfirm" :loading="working" @click="confirm">确认永久删除 {{ readyCount }} 个配置</el-button>
-    </template>
-  </el-dialog>
+    </div>
+  </component>
 </template>
 
 <style scoped>
+.embedded-deletion { padding: 20px; border: 1px solid var(--el-border-color); border-radius: 8px; background: var(--el-bg-color); }
+.embedded-deletion h3 { margin: 0 0 16px; font-size: 16px; }
+.deletion-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.deletion-actions :deep(.el-button + .el-button) { margin-left: 0; }
+.embedded-deletion .deletion-actions { position: sticky; bottom: 0; z-index: 2; padding: 12px 0; border-top: 1px solid var(--el-border-color); background: var(--el-bg-color); }
 .scope-note { color: var(--el-text-color-secondary); line-height: 1.6; margin: 0 0 12px; }
 .section-gap { margin-top: 16px; }
 .summary { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }

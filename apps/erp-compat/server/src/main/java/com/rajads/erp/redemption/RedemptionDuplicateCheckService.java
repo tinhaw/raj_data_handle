@@ -67,20 +67,21 @@ public class RedemptionDuplicateCheckService {
             wanted.add(new Key(issue.getRemoteMarketId(), member.specialCode(issue.getClaimDate(), issue.getMinDepositAmount()).toLowerCase(Locale.ROOT)));
         }
         var conflicts = localConflicts(wanted, null);
-        return new Result(wanted.size(), false, conflicts, covers(savedReview(batch.getTaskId()), conflicts));
+        return new Result(wanted.size(), false, conflicts, savedReview(batch.getTaskId()) != null);
     }
 
     /** Append an immutable approval event. During group creation this joins the task's transaction. */
     @Transactional
     public void confirmTaskReview(Long batchId, Review review) {
         var batch = batches.findById(batchId).orElseThrow(() -> ApiException.notFound("兑换码批次"));
+        // This acknowledges duplicate risk for this task, not permission to alter old configurations.
+        // Historical changes must not invalidate that acknowledgement or append another confirmation.
+        if (savedReview(batch.getTaskId()) != null) return;
         var result = checkPendingTask(batchId);
         if (review == null || !Boolean.TRUE.equals(review.confirmed()) || !covers(review, result.conflicts()))
             throw ApiException.conflict("LOCAL_REDEMPTION_DUPLICATE", "同码记录已变化，请集中阅览新增或变化的记录后确认；未提交远端创建。");
         // Save only server-verified task conflicts; do not turn arbitrary client hashes into approval.
         var fingerprints = new LinkedHashMap<String, String>();
-        var previous = savedReview(batch.getTaskId());
-        if (previous != null) fingerprints.putAll(previous.fingerprints());
         result.conflicts().forEach(c -> fingerprints.put(c.issueId().toString(), c.reviewFingerprint()));
         audit.record(TASK_REVIEW_ACTION, "REDEMPTION_CODE_TASK", batch.getTaskId().toString(), null, null,
                 new StoredReview(1, batch.getTaskId(), fingerprints));
@@ -138,10 +139,14 @@ public class RedemptionDuplicateCheckService {
         var batch = batches.findById(issue.getBatchId()).orElseThrow(() -> ApiException.notFound("兑换码批次"));
         if (batch.getRedemptionType() == null || !batch.getRedemptionType().usesSpecialCode()
                 || !Objects.equals(batch.getRemoteKeyNumber(), 1)) return;
+        // Prefer the durable task acknowledgement over a stale browser payload. Remote write
+        // permissions, deletion guards, unknown receipts and reward readback remain independent.
+        if (savedReview(batch.getTaskId()) != null) return;
         String code = batch.specialCode(issue.getClaimDate(), issue.getMinDepositAmount());
         var found = localConflicts(Set.of(new Key(issue.getRemoteMarketId(), code.toLowerCase(Locale.ROOT))), issueId);
         if (!found.isEmpty()) {
-            if (covers(review == null ? savedReview(batch.getTaskId()) : review, found)) {
+            if (covers(review, found)) {
+                confirmTaskReview(batch.getId(), review);
                 audit.record("REDEMPTION_DUPLICATES_REVIEW_CONFIRMED", "REDEMPTION_CODE_ISSUE", issueId.toString(),
                         null, found, Map.of("code", code, "reviewed", true, "remoteDeletionInferred", false));
                 return;

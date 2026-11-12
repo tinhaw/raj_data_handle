@@ -33,6 +33,7 @@ from packages.domain.schemas.remote_account import (
     RemoteAccountCredentialsWrite,
 )
 from packages.domain.services import redemption_claim_service as service
+from packages.domain.services.redemption_claim_export import matrix_workbook
 from packages.domain.services.redemption_claim_reader import (
     ClaimReadError,
     fetch_claim_snapshot,
@@ -65,7 +66,8 @@ async def db(tmp_path):
             "batch_id INTEGER, campaign_tier_id INTEGER, remote_market_id INTEGER, "
             "remote_configuration_id TEXT, remote_group_key TEXT, tier_name TEXT, "
             "claim_date DATE, min_deposit_amount NUMERIC, bonus_amount NUMERIC, "
-            "bonus_max_amount NUMERIC, remote_label_ids_json TEXT, redemption_code TEXT)",
+            "bonus_max_amount NUMERIC, remote_label_ids_json TEXT, redemption_code TEXT, "
+            "reused_from_issue_id INTEGER)",
             "CREATE TABLE erp_compat_redemption_issue_codes (issue_id INTEGER, "
             "code_index INTEGER, code TEXT)",
         ]:
@@ -134,7 +136,10 @@ async def db(tmp_path):
         )
         await session.execute(
             text(
-                "INSERT INTO erp_compat_redemption_code_issues VALUES "
+                "INSERT INTO erp_compat_redemption_code_issues "
+                "(id,batch_id,campaign_tier_id,remote_market_id,remote_configuration_id,"
+                "remote_group_key,tier_name,claim_date,min_deposit_amount,bonus_amount,"
+                "bonus_max_amount,remote_label_ids_json,redemption_code) VALUES "
                 "(1,1,1,7,'42','group-1','充值100','2026-11-01',100,5,11,'[901]','CODE0001')"
             )
         )
@@ -217,6 +222,68 @@ async def test_duplicate_paging_cannot_publish_partial_counts():
         )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [2, 101])
+async def test_same_remote_id_for_different_users_survives_same_and_cross_page_reads(count):
+    records = [record(i + 1) for i in range(count)]
+    records[-1]["id"] = records[0]["id"]
+    adapter = FakeAdapter(records)
+    result = await fetch_claim_snapshot(adapter, None, "group-1", "Asia/Kolkata", noop)
+    assert len(result.records) == count
+    assert len({(r["remote_id"], r["uid"]) for r in result.records}) == count
+    assert len({r["remote_id"] for r in result.records}) == count - 1
+    assert all(call[2]["pageSize"] == 100 for call in adapter.requests)
+
+
+@pytest.mark.asyncio
+async def test_synthetic_browser_contract_1711_claims_keeps_145_repeated_ids():
+    # Synthetic shape of the complete Chrome sample; no real UID or code values.
+    ids = [*range(1, 1567), *range(1, 135), *range(1, 12)]
+    records = [
+        {**record(i + 1), "id": identity, "amount": 6 if i < 871 else 5}
+        for i, identity in enumerate(ids)
+    ]
+    adapter = FakeAdapter(records)
+    result = await fetch_claim_snapshot(adapter, None, "group-1", "Asia/Kolkata", noop)
+    assert len(result.records) == 1711
+    assert len({r["remote_id"] for r in result.records}) == 1566
+    assert sum(r["amount"] for r in result.records) == Decimal(9426)
+    assert result.pages == 19  # 18 pages plus the first-page stability check
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", [("amount", 6), ("key", "CODE0002")])
+async def test_same_composite_identity_content_conflict_stops_without_size_retries(field, value):
+    adapter = FakeAdapter([record(1), {**record(1), field: value}])
+    with pytest.raises(ClaimReadError, match="内容不一致"):
+        await fetch_claim_snapshot(adapter, None, "group-1", "Asia/Kolkata", noop)
+    assert len(adapter.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_pagination_changes_are_bounded_without_smaller_size_retries():
+    adapter = FakeAdapter([record(i + 1) for i in range(101)], duplicate=True)
+    with pytest.raises(ClaimReadError, match="去重"):
+        await fetch_claim_snapshot(adapter, None, "group-1", "Asia/Kolkata", noop)
+    assert [call[2]["page"] for call in adapter.requests] == [1, 2, 1, 2]
+    assert all(call[2]["pageSize"] == 100 for call in adapter.requests)
+
+
+@pytest.mark.asyncio
+async def test_transient_count_change_restarts_the_whole_snapshot_once():
+    class ChangingAdapter(FakeAdapter):
+        async def _request(self, *args, **kwargs):
+            body, meta = await super()._request(*args, **kwargs)
+            if len(self.requests) == 1:
+                body["data"]["pageInfo"]["total"] += 1
+            return body, meta
+
+    adapter = ChangingAdapter([record(1), record(2)])
+    result = await fetch_claim_snapshot(adapter, None, "group-1", "Asia/Kolkata", noop)
+    assert len(result.records) == 2
+    assert [call[2]["page"] for call in adapter.requests] == [1, 1]
+
+
 def test_actual_date_timezone_and_invalid_group():
     parsed = parse_record(record(1, when="2026-11-02 00:01:00"), "group-1", "Asia/Kolkata")
     assert parsed["claim_date"] == date(2026, 11, 2)
@@ -279,7 +346,10 @@ async def test_summary_configuration_ids_follow_cell_scope_and_cross_date_claims
     async with factory() as session:
         await session.execute(
             text(
-                "INSERT INTO erp_compat_redemption_code_issues VALUES "
+                "INSERT INTO erp_compat_redemption_code_issues "
+                "(id,batch_id,campaign_tier_id,remote_market_id,remote_configuration_id,"
+                "remote_group_key,tier_name,claim_date,min_deposit_amount,bonus_amount,"
+                "bonus_max_amount,remote_label_ids_json,redemption_code) VALUES "
                 "(2,1,1,7,'43','group-2','充值100','2026-11-02',100,5,11,'[901]','CODE0003'),"
                 "(3,1,2,7,'99','group-3','其他档位','2026-11-01',500,5,11,'[902]','CODE0004')"
             )
@@ -330,6 +400,52 @@ async def test_summary_zero_unknown_drilldown_and_idempotent_publish(db):
         with pytest.raises(service.ClaimError, match="减少"):
             await service.publish_group(session, group, records[:1])
         await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_composite_identity_round_trips_orm_totals_details_and_old_snapshot_checks(db):
+    factory, _ = db
+    raw = [
+        record(1),
+        {**record(1), "uid": 800002},
+        {**record(1, key="CODE0002"), "uid": 800003},
+        {**record(2), "uid": 800001},
+    ]
+    records = [parse_record(r, "group-1", "Asia/Kolkata") for r in raw]
+    async with factory() as session:
+        group = (await service.materialize_groups(session, 1))[0]
+        group_id = group.id
+        # Existing successful facts must survive the first expanded snapshot.
+        await service.publish_group(session, group, records[:1])
+        await session.commit()
+        await service.publish_group(session, group, records)
+        await session.commit()
+    async with factory() as session:
+        group = await session.get(RedemptionClaimGroup, group_id)
+        facts = list(await session.scalars(select(RedemptionClaimRecord)))
+        assert len(facts) == len({id(fact) for fact in facts}) == 4
+        assert len({(fact.remote_id, fact.uid) for fact in facts}) == 4
+        await service.publish_group(session, group, records)
+        await session.commit()
+        summary = await service.summary(session, 1, date(2026, 11, 1), date(2026, 11, 1))
+        assert summary["rows"][0]["total"]["count"] == 4
+        assert await session.scalar(select(func.sum(RedemptionClaimDaily.count))) == 4
+        pages = [
+            await service.record_details(
+                session, 1, date(2026, 11, 1), group_id, "CODE0001",
+                summary["queryVersion"], page, 1,
+            )
+            for page in (1, 2, 3)
+        ]
+        assert [page["total"] for page in pages] == [3, 3, 3]
+        assert [(p["items"][0]["id"], p["items"][0]["uid"]) for p in pages] == [
+            ("1", "800001"), ("1", "800002"), ("2", "800001"),
+        ]
+        # Keeping the ID while dropping one of its users is still a reduction.
+        with pytest.raises(service.ClaimError, match="减少"):
+            await service.publish_group(session, group, [records[0], *records[2:]])
+        await session.rollback()
+        assert await session.scalar(select(func.count()).select_from(RedemptionClaimRecord)) == 4
 
 
 @pytest.mark.asyncio
@@ -480,10 +596,11 @@ async def test_http_reads_export_and_invalid_interval_are_local(db):
         )
         assert exported.status_code == 200
         matrix = load_workbook(BytesIO(exported.content))
-        assert matrix.sheetnames == ["每日存款兑换码"]
-        assert matrix.active["A1"].value == "win"
-        assert matrix.active["B2"].value == "充值100"
-        assert matrix.active["B3"].value == "待同步"
+        assert matrix.sheetnames == ["RajWin"]
+        assert matrix.active["A1"].value == "RajWin · Asia/Kolkata"
+        assert matrix.active["B2"].value.splitlines()[0] == "充值100"
+        assert matrix.active["B3"].value is None
+        assert "待同步" in matrix.active["B3"].comment.text
         stale = await client.get(
             base + "/export",
             params={
@@ -781,7 +898,7 @@ async def test_claim_data_conflict_does_not_switch_accounts(db):
 
             logins.append(json.loads(request.content)["username"])
             return httpx.Response(200, json={"data": {"token": "test-primary"}})
-        return claim_response([record(1), {**record(1), "uid": 800002}])
+        return claim_response([record(1), {**record(1), "amount": 6}])
 
     async with factory() as session:
         await service.request_sync(session, 1, 1)
@@ -841,7 +958,10 @@ async def test_successful_backup_is_reused_within_run_and_default_is_unchanged(d
     async with factory() as session:
         await session.execute(
             text(
-                "INSERT INTO erp_compat_redemption_code_issues VALUES "
+                "INSERT INTO erp_compat_redemption_code_issues "
+                "(id,batch_id,campaign_tier_id,remote_market_id,remote_configuration_id,"
+                "remote_group_key,tier_name,claim_date,min_deposit_amount,bonus_amount,"
+                "bonus_max_amount,remote_label_ids_json,redemption_code) VALUES "
                 "(2,1,1,7,'43','group-2','充值100','2026-11-02',100,5,11,'[901]','CODE0003')"
             )
         )
@@ -955,3 +1075,79 @@ async def test_backup_permission_revoked_during_paging_stops_without_publication
         run = await session.scalar(select(RedemptionClaimRun))
         assert run.status == "failed" and "授权已变化" in run.progress["errors"][0]["message"]
         assert await session.scalar(select(func.count()).select_from(RedemptionClaimRecord)) == 0
+
+
+@pytest.mark.asyncio
+async def test_matrix_and_export_order_survives_database_row_reordering(db, monkeypatch):
+    factory, _ = db
+    async with factory() as session:
+        original = (await service.materialize_groups(session, 1))[0]
+        for issue_id, tier in [(3, "充值300"), (2, "充值200")]:
+            session.add(RedemptionClaimGroup(
+                id=f"historical-{issue_id}", task_id=1, batch_id=1, issue_id=issue_id,
+                source_id="rajwin", account_projection_id=original.account_projection_id,
+                configuration_id=str(40 + issue_id), group_key=f"historical-{issue_id}",
+                column_key=f"tier-{issue_id}", snapshot={**original.snapshot, "tierName": tier},
+                version=1,
+            ))
+        await session.commit()
+        projector = service.projected_groups
+        reverse = False
+
+        async def reordered(*args):
+            task, groups = await projector(*args)
+            return task, list(reversed(groups)) if reverse else groups
+
+        monkeypatch.setattr(service, "projected_groups", reordered)
+        first = await service.summary(session, 1, date(2026, 11, 1), date(2026, 11, 2))
+        reverse = True
+        second = await service.summary(session, 1, date(2026, 11, 1), date(2026, 11, 2))
+        assert first["queryVersion"] == second["queryVersion"]
+        assert first["columns"] == second["columns"]
+        assert [c["tierName"] for c in second["columns"]] == ["充值100", "充值200", "充值300"]
+        exported = load_workbook(BytesIO(matrix_workbook(second))).active
+        assert [c.value.splitlines()[0] for c in exported[2]][1:-1] == [
+            c["tierName"] for c in first["columns"]
+        ]
+
+
+@pytest.mark.asyncio
+async def test_reused_task_projects_owner_configuration_and_inventory_without_copying_codes(db):
+    factory, _ = db
+    async with factory() as session:
+        await session.execute(
+            text("INSERT INTO erp_compat_redemption_code_tasks VALUES (2,'2026-11-01',2)")
+        )
+        await session.execute(
+            text("""INSERT INTO erp_compat_redemption_code_batches
+            SELECT 2,2,campaign_id,remote_connection_id,redemption_type,lookback_days,
+                   valid_from_day_offset,valid_to_day_offset
+            FROM erp_compat_redemption_code_batches WHERE id=1""")
+        )
+        await session.execute(
+            text("""INSERT INTO erp_compat_redemption_code_issues
+            SELECT 2,2,campaign_tier_id,remote_market_id,NULL,NULL,tier_name,claim_date,
+                min_deposit_amount,bonus_amount,bonus_max_amount,remote_label_ids_json,NULL,1
+            FROM erp_compat_redemption_code_issues WHERE id=1""")
+        )
+        await session.commit()
+        _, groups = await service.projected_groups(session, 2)
+        assert len(groups) == 1
+        assert groups[0].issue_id == 2
+        assert groups[0].configuration_id == "42"
+        assert groups[0].group_key == "group-1"
+        assert groups[0].snapshot["codes"] == ["CODE0001", "CODE0002"]
+        assert (
+            await session.scalar(text("SELECT count(*) FROM erp_compat_redemption_issue_codes"))
+            == 2
+        )
+        assert (
+            await session.scalar(
+                text("SELECT count(*) FROM erp_compat_redemption_issue_codes WHERE issue_id=2")
+            )
+            == 0
+        )
+        _, originals = await service.projected_groups(session, 1)
+        assert len(originals) == 1
+        assert originals[0].issue_id == 1
+        assert originals[0].snapshot["codes"] == groups[0].snapshot["codes"]

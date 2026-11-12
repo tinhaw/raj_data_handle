@@ -170,6 +170,8 @@ public final class RedemptionDtos {
         public int importedCodeCount() { return importedCount * codesPerGroup(); }
         private int codesPerGroup() { return remoteOptions == null || remoteOptions.keyNumber() == null ? 1 : remoteOptions.keyNumber(); }
     }
+    public record TaskDetailResponse(List<CampaignResponse> campaigns, List<BatchDetailResponse> batches) { }
+
     public record BatchDetailResponse(BatchResponse batch, List<CodeIssueResponse> issues) { }
 
     /** Counted list states have no issue identity and cannot be used for writes. */

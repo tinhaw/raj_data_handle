@@ -594,7 +594,8 @@ export interface RedemptionDeletionView {
   status: 'CHECKED' | 'DELETING' | 'UNKNOWN' | 'DELETED' | 'KEPT'
   configurationId: string
   parameters: RedemptionRecoveryView['parameters']
-  remote: { giftCode?: string; description?: string; status?: string; fingerprint?: string; keepSnapshotFingerprint?: string }
+  remote: { giftCode?: string; description?: string; state?: string; status?: string; fingerprint?: string; keepSnapshotFingerprint?: string }
+  observation?: { state: 'PRESENT' | 'ABSENT' | 'IDENTITY_CHANGED' | 'UNAVAILABLE'; checkedAt: string; message: string } | null
   message: string
 }
 
@@ -605,6 +606,7 @@ export interface RedemptionTaskDeletionView {
   taskNumber: string
   status: 'CHECKING' | 'CHECKED' | 'RUNNING' | 'PAUSED' | 'FINISHED' | 'STOPPED'
   busy: boolean
+  selectedOnly?: boolean
   items: Array<{
     issueId: string | number
     configurationId?: string

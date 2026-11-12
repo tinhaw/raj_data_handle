@@ -83,18 +83,19 @@ def _payload(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "key_number,gift_code",
+    "key_number,gift_code,pending_review",
     [
-        (1, "0908raj7days100"),
-        (1, "0908rajfree"),
-        (1, "0908raj200"),
-        (1, None),
-        (5, None),
-        (50, None),
+        (1, "0908raj7days100", False),
+        (1, "0908rajfree", False),
+        (1, "0908raj200", False),
+        (1, None, False),
+        (5, None, False),
+        (50, None, False),
+        (1, "0908raj3000", True),
     ],
 )
 async def test_compatibility_create_uses_mapped_unified_account_without_legacy_secret(
-    key_number: int, gift_code: str | None
+    key_number: int, gift_code: str | None, pending_review: bool
 ) -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
@@ -122,6 +123,19 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
             return httpx.Response(200, json={"success": True, "data": {"token": "test-jwt"}})
         if request.url.path == "/api/common/giftCodeConfig/save":
             captured.update(json.loads(request.content))
+            if pending_review:
+                return httpx.Response(
+                    200,
+                    json={
+                        "code": 200,
+                        "success": True,
+                        "data": {"id": -1},
+                        "message": (
+                            "你提交的配置触发风控规则，需主管审核通过后才可以生成配置，"
+                            "配置生成后需自行发布配置兑换码才生效"
+                        ),
+                    },
+                )
             if any(type(captured.get(field)) is not int for field in ("reward_min", "reward_max")):
                 return httpx.Response(500, json={"message": "money must be of type int"})
             if captured.get("gift_type") != int(special):
@@ -194,6 +208,30 @@ async def test_compatibility_create_uses_mapped_unified_account_without_legacy_s
                 canonical_ids=[account.account.id],
             )
         )[account.account.id]
+
+        if pending_review:
+            with pytest.raises(ErpCompatibilityRemoteExecutionError, match="待远端主管审核"):
+                await execute_compatibility_remote_create(
+                    session,
+                    payload=_payload(compatibility_id, key_number, gift_code),
+                    actor_user_id=1,
+                    settings=settings,
+                    transport=httpx.MockTransport(handler),
+                )
+            audits = (
+                await session.scalars(
+                    select(SecurityAuditLog).where(
+                        SecurityAuditLog.action == "erp_compatibility_redemption.remote_create"
+                    )
+                )
+            ).all()
+            assert len(audits) == 1
+            assert audits[0].result == "pending_review"
+            assert audits[0].metadata_json == {"issue_id": 42, "operation": "CREATE"}
+            assert login_count == 1
+            await session.close()
+            await engine.dispose()
+            return
 
         result = await execute_compatibility_remote_create(
             session,
@@ -686,3 +724,252 @@ async def test_publication_verification_uses_unified_account_read_capability(aut
                 )
             assert calls == []
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_allowed", [False, True])
+async def test_reuse_check_requires_read_capability_and_never_uses_business_write_capabilities(
+    read_allowed,
+):
+    from test_redemption_reuse_check import expectation, remote_read
+
+    from packages.domain.services.erp_compatibility_redemption_remote_service import (
+        check_compatibility_remote_reuse,
+    )
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings = _settings()
+    requests = []
+
+    def handler(request):
+        requests.append((request.method, request.url.path))
+        if request.url.path == "/api/system/login":
+            return httpx.Response(
+                200, json={"success": True, "data": {"token": "test-reuse-session"}}
+            )
+        assert (
+            request.method == "GET" and request.url.path == "/api/common/giftCodeConfig/read/3403"
+        )
+        return httpx.Response(200, json={"success": True, "data": remote_read()})
+
+    try:
+        async with factory() as session:
+            await create_source(
+                session,
+                request=SourceCreateRequest(
+                    source_id="rajwin",
+                    display_name="Reuse fixture",
+                    base_url="https://fixture.example",
+                    enabled=False,
+                ),
+                actor_user_id=1,
+                settings=settings,
+            )
+            account = await create_remote_account(
+                session,
+                request=RemoteAccountCreateRequest(
+                    source_id="rajwin",
+                    login_username="reuse-fixture",
+                    display_name="Reuse fixture",
+                    credentials=RemoteAccountCredentialsWrite(
+                        password="fixture-password", totp_secret="JBSWY3DPEHPK3PXP"
+                    ),
+                ),
+                actor_user_id=1,
+                settings=settings,
+            )
+            await upsert_source(
+                session,
+                source_id="rajwin",
+                request=SourcePatchRequest(enabled=True),
+                actor_user_id=1,
+                settings=settings,
+            )
+            account_id = account.account.id
+            await session.execute(
+                update(RemoteAccountCapability)
+                .where(RemoteAccountCapability.account_id == account_id)
+                .values(enabled=False)
+            )
+            await session.execute(
+                update(RemoteAccountCapability)
+                .where(
+                    RemoteAccountCapability.account_id == account_id,
+                    RemoteAccountCapability.capability == "ERP_REMOTE_CHECK",
+                )
+                .values(enabled=read_allowed)
+            )
+            await session.commit()
+            projection = (
+                await get_erp_compatibility_ids(
+                    session, entity_type="remote_account", canonical_ids=[account_id]
+                )
+            )[account_id]
+            payload = expectation().model_copy(update={"account_id": projection})
+            if read_allowed:
+                result = await check_compatibility_remote_reuse(
+                    session,
+                    payload=payload,
+                    actor_user_id=1,
+                    settings=settings,
+                    transport=httpx.MockTransport(handler),
+                )
+                assert result.matched
+                assert requests == [
+                    ("POST", "/api/system/login"),
+                    ("GET", "/api/common/giftCodeConfig/read/3403"),
+                ]
+            else:
+                with pytest.raises(ErpCompatibilityRemoteExecutionError, match="配置读取能力"):
+                    await check_compatibility_remote_reuse(
+                        session,
+                        payload=payload,
+                        actor_user_id=1,
+                        settings=settings,
+                        transport=httpx.MockTransport(handler),
+                    )
+                assert requests == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "read_allowed,download_allowed,imported",
+    [
+        (False, True, True),
+        (True, False, True),
+        (True, False, False),
+        (True, True, True),
+    ],
+)
+async def test_missing_recovery_uses_read_and_inventory_capabilities_without_granting_create(
+    read_allowed,
+    download_allowed,
+    imported,
+):
+    from test_redemption_reuse_check import expectation
+
+    from packages.domain.schemas.remote_account import ErpCompatibilityRemoteRecoveryCheckRequest
+    from packages.domain.services.erp_compatibility_redemption_remote_service import (
+        check_compatibility_remote_recovery,
+    )
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings, requests = _settings(), []
+    book = Workbook()
+    book.active.append(["兑换码号码"])
+    output = BytesIO()
+    book.save(output)
+    book.close()
+
+    def handler(request):
+        requests.append((request.method, request.url.path))
+        if request.url.path == "/api/system/login":
+            return httpx.Response(200, json={"success": True, "data": {"token": "fixture"}})
+        if "/read/" in request.url.path:
+            data = []
+        elif request.url.path.endswith("/index"):
+            data = {"items": [], "pageInfo": {"currentPage": 1, "totalPage": 1, "total": 0}}
+        elif request.url.path.endswith("/export"):
+            return httpx.Response(200, content=output.getvalue())
+        else:
+            raise AssertionError("Recovery checks must never create, update, or publish")
+        return httpx.Response(200, json={"code": 200, "success": True, "data": data})
+
+    try:
+        async with factory() as session:
+            await create_source(
+                session,
+                request=SourceCreateRequest(
+                    source_id="rajwin",
+                    display_name="Recovery fixture",
+                    base_url="https://fixture.example",
+                    enabled=False,
+                ),
+                actor_user_id=1,
+                settings=settings,
+            )
+            account = await create_remote_account(
+                session,
+                request=RemoteAccountCreateRequest(
+                    source_id="rajwin",
+                    login_username="recovery-fixture",
+                    display_name="Fixture",
+                    credentials=RemoteAccountCredentialsWrite(
+                        password="synthetic-fixture-password",
+                        totp_secret="JBSWY3DPEHPK3PXP",
+                    ),
+                ),
+                actor_user_id=1,
+                settings=settings,
+            )
+            await upsert_source(
+                session,
+                source_id="rajwin",
+                request=SourcePatchRequest(enabled=True),
+                actor_user_id=1,
+                settings=settings,
+            )
+            account_id = account.account.id
+            await session.execute(
+                update(RemoteAccountCapability)
+                .where(
+                    RemoteAccountCapability.account_id == account_id,
+                )
+                .values(enabled=False)
+            )
+            for capability, enabled in (
+                ("ERP_REMOTE_CHECK", read_allowed),
+                ("ERP_REDEMPTION_DOWNLOAD", download_allowed),
+            ):
+                await session.execute(
+                    update(RemoteAccountCapability)
+                    .where(
+                        RemoteAccountCapability.account_id == account_id,
+                        RemoteAccountCapability.capability == capability,
+                    )
+                    .values(enabled=enabled)
+                )
+            await session.commit()
+            projection = (
+                await get_erp_compatibility_ids(
+                    session,
+                    entity_type="remote_account",
+                    canonical_ids=[account_id],
+                )
+            )[account_id]
+            payload = ErpCompatibilityRemoteRecoveryCheckRequest(
+                **{**expectation().model_dump(), "account_id": projection},
+                check_inventory=imported,
+                remote_group_key="original-group",
+            )
+            if not read_allowed or imported and not download_allowed:
+                with pytest.raises(ErpCompatibilityRemoteExecutionError, match="能力"):
+                    await check_compatibility_remote_recovery(
+                        session,
+                        payload=payload,
+                        actor_user_id=1,
+                        settings=settings,
+                        transport=httpx.MockTransport(handler),
+                    )
+                assert not requests
+            else:
+                result = await check_compatibility_remote_recovery(
+                    session,
+                    payload=payload,
+                    actor_user_id=1,
+                    settings=settings,
+                    transport=httpx.MockTransport(handler),
+                )
+                assert result.state == "ABSENT"
+                assert sum(path.endswith("/index") for _, path in requests) == 2
+                assert sum(path.endswith("/export") for _, path in requests) == int(imported)
+    finally:
+        await engine.dispose()

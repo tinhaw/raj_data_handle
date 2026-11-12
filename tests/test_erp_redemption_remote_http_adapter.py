@@ -18,6 +18,7 @@ from packages.domain.services.erp_redemption_remote_adapter import (
 from packages.domain.services.erp_redemption_remote_gate import ErpRemoteExecutionGrant
 from packages.domain.services.erp_redemption_remote_http_adapter import (
     ErpRedemptionRemoteHttpError,
+    ErpRedemptionRemoteReviewPending,
     ErpRemoteAccountReadGrant,
     RajAdminGiftCodeAdapter,
     _extract_code_text,
@@ -43,6 +44,65 @@ def _options() -> RemoteCreationOptions:
         check_register_ip=True,
         register_ip_reward_limit=1,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", [None, "触发风控规则，需主管审核通过后才可以生成配置"])
+@pytest.mark.parametrize(
+    "invalid_id", [-1, 0, "-1", "0", "00", "+1", "1.5", "1e3", "", "null", False, None, {}, []]
+)
+async def test_create_rejects_invalid_receipts_without_lookup_or_replay(
+    invalid_id, message
+) -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/api/system/login":
+            return httpx.Response(200, json={"success": True, "data": {"token": "mock-session"}})
+        if request.url.path == "/api/common/giftCodeConfig/save":
+            return httpx.Response(200, json={
+                "code": 200, "success": True, "message": message, "data": {"id": invalid_id}
+            })
+        raise AssertionError("An invalid create receipt must not trigger a lookup or another write")
+
+    grant = ErpRemoteExecutionGrant(
+        account_id="account-1",
+        source_id="rajwin",
+        operation="CREATE",
+        capability="ERP_REDEMPTION_CREATE",
+    )
+    async with RajAdminGiftCodeAdapter(
+        account_id="account-1",
+        source_id="rajwin",
+        base_url="https://remote.example",
+        username="fixture",
+        password="fixture-only",
+        totp_secret="JBSWY3DPEHPK3PXP",
+        business_timezone="Asia/Shanghai",
+        transport=httpx.MockTransport(handler),
+    ) as adapter:
+        with pytest.raises(ErpRedemptionRemoteHttpError, match="远端创建结果未确认") as error:
+            await adapter.create_configuration(
+                grant=grant,
+                command=RemoteCreateCommand(
+                    issue_id="fixture-issue",
+                    description="fixture",
+                    claim_date=date(2026, 11, 11),
+                    deposit_window_start=date(2026, 11, 10),
+                    deposit_window_end=date(2026, 11, 10),
+                    label_ids=(),
+                    bonus_amount=Decimal(1),
+                    bonus_max_amount=Decimal(3),
+                    options=_options(),
+                ),
+            )
+    assert error.value.retryable is False
+    assert error.value.fallback_allowed is False
+    assert isinstance(error.value, ErpRedemptionRemoteReviewPending) == (
+        str(invalid_id) == "-1" and message is not None
+    )
+    assert paths == ["/api/system/login", "/api/common/giftCodeConfig/save"]
 
 
 @pytest.mark.parametrize(
@@ -224,22 +284,33 @@ async def test_create_rejects_fractional_rewards_before_any_remote_request(minim
         raise AssertionError("Fractional rewards must not trigger login or remote creation")
 
     grant = ErpRemoteExecutionGrant(
-        account_id="account-1", source_id="rajwin", operation="CREATE",
+        account_id="account-1",
+        source_id="rajwin",
+        operation="CREATE",
         capability="ERP_REDEMPTION_CREATE",
     )
     async with RajAdminGiftCodeAdapter(
-        account_id="account-1", source_id="rajwin", base_url="https://remote.example",
-        username="operator", password="password", totp_secret="JBSWY3DPEHPK3PXP",
-        business_timezone="Asia/Shanghai", transport=httpx.MockTransport(handler),
+        account_id="account-1",
+        source_id="rajwin",
+        base_url="https://remote.example",
+        username="operator",
+        password="password",
+        totp_secret="JBSWY3DPEHPK3PXP",
+        business_timezone="Asia/Shanghai",
+        transport=httpx.MockTransport(handler),
     ) as adapter:
         with pytest.raises(ErpRedemptionRemoteHttpError, match="兑换金额.*整数"):
             await adapter.create_configuration(
                 grant=grant,
                 command=RemoteCreateCommand(
-                    issue_id="issue-fractional", description="fractional reward",
-                    claim_date=date(2026, 11, 1), deposit_window_start=date(2026, 11, 1),
-                    deposit_window_end=date(2026, 11, 1), label_ids=(),
-                    bonus_amount=Decimal(minimum), bonus_max_amount=Decimal(maximum),
+                    issue_id="issue-fractional",
+                    description="fractional reward",
+                    claim_date=date(2026, 11, 1),
+                    deposit_window_start=date(2026, 11, 1),
+                    deposit_window_end=date(2026, 11, 1),
+                    label_ids=(),
+                    bonus_amount=Decimal(minimum),
+                    bonus_max_amount=Decimal(maximum),
                     options=_options(),
                 ),
             )

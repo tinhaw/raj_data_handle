@@ -94,6 +94,10 @@ public class RedemptionController {
     @PreAuthorize("hasAuthority('REDEMPTION_VIEW')")
     public List<RedemptionDtos.BatchSummaryResponse> batchSummaries() { return service.batchSummaries(); }
 
+    @GetMapping("/tasks/{taskId}")
+    @PreAuthorize("hasAuthority('REDEMPTION_VIEW')")
+    public RedemptionDtos.TaskDetailResponse taskDetail(@PathVariable Long taskId) { return service.taskDetail(taskId); }
+
     @GetMapping("/batches/{batchId}")
     @PreAuthorize("hasAuthority('REDEMPTION_VIEW')")
     public RedemptionDtos.BatchDetailResponse batch(@PathVariable Long batchId) { return service.batch(batchId); }
@@ -178,7 +182,7 @@ public class RedemptionController {
 
     @PostMapping("/tasks/{taskId}/deletion/preview")
     @PreAuthorize("hasAuthority('REDEMPTION_MANAGE') and hasAuthority('REDEMPTION_GENERATE')")
-    public RedemptionTaskDeletionService.View taskDeletionPreview(@PathVariable Long taskId) { return taskDeletions.preview(taskId); }
+    public RedemptionTaskDeletionService.View taskDeletionPreview(@PathVariable Long taskId, @Valid @RequestBody(required=false) RedemptionTaskDeletionService.Preview request) { return taskDeletions.preview(taskId,request); }
 
     @GetMapping("/tasks/{taskId}/deletion/{jobId}")
     @PreAuthorize("hasAuthority('REDEMPTION_MANAGE') and hasAuthority('REDEMPTION_GENERATE')")

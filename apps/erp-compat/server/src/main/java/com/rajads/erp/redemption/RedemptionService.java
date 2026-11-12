@@ -160,6 +160,16 @@ public class RedemptionService {
         return batchDetail(batch);
     }
 
+    /** Read only this task: opening a detail page never scans or operates other tasks. */
+    @Transactional(readOnly = true)
+    public RedemptionDtos.TaskDetailResponse taskDetail(Long taskId) {
+        taskRepository.findById(taskId).orElseThrow(() -> ApiException.notFound("兑换码任务"));
+        var batches = batchRepository.findByTaskIdOrderByIdAsc(taskId);
+        var campaigns = batches.stream().map(RedemptionCodeBatch::getCampaignId).distinct()
+                .map(this::campaign).toList();
+        return new RedemptionDtos.TaskDetailResponse(campaigns, batches.stream().map(this::batchDetail).toList());
+    }
+
     /** List payload grows with distinct states/audiences, not configuration dates. */
     @Transactional(readOnly = true)
     public List<RedemptionDtos.BatchSummaryResponse> batchSummaries() {

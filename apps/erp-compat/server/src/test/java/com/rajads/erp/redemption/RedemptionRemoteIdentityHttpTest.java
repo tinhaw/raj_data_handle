@@ -435,8 +435,11 @@ class RedemptionRemoteIdentityHttpTest {
         long issueC = groups.get(2).at("/issues/0/id").asLong();
         assertThat(jdbc.queryForObject("select count(*) from erp_compat_redemption_issue_codes where issue_id in (?,?)", Integer.class, issueA, issueB)).isEqualTo(2 * keyNumber);
         assertThat(jdbc.queryForObject("select count(*) from erp_compat_redemption_issue_codes where issue_id=?", Integer.class, issueC)).isZero();
+        // Migration 0061 scopes persisted values to the configuration owner/generation.
+        assertThat(jdbc.update("insert into erp_compat_redemption_issue_codes(issue_id,code_index,code,remote_market_id) values(?,0,?,?)",
+                issueC, codes.get(0), marketA)).isEqualTo(1);
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc.update(
-                "insert into erp_compat_redemption_issue_codes(issue_id,code_index,code,remote_market_id) values(?,0,?,?)", issueC, codes.get(0), marketA))
+                "insert into erp_compat_redemption_issue_codes(issue_id,code_index,code,remote_market_id) values(?,1,?,?)", issueC, codes.get(0), marketA))
                 .isInstanceOf(DataIntegrityViolationException.class);
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc.update(
                 "insert into erp_compat_redemption_issue_codes(issue_id,code_index,code,remote_market_id) values(?,0,?,?)", issueC, prefix + "-WRONG-MARKET", marketB))
