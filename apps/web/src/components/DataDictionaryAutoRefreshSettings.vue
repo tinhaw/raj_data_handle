@@ -151,7 +151,7 @@ watch(() => [props.sourceId, props.dictionaryType], loadConfig, { immediate: tru
   padding: 16px 18px;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: #f8fbfd;
+  background: var(--theme-surface-muted, #f8fbfd);
 }
 
 .auto-refresh-title,

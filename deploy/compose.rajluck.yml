@@ -129,6 +129,9 @@ services:
       - ./nginx.edge.conf:/etc/nginx/nginx.conf:ro
       - /etc/nginx/tls/ailuckdg.com-origin.crt:/etc/nginx/tls/ailuckdg.com-origin.crt:ro
       - /etc/nginx/tls/ailuckdg.com-origin.key:/etc/nginx/tls/ailuckdg.com-origin.key:ro
+      # Dedicated Meta Ads key stays on the ECS; only file paths are configured here.
+      - /opt/meta_ads/tls/ads-origin.crt:/etc/nginx/tls/meta-ads-origin.crt:ro
+      - /opt/meta_ads/tls/ads-origin.key:/etc/nginx/tls/meta-ads-origin.key:ro
     depends_on:
       web:
         condition: service_healthy

@@ -1,0 +1,4 @@
+alter table erp_compat_redemption_code_issues drop constraint uq_erp_compat_issue_market_code;
+alter table erp_compat_redemption_code_issues add constraint uq_erp_compat_issue_generation_code unique(remote_market_id,inventory_configuration_id,redemption_code);
+alter table erp_compat_redemption_issue_codes drop constraint uq_erp_compat_issue_codes_market_code;
+alter table erp_compat_redemption_issue_codes add constraint uq_erp_compat_issue_codes_owner_code unique(issue_id,code);

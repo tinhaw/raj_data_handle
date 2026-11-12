@@ -6,6 +6,9 @@ import { init, use, type EChartsType } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
+import { darkChartOption, darkChartTheme } from '../chartTheme'
+import { isDark } from '../stores/theme'
+
 use([
   BarChart,
   LineChart,
@@ -51,10 +54,10 @@ function render(): void {
     return
   }
   if (!chart) {
-    chart = init(chartElement.value)
+    chart = init(chartElement.value, isDark.value ? darkChartTheme : undefined)
     chart.on('click', (params) => emit('chartClick', params))
   }
-  chart.setOption(props.option, true)
+  chart.setOption(isDark.value ? darkChartOption(props.option) : props.option, true)
 }
 
 function renderAtVisibleSize(): void {
@@ -79,6 +82,11 @@ function renderAtVisibleSize(): void {
 watch(() => props.option, renderAtVisibleSize, { deep: true })
 watch(() => props.empty, renderAtVisibleSize)
 watch(() => props.active, renderAtVisibleSize)
+watch(isDark, () => {
+  chart?.dispose()
+  chart = null
+  renderAtVisibleSize()
+})
 
 onMounted(() => {
   renderAtVisibleSize()

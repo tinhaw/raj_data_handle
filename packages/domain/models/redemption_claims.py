@@ -51,7 +51,7 @@ class RedemptionClaimRecord(Base):
     )
     remote_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     code: Mapped[str] = mapped_column(String(255), nullable=False)
-    uid: Mapped[str] = mapped_column(String(100), nullable=False)
+    uid: Mapped[str] = mapped_column(String(100), primary_key=True)
     receive_time: Mapped[str] = mapped_column(String(40), nullable=False)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     claim_date: Mapped[date] = mapped_column(Date, nullable=False)

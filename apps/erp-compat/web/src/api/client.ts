@@ -1,3 +1,4 @@
+import type { RedemptionDeletionView, RedemptionTaskDeletionView } from './types'
 import type { ClaimStatistics, ClaimSchedule, ClaimRun, ClaimCode, ClaimRecord, ClaimPage } from './claimStatistics'
 import type { PublicationVerification } from '@/modules/redemption/publicationStatus'
 import axios, { AxiosError } from 'axios'
@@ -23,8 +24,13 @@ import type {
   RedemptionCampaignTier,
   RedemptionBatchDetail,
   RedemptionCodeGroupInput,
+  RedemptionDuplicateMarket,
+  RedemptionDuplicateResult,
+  RedemptionDuplicateReview,
   RedemptionCodeBatch,
   RedemptionCodeIssue,
+  RedemptionRecoveryView,
+  RedemptionRewardPolicyView,
   RedemptionRemoteCreationOptions,
   RedemptionRemoteConnection,
   RedemptionRemoteMarket,
@@ -541,6 +547,11 @@ function normalizeRedemptionIssue(raw: unknown): RedemptionCodeIssue {
     redemptionCode: value.redemptionCode ? String(value.redemptionCode) : undefined,
     state: String(value.state || 'PENDING') as RedemptionCodeIssue['state'],
     remoteReferenceId: value.remoteReferenceId ? String(value.remoteReferenceId) : undefined,
+    recovery: value.recovery ? asRecord(value.recovery) as unknown as RedemptionCodeIssue['recovery'] : undefined,
+    creationNeedsReconciliation: value.creationNeedsReconciliation === true,
+    creationAwaitingRemoteReview: value.creationAwaitingRemoteReview === true,
+    reusedFromIssueId: value.reusedFromIssueId as string | number | undefined,
+    reusedFromBatchId: value.reusedFromBatchId as string | number | undefined,
     remoteError: value.remoteError ? String(value.remoteError) : undefined,
     generatedAt: value.generatedAt ? String(value.generatedAt) : undefined,
     rowVersion: typeof value.rowVersion === 'number' ? value.rowVersion : undefined,
@@ -570,6 +581,7 @@ function normalizeRedemptionBatch(raw: unknown): RedemptionCodeBatch {
     validToDayOffset: Number(value.validToDayOffset ?? 0),
     lookbackDays: Number(value.lookbackDays ?? 7),
     redemptionType: String(value.redemptionType || 'SEVEN_DAY_DEPOSIT') as RedemptionCodeBatch['redemptionType'],
+    specialCodeNaming: value.specialCodeNaming === 'TEN_K' ? 'TEN_K' : 'ORIGINAL',
     expectedCodeCount: Number(value.expectedCodeCount ?? 0),
     plannedCodeCount: Number(value.plannedCodeCount ?? Number(value.expectedCodeCount ?? 0) * Number(options?.keyNumber ?? 1)),
     importedCodeCount: Number(value.importedCodeCount ?? Number(value.importedCount ?? 0) * Number(options?.keyNumber ?? 1)),
@@ -674,6 +686,24 @@ function remoteConnectionRequest(connection: Partial<RedemptionRemoteConnection>
 
 function normalizeRedemptionBatchDetail(raw: unknown): RedemptionBatchDetail {
   const value = asRecord(raw)
+  if (Array.isArray(value.issueSummaries)) {
+    const batch = normalizeRedemptionBatch(value.batch)
+    const issues = value.issueSummaries.map((rawSummary, index) => {
+      const summary = asRecord(rawSummary)
+      if (typeof summary.count !== 'number' || !Number.isSafeInteger(summary.count) || summary.count <= 0) {
+        throw new ApiError({ message: '任务列表摘要计数无效，请刷新重试。' })
+      }
+      return {
+        ...normalizeRedemptionIssue({ ...summary, id: `summary-${batch.id}-${index}`,
+          campaignId: batch.campaignId, campaignTierId: 0, claimDate: summary.earliestClaimDate }),
+        overviewCount: summary.count,
+        overviewHasConfiguration: summary.hasRemoteConfiguration === true,
+        overviewHasReference: summary.hasRemoteReference === true,
+        overviewConfigurationIds: Array.isArray(summary.configurationIds) ? summary.configurationIds.map(String) : [],
+      }
+    })
+    return { batch, issues, overview: true }
+  }
   return { batch: normalizeRedemptionBatch(value.batch), issues: (Array.isArray(value.issues) ? value.issues : []).map(normalizeRedemptionIssue) }
 }
 
@@ -840,6 +870,9 @@ export const api = {
     list: async () => (await request<unknown>(() => apiClient.get('/redemption-campaigns')) as unknown[]).map(normalizeRedemptionCampaign),
     get: async (id: string | number) => normalizeRedemptionCampaign(await request<unknown>(() => apiClient.get(`/redemption-campaigns/${id}`))),
     create: async (campaign: Partial<RedemptionCampaign>) => normalizeRedemptionCampaign(await request<unknown>(() => apiClient.post('/redemption-campaigns', redemptionCampaignRequest(campaign)))),
+    checkDuplicates: (markets: RedemptionDuplicateMarket[], checkRemote: boolean) => request<RedemptionDuplicateResult>(() => apiClient.post('/redemption-campaigns/groups/duplicate-check', { markets, checkRemote }, { timeout: checkRemote ? 100_000 : 15_000 })),
+    checkPendingTaskDuplicates: (batchId: string | number) => request<RedemptionDuplicateResult>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/creation-duplicate-check`, {}, { timeout: 15_000 })),
+    confirmTaskDuplicateReview: (batchId: string | number, review: RedemptionDuplicateReview) => request<void>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/creation-duplicate-review`, review)),
     createGroup: async (group: RedemptionCodeGroupInput) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post('/redemption-campaigns/groups', {
       ...group,
       tiers: group.tiers.map((tier, index) => ({
@@ -854,11 +887,27 @@ export const api = {
     issues: async (campaignId: string | number, claimDateFrom: string, claimDateTo: string) => (await request<unknown>(() => apiClient.get('/redemption-campaigns/codes', { params: { campaignId, claimDateFrom, claimDateTo } })) as unknown[]).map(normalizeRedemptionIssue),
     exportCodes: (campaignId: string | number, claimDateFrom: string, claimDateTo: string) => requestDownload(() => apiClient.get<Blob>('/redemption-campaigns/codes/export', { params: { campaignId, claimDateFrom, claimDateTo }, responseType: 'blob' }), 'redemption-codes.xlsx'),
     batches: async (campaignId: string | number) => (await request<unknown>(() => apiClient.get('/redemption-campaigns/batches', { params: { campaignId } })) as unknown[]).map(normalizeRedemptionBatch),
-    batchOverviews: async () => (await request<unknown>(() => apiClient.get('/redemption-campaigns/batches/overview')) as unknown[]).map(normalizeRedemptionBatchDetail),
+    batchOverviews: async () => (await request<unknown>(() => apiClient.get('/redemption-campaigns/batches/summaries', { timeout: 30_000 })) as unknown[]).map(normalizeRedemptionBatchDetail),
     batch: async (batchId: string | number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.get(`/redemption-campaigns/batches/${batchId}`))),
     createManualBatch: async (campaignId: string | number, claimDateFrom: string, claimDateTo: string, remoteConnectionId?: string | number, tierLabelIds?: Record<string, Array<string | number>>, remoteOptions?: RedemptionRemoteCreationOptions) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post('/redemption-campaigns/batches', { campaignId, claimDateFrom, claimDateTo, remoteConnectionId, tierLabelIds, remoteOptions }))),
     recordRemoteConfiguration: async (issueId: string | number, remoteConfigurationId: string, rowVersion?: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/remote-configuration`, { remoteConfigurationId, rowVersion }))),
-    createRemoteConfiguration: async (issueId: string | number, retryFailed = false) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/remote-create`, undefined, { params: { retryFailed } }))),
+    previewDeletionKeep: (issueId: string | number) => request<RedemptionDeletionView>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/deletion/keep-preview`, {}, { timeout: 90_000 })),
+    confirmDeletionKeep: (issueId: string | number, plan: RedemptionDeletionView) => request<RedemptionDeletionView>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/deletion/keep-confirm`, { deletionId: plan.id, rowVersion: plan.rowVersion, confirmed: true, previousRequestEnded: true, configurationId: plan.configurationId, fingerprint: plan.remote.fingerprint, snapshotFingerprint: plan.remote.keepSnapshotFingerprint }, { timeout: 90_000 })),
+    previewDeletion: (issueId: string | number, rowVersion?: number) => request<RedemptionDeletionView>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/deletion/preview`, { rowVersion }, { timeout: 90_000 })),
+    latestTaskDeletion: (taskId: string | number) => request<RedemptionTaskDeletionView | null>(() => apiClient.get(`/redemption-campaigns/tasks/${taskId}/deletion`)),
+    previewTaskDeletion: (taskId: string | number) => request<RedemptionTaskDeletionView>(() => apiClient.post(`/redemption-campaigns/tasks/${taskId}/deletion/preview`)),
+    taskDeletion: (taskId: string | number, jobId: string | number) => request<RedemptionTaskDeletionView>(() => apiClient.get(`/redemption-campaigns/tasks/${taskId}/deletion/${jobId}`)),
+    confirmTaskDeletion: (plan: RedemptionTaskDeletionView, taskNumber: string) => request<RedemptionTaskDeletionView>(() => apiClient.post(`/redemption-campaigns/tasks/${plan.taskId}/deletion/${plan.id}/confirm`, { rowVersion: plan.rowVersion, taskNumber, confirmed: true })),
+    nextTaskDeletion: (plan: RedemptionTaskDeletionView) => request<RedemptionTaskDeletionView>(() => apiClient.post(`/redemption-campaigns/tasks/${plan.taskId}/deletion/${plan.id}/next`, {}, { timeout: 180_000 })),
+    reconcileTaskDeletion: (plan: RedemptionTaskDeletionView) => request<RedemptionTaskDeletionView>(() => apiClient.post(`/redemption-campaigns/tasks/${plan.taskId}/deletion/${plan.id}/reconcile`, {}, { timeout: 180_000 })),
+    confirmDeletion: (issueId: string | number, plan: RedemptionDeletionView) => request<RedemptionDeletionView>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/deletion/confirm`, { deletionId: plan.id, rowVersion: plan.rowVersion, configurationId: plan.configurationId, confirmed: true }, { timeout: 180_000 })),
+    reconcileDeletion: (issueId: string | number) => request<RedemptionDeletionView>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/deletion/reconcile`, {}, { timeout: 180_000 })),
+    checkRewardPolicy: (issueId: string | number, rowVersion?: number) => request<RedemptionRewardPolicyView>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/reward-policy/check`, { rowVersion }, { timeout: 90_000 })),
+    applyRewardPolicy: async (issueId: string | number, policyUpdateId: string | number, rowVersion: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/reward-policy/apply`, { policyUpdateId, rowVersion, confirmed: true }, { timeout: 180_000 }))),
+    inspectRecovery: (issueId: string | number, rowVersion?: number) => request<RedemptionRecoveryView>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/recovery-check`, { rowVersion }, { timeout: 90_000 })),
+    rebuildMissing: async (issueId: string | number, recoveryId: string | number, rowVersion: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/rebuild`, { recoveryId, rowVersion, confirmed: true }, { timeout: 180_000 }))),
+    reuseExistingConfiguration: async (issueId: string | number, rowVersion: number, configurationId?: string) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/reuse`, { rowVersion, configurationId }))),
+    createRemoteConfiguration: async (issueId: string | number, retryFailed = false, review?: RedemptionDuplicateReview) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/remote-create`, review, { params: { retryFailed }, timeout: 180_000 }))),
     downloadRemoteCode: async (issueId: string | number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/remote-download`))),
     publishBatch: async (batchId: string | number, rowVersion?: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/publish`, { rowVersion }))),
     publishRemoteBatch: async (batchId: string | number, rowVersion: number | undefined, mode: 'IMMEDIATE' | 'SCHEDULED' = 'IMMEDIATE', scheduledTime?: string, fallbackToScheduled = true) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/remote-publish`, { rowVersion, mode, scheduledTime, fallbackToScheduled }))),

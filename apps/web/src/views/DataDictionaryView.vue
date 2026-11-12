@@ -1265,16 +1265,16 @@ onMounted(load)
   align-items: center;
   gap: 8px;
   padding: 8px 11px;
-  border: 1px solid #b9ded8;
+  border: 1px solid var(--theme-success-border, #b9ded8);
   border-radius: 9px;
-  background: #effaf8;
+  background: var(--theme-success-bg, #effaf8);
   color: var(--ink-muted);
   font-size: 12px;
   white-space: nowrap;
 }
 
 .field-binding code {
-  color: #087f72;
+  color: var(--theme-success, #087f72);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 13px;
   font-weight: 700;
@@ -1309,7 +1309,7 @@ onMounted(load)
   padding: 18px;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: #f8fbfd;
+  background: var(--theme-surface-muted, #f8fbfd);
 }
 
 .summary-grid span,

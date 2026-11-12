@@ -23,13 +23,18 @@ public enum RedemptionCodeType {
     }
 
     String specialCode(LocalDate claimDate, BigDecimal minDeposit) {
+        return specialCode(claimDate, minDeposit, RedemptionCodeNaming.ORIGINAL);
+    }
+
+    String specialCode(LocalDate claimDate, BigDecimal minDeposit, RedemptionCodeNaming naming) {
         BigDecimal amount = minDeposit.stripTrailingZeros();
         if (amount.signum() < 0 || amount.scale() > 0) {
             throw ApiException.badRequest("SPECIAL_CODE_DEPOSIT_AMOUNT", "特殊兑换码的充值门槛必须是非负整数");
         }
+        String depositSuffix = RedemptionCodeNaming.effective(naming).suffix(amount);
         String suffix = switch (this) {
-            case SEVEN_DAY_DEPOSIT -> "raj7days" + amount.toPlainString();
-            case PREVIOUS_DAY_DEPOSIT -> "raj" + (amount.signum() == 0 ? "free" : amount.toPlainString());
+            case SEVEN_DAY_DEPOSIT -> "raj7days" + depositSuffix;
+            case PREVIOUS_DAY_DEPOSIT -> "raj" + (amount.signum() == 0 ? "free" : depositSuffix);
             case AGENT -> throw new IllegalStateException("Agent groups use ordinary codes");
         };
         return claimDate.format(CLAIM_MONTH_DAY) + suffix;

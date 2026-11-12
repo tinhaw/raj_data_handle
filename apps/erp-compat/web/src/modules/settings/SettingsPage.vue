@@ -18,5 +18,5 @@ function saveHint() {
 </template>
 
 <style scoped>
-.settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 42px; max-width: 860px; }.settings-grid h3 { margin: 0 0 20px; color: #344054; font-size: 15px; }.settings-grid :deep(.el-input), .settings-grid :deep(.el-select) { width: 100%; }
+.settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 42px; max-width: 860px; }.settings-grid h3 { margin: 0 0 20px; color: var(--theme-text, #344054); font-size: 15px; }.settings-grid :deep(.el-input), .settings-grid :deep(.el-select) { width: 100%; }
 </style>

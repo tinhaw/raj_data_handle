@@ -10,4 +10,5 @@ public interface RedemptionCampaignTierRepository extends JpaRepository<Redempti
     long countByCampaignId(Long campaignId);
     void deleteByCampaignId(Long campaignId);
     List<RedemptionCampaignTier> findByCampaignIdIn(Collection<Long> campaignIds);
+    List<RedemptionCampaignTier> findByCampaignIdInOrderBySortOrderAscMinDepositAmountAsc(Collection<Long> campaignIds);
 }

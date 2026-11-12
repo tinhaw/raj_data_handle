@@ -45,7 +45,7 @@ async function logout() {
         </div>
       </div>
 
-      <el-menu class="side-menu" :collapse="collapsed" :collapse-transition="false" :default-active="route.path" :default-openeds="['ads-balance']" router>
+      <el-menu class="side-menu" :collapse="collapsed" :collapse-transition="false" :default-active="route.name === 'redemption-claim-statistics' ? '/redemption' : route.path" :default-openeds="['ads-balance']" router>
         <el-menu-item index="/dashboard"><el-icon><HomeFilled /></el-icon><template #title>工作台</template></el-menu-item>
         <el-sub-menu index="ads-balance" popper-class="side-menu-popper">
           <template #title><el-icon><DataAnalysis /></el-icon><span>业务管理</span></template>

@@ -15,6 +15,7 @@ import {
   saveRewardTierPreset,
   operateAccountConnection,
   saveAccountSessionPolicy,
+  updateRemoteAccountCapabilities,
 } from '../api/remoteAccounts'
 import { fetchAllSources } from '../api/sources'
 import { apiErrorMessage } from '../api/client'
@@ -36,6 +37,9 @@ const accountDialogVisible = ref(false)
 const presetDialogVisible = ref(false)
 const editingAccount = ref<RemoteAccount | null>(null)
 const connectionBusy = reactive<Record<string, string>>({})
+const claimReadBusy = reactive<Record<string, boolean>>({})
+const redemptionDeleteBusy = reactive<Record<string, boolean>>({})
+const canManage = computed(() => hasErpPermission('ERP_REMOTE_ACCOUNT_MANAGE'))
 const policyAccount = ref<RemoteAccount | null>(null)
 const policyVisible = ref(false)
 const policySaving = ref(false)
@@ -77,6 +81,40 @@ async function load(): Promise<void> {
   } finally {
     loading.value = false
   }
+}
+
+async function setClaimRead(account: RemoteAccount, enabled: boolean): Promise<void> {
+  claimReadBusy[account.id] = true
+  try {
+    const updated = await updateRemoteAccountCapabilities(account.id, {
+      ERP_REDEMPTION_CLAIM_READ: enabled,
+    })
+    accounts.value = accounts.value.map(item => item.id === account.id ? updated : item)
+    ElMessage.success(enabled ? '已授权读取兑换码领取记录' : '已停止读取兑换码领取记录')
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '领取记录读取授权保存失败。'))
+  } finally { delete claimReadBusy[account.id] }
+}
+
+async function setRedemptionDelete(account: RemoteAccount, enabled: boolean): Promise<void> {
+  if (!canManage.value || redemptionDeleteBusy[account.id]) return
+  redemptionDeleteBusy[account.id] = true
+  try {
+    if (enabled) {
+      try {
+        await ElMessageBox.confirm(
+          `为 ${account.sourceDisplayName} / ${account.loginUsername || account.displayName} 开启兑换码永久删除能力？开启后，具备兑换码操作权限的用户可在预检并确认范围后永久删除远端配置。此次只开通能力，不执行删除。`,
+          '开启兑换码永久删除能力',
+          { type: 'warning', confirmButtonText: '确认开启', cancelButtonText: '取消', closeOnClickModal: false },
+        )
+      } catch { return }
+    }
+    const updated = await updateRemoteAccountCapabilities(account.id, { ERP_REDEMPTION_DELETE: enabled })
+    accounts.value = accounts.value.map(item => item.id === account.id ? updated : item)
+    ElMessage.success(enabled ? '已开启兑换码永久删除能力，请返回任务重新预检并确认' : '已关闭兑换码永久删除能力')
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '兑换码删除能力授权保存失败。'))
+  } finally { delete redemptionDeleteBusy[account.id] }
 }
 
 function resetAccountForm(): void {
@@ -377,7 +415,7 @@ onUnmounted(() => { if (clockTimer) clearInterval(clockTimer) })
 
     <el-alert
       title="配置顺序：先配置盘口，再创建账号"
-      description="每个盘口可配置多个账号；自动同步和后台任务使用唯一的默认账号，其他启用账号可作为备用或由业务任务明确选择。所有账号固定具备完整功能，无需逐项授权。"
+      description="每个盘口可配置多个账号；自动同步和后台任务使用唯一的默认账号，其他启用账号可作为备用或由业务任务明确选择。账号启用后可使用基础远端功能；领取统计读取与兑换码永久删除需分别授权，每次删除仍需预检并确认。"
       type="info"
       show-icon
       :closable="false"
@@ -416,8 +454,19 @@ onUnmounted(() => { if (clockTimer) clearInterval(clockTimer) })
         <el-table-column label="功能" width="120" align="center">
           <template #default="{ row }">
             <el-tag :type="row.credentialConfigured ? 'success' : 'info'" effect="plain">
-              {{ row.credentialConfigured ? '全部功能' : '配置后启用' }}
+              {{ row.credentialConfigured ? '基础功能' : '配置后启用' }}
             </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="领取统计读取" width="130" align="center">
+          <template #default="{ row }">
+            <el-switch :model-value="Boolean(row.capabilities.ERP_REDEMPTION_CLAIM_READ)" :loading="claimReadBusy[row.id]" :disabled="!hasErpPermission('ERP_REMOTE_ACCOUNT_MANAGE')" :aria-label="`${row.displayName}的领取统计读取授权`" @change="setClaimRead(row, Boolean($event))" />
+          </template>
+        </el-table-column>
+        <el-table-column label="兑换码永久删除" width="155" align="center">
+          <template #default="{ row }">
+            <el-switch :model-value="Boolean(row.capabilities.ERP_REDEMPTION_DELETE)" :loading="redemptionDeleteBusy[row.id]" :disabled="!canManage || redemptionDeleteBusy[row.id]" :aria-label="`${row.sourceDisplayName} · ${row.loginUsername || row.displayName}的兑换码永久删除授权`" @change="setRedemptionDelete(row, Boolean($event))" />
+            <small class="table-subtext">{{ row.capabilities.ERP_REDEMPTION_DELETE ? '已授权，每次删除仍需确认' : '未授权' }}</small>
           </template>
         </el-table-column>
         <el-table-column label="启用状态" width="115" align="center">

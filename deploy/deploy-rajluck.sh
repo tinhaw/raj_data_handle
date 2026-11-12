@@ -13,6 +13,8 @@ COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-raj-data-handle}"
 INIT=false
 SKIP_GIT=false
 SCHEMA_ONLY=false
+WEB_ONLY=false
+BUILD_ONLY=false
 
 log() { printf '[RAJ-DATA-DEPLOY] %s\n' "$1"; }
 err() { printf '[RAJ-DATA-DEPLOY][ERROR] %s\n' "$1" >&2; exit 1; }
@@ -20,12 +22,14 @@ err() { printf '[RAJ-DATA-DEPLOY][ERROR] %s\n' "$1" >&2; exit 1; }
 usage() {
     cat <<'EOF'
 Usage:
-  bash deploy/deploy-rajluck.sh [--init] [--skip-git] [--schema-only]
+  bash deploy/deploy-rajluck.sh [--init] [--skip-git] [--schema-only] [--web-only] [--build-only]
 
 Options:
   --init         First application rollout after the repository has been cloned.
   --skip-git     Use the current remote working tree without fetch/reset.
   --schema-only  Run Alembic only. Requires the approved schema-change risk gate.
+  --web-only     Build/restart only Web, with an image backup and health rollback.
+  --build-only   Build images serially; do not migrate or restart any service.
   -h, --help     Show this help.
 
 Normal application rollout never runs schema migrations automatically. For a
@@ -39,11 +43,21 @@ while [[ "$#" -gt 0 ]]; do
         --init) INIT=true ;;
         --skip-git) SKIP_GIT=true ;;
         --schema-only) SCHEMA_ONLY=true ;;
+        --web-only) WEB_ONLY=true ;;
+        --build-only) BUILD_ONLY=true ;;
         -h|--help) usage; exit 0 ;;
         *) err "unknown argument: $1" ;;
     esac
     shift
 done
+
+[[ "$WEB_ONLY" == false || ( "$SCHEMA_ONLY" == false && "$INIT" == false ) ]] || {
+    err "--web-only cannot be combined with --schema-only or --init"
+}
+
+[[ "$BUILD_ONLY" == false || ( "$SCHEMA_ONLY" == false && "$INIT" == false && "$WEB_ONLY" == false ) ]] || {
+    err "--build-only cannot be combined with --schema-only, --init, or --web-only"
+}
 
 [[ "$PROJECT_DIR" == "/opt/raj_data_handle" ]] || err "unexpected project directory: $PROJECT_DIR"
 [[ -d "$PROJECT_DIR" ]] || err "project directory does not exist: $PROJECT_DIR"
@@ -114,6 +128,28 @@ fi
 [[ -f "$COMPOSE_FILE" ]] || err "production compose file is missing after code update: $COMPOSE_FILE"
 validate_runtime_env
 
+if [[ "$WEB_ONLY" == true ]]; then
+    web_container="$(dc ps -q web)"
+    [[ -n "$web_container" ]] || err "--web-only requires an existing Web container"
+    previous_image_id="$(docker inspect --format '{{.Image}}' "$web_container")"
+    previous_image_ref="$(docker inspect --format '{{.Config.Image}}' "$web_container")"
+    rollback_image="${COMPOSE_PROJECT_NAME}-web:rollback-$(date -u +%Y%m%dT%H%M%SZ)"
+    docker image tag "$previous_image_id" "$rollback_image"
+    log "Web rollback image saved: $rollback_image"
+    dc build web
+    if dc up -d --no-build --no-deps --force-recreate --wait --wait-timeout 120 web; then
+        dc ps web
+        log "Web-only rollout completed."
+        exit 0
+    fi
+    log "Web rollout failed health checks; restoring the previous image..."
+    docker image tag "$previous_image_id" "$previous_image_ref"
+    dc up -d --no-build --no-deps --force-recreate --wait --wait-timeout 120 web || {
+        err "Web rollback failed; retained image: $rollback_image"
+    }
+    err "Web rollout failed; the previous Web image was restored"
+fi
+
 if [[ "$INIT" == true ]]; then
     mkdir -p runtime/uploads
     log "Initial application rollout (database migration remains separately gated)."
@@ -128,6 +164,11 @@ for service in api worker erp-compat web; do
     log "Building $service image..."
     dc build "$service"
 done
+
+if [[ "$BUILD_ONLY" == true ]]; then
+    log "Images built; no schema changes or service restarts were executed."
+    exit 0
+fi
 
 # Images are tagged as `latest`; without an explicit recreate Compose may keep
 # a running container that still references the previously built image.

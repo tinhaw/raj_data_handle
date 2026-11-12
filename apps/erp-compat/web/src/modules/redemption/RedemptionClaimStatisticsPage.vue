@@ -158,7 +158,7 @@ onUnmounted(() => { disposed = true; generation++; stopPolling(); window.removeE
     <el-alert v-if="partial" title="部分配置尚未同步或更新失败；标注“部分”的数字及合计不代表完整数量。" type="warning" :closable="false" show-icon />
     <div v-if="data" class="claim-status-strip" aria-live="polite"><span>自动同步：{{ data.schedule.enabled ? `每 ${intervalLabel}` : '关闭' }}</span><span>最近成功轮次：{{ time(data.schedule.lastSucceededAt) }}</span><span>下次计划：{{ data.schedule.activeRun ? '本轮结束后安排' : time(data.schedule.nextRunAt) }}</span></div>
     <div v-if="activeRun" class="claim-run" role="status">{{ runLabel }}<span v-if="activeRun.progress.errors?.length"> · {{ activeRun.progress.errors[0]?.message }}</span></div>
-    <el-table v-loading="loading" :data="data?.rows || []" row-key="date" border show-summary :summary-method="summaries" class="claim-matrix" empty-text="尚无领取统计，请先同步领取记录">
+    <el-table :key="data?.columns.map(column => column.key).join(',')" v-loading="loading" :data="data?.rows || []" row-key="date" border show-summary :summary-method="summaries" class="claim-matrix" empty-text="尚无领取统计，请先同步领取记录">
       <el-table-column prop="date" label="实际领取日" fixed :width="compact ? 110 : 125" />
       <el-table-column v-for="market in markets" :key="market.id" :label="`${market.name} · ${market.timezone}`" align="center">
         <el-table-column v-for="column in market.columns" :key="column.key" :prop="column.key" :min-width="160" align="right">

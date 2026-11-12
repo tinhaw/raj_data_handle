@@ -13,19 +13,29 @@ from packages.common.database import get_db_session
 from packages.common.settings import get_settings
 from packages.domain.models import RemoteAccountTagSnapshot, SourceConfig
 from packages.domain.schemas.remote_account import (
+    ErpCompatibilityRemoteAbsenceCheckRequest,
+    ErpCompatibilityRemoteAbsenceCheckResponse,
     ErpCompatibilityRemoteCancelRequest,
     ErpCompatibilityRemoteCancelResponse,
     ErpCompatibilityRemoteConnection,
     ErpCompatibilityRemoteCreateRequest,
     ErpCompatibilityRemoteCreateResponse,
+    ErpCompatibilityRemoteDeleteRequest,
     ErpCompatibilityRemoteDownloadRequest,
     ErpCompatibilityRemoteDownloadResponse,
+    ErpCompatibilityRemoteDuplicateCheckRequest,
     ErpCompatibilityRemoteMarket,
     ErpCompatibilityRemotePublishRequest,
     ErpCompatibilityRemotePublishResponse,
+    ErpCompatibilityRemoteRecoveryCheckRequest,
+    ErpCompatibilityRemoteRecoveryCheckResponse,
     ErpCompatibilityRemoteRegistry,
+    ErpCompatibilityRemoteReuseCheckRequest,
+    ErpCompatibilityRemoteReuseCheckResponse,
+    ErpCompatibilityRemoteRewardUpdateRequest,
     ErpCompatibilityRemoteVerifyRequest,
     ErpCompatibilityRemoteVerifyResponse,
+    ErpCompatibilityRewardPermissionRequest,
     RemoteAccountCapabilityUpdateRequest,
     RemoteAccountConnectionRequest,
     RemoteAccountCreateRequest,
@@ -41,6 +51,7 @@ from packages.domain.schemas.remote_account import (
 from packages.domain.services.auth_service import AuthContext
 from packages.domain.services.erp_access_service import (
     ERP_PERMISSION_REDEMPTION_GENERATE,
+    ERP_PERMISSION_REDEMPTION_MANAGE,
     ERP_PERMISSION_REDEMPTION_VIEW,
     ERP_PERMISSION_REMOTE_ACCOUNT_MANAGE,
 )
@@ -50,10 +61,15 @@ from packages.domain.services.erp_compatibility_id_service import (
 )
 from packages.domain.services.erp_compatibility_redemption_remote_service import (
     ErpCompatibilityRemoteExecutionError,
+    check_compatibility_remote_absence,
+    check_compatibility_remote_duplicates,
+    check_compatibility_remote_recovery,
+    check_compatibility_remote_reuse,
     execute_compatibility_remote_cancel,
     execute_compatibility_remote_create,
     execute_compatibility_remote_download,
     execute_compatibility_remote_publish,
+    execute_compatibility_remote_reward_update,
     execute_compatibility_remote_verify,
 )
 from packages.domain.services.erp_remote_account_tag_service import (
@@ -123,6 +139,59 @@ def _response(item: RemoteAccountView) -> RemoteAccountResponse:
         created_at=account.created_at,
         updated_at=account.updated_at,
     )
+
+
+@router.post(
+    "/compatibility-redemption/duplicate-check",
+    include_in_schema=False,
+)
+async def post_compatibility_redemption_duplicate_check(
+    payload: ErpCompatibilityRemoteDuplicateCheckRequest,
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REDEMPTION_GENERATE)),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    try:
+        return await check_compatibility_remote_duplicates(
+            session, payload=payload, actor_user_id=auth.user.id, settings=get_settings()
+        )
+    except ErpCompatibilityRemoteExecutionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post(
+    "/compatibility-redemption/reuse-check",
+    response_model=ErpCompatibilityRemoteReuseCheckResponse,
+    include_in_schema=False,
+)
+async def post_compatibility_redemption_reuse_check(
+    payload: ErpCompatibilityRemoteReuseCheckRequest,
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REDEMPTION_GENERATE)),
+    session: AsyncSession = Depends(get_db_session),
+) -> ErpCompatibilityRemoteReuseCheckResponse:
+    try:
+        return await check_compatibility_remote_reuse(
+            session, payload=payload, actor_user_id=auth.user.id, settings=get_settings()
+        )
+    except ErpCompatibilityRemoteExecutionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post(
+    "/compatibility-redemption/recovery-check",
+    response_model=ErpCompatibilityRemoteRecoveryCheckResponse,
+    include_in_schema=False,
+)
+async def post_compatibility_redemption_recovery_check(
+    payload: ErpCompatibilityRemoteRecoveryCheckRequest,
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REDEMPTION_GENERATE)),
+    session: AsyncSession = Depends(get_db_session),
+) -> ErpCompatibilityRemoteRecoveryCheckResponse:
+    try:
+        return await check_compatibility_remote_recovery(
+            session, payload=payload, actor_user_id=auth.user.id, settings=get_settings()
+        )
+    except ErpCompatibilityRemoteExecutionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.post(
@@ -584,3 +653,101 @@ async def put_account_reward_tier_preset(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except RemoteAccountError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post(
+    "/compatibility-redemption/reward-update",
+    response_model=ErpCompatibilityRemoteReuseCheckResponse,
+    include_in_schema=False,
+)
+async def post_compatibility_redemption_reward_update(
+    payload: ErpCompatibilityRemoteRewardUpdateRequest,
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REDEMPTION_GENERATE)),
+    session: AsyncSession = Depends(get_db_session),
+) -> ErpCompatibilityRemoteReuseCheckResponse:
+    try:
+        return await execute_compatibility_remote_reward_update(
+            session, payload=payload, actor_user_id=auth.user.id, settings=get_settings()
+        )
+    except ErpCompatibilityRemoteExecutionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post("/compatibility-redemption/reward-update/permission", include_in_schema=False)
+async def check_reward_update_permission(
+    payload: ErpCompatibilityRewardPermissionRequest,
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REDEMPTION_GENERATE)),
+    session: AsyncSession = Depends(get_db_session),
+):
+    from sqlalchemy import select
+
+    from packages.domain.models import RemoteAccountCapability
+    from packages.domain.services.erp_compatibility_id_service import resolve_erp_compatibility_id
+    from packages.domain.services.erp_redemption_remote_gate import (
+        ErpRemoteExecutionGateError,
+        authorize_erp_redemption_remote_execution,
+    )
+
+    try:
+        account_id = await resolve_erp_compatibility_id(
+            session, entity_type="remote_account", legacy_id=payload.account_id
+        )
+        await authorize_erp_redemption_remote_execution(
+            session, account_id=account_id, operation="UPDATE", execution_authorized=True
+        )
+        allowed = await session.scalar(
+            select(RemoteAccountCapability.enabled).where(
+                RemoteAccountCapability.account_id == account_id,
+                RemoteAccountCapability.capability == "ERP_REMOTE_CHECK",
+            )
+        )
+        if not allowed:
+            raise ErpRemoteExecutionGateError("账号未获得独立读取能力，不能修改奖励。")
+    except (ErpRemoteExecutionGateError, ValueError) as exc:
+        raise HTTPException(
+            status_code=403, detail="账号未获得奖励修改及回读能力授权；未提交远端修改。"
+        ) from exc
+    return {"allowed": True}
+
+@router.post(
+    "/compatibility-redemption/absence-check",
+    response_model=ErpCompatibilityRemoteAbsenceCheckResponse,
+    include_in_schema=False,
+)
+async def post_compatibility_redemption_absence_check(
+    payload: ErpCompatibilityRemoteAbsenceCheckRequest,
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REDEMPTION_GENERATE)),
+    session: AsyncSession = Depends(get_db_session),
+) -> ErpCompatibilityRemoteAbsenceCheckResponse:
+    try:
+        return await check_compatibility_remote_absence(
+            session, payload=payload, actor_user_id=auth.user.id, settings=get_settings()
+        )
+    except ErpCompatibilityRemoteExecutionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+
+
+@router.post("/compatibility-redemption/deletion/{operation}", include_in_schema=False)
+async def compatibility_redemption_deletion(
+    operation: Literal["preview", "execute", "permission"],
+    payload: ErpCompatibilityRemoteDeleteRequest,
+    auth: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REDEMPTION_GENERATE)),
+    _: AuthContext = Depends(require_erp_permission(ERP_PERMISSION_REDEMPTION_MANAGE)),
+    session: AsyncSession = Depends(get_db_session),
+):
+    from packages.domain.services.erp_compatibility_redemption_delete_service import (
+        operate_compatibility_deletion,
+    )
+
+    try:
+        return await operate_compatibility_deletion(
+            session,
+            payload=payload,
+            actor_user_id=auth.user.id,
+            settings=get_settings(),
+            operation=operation,
+        )
+    except ErpCompatibilityRemoteExecutionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

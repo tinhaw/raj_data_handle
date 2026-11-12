@@ -34,9 +34,10 @@ class RedemptionCodeStorageTest {
     @Test
     void refusesACodeAlreadyOwnedByAnotherGroup() {
         var entityManager = mock(EntityManager.class, RETURNS_DEEP_STUBS);
-        when(entityManager.createQuery(anyString(), eq(Long.class))
-                .setParameter("codes", List.of("TAKEN"))
-                .setParameter("id", 1L).setParameter("market", 0L).getSingleResult()).thenReturn(1L);
+        var other=new RedemptionCodeIssue();other.setId(2L);
+        when(entityManager.createQuery(anyString(), eq(RedemptionCodeIssue.class))
+                .setParameter("codes", List.of("taken"))
+                .setParameter("id", 1L).setParameter("market", 0L).getResultList()).thenReturn(List.of(other));
         var issue = new RedemptionCodeIssue();
         issue.setId(1L);
         assertThatThrownBy(() -> new RedemptionCodeStorage(entityManager)

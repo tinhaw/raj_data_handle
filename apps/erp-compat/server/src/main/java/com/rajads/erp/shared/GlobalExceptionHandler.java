@@ -29,6 +29,11 @@ public class GlobalExceptionHandler {
                 exception.getCode(), exception.getMessage(), request, exception.getDetails()));
     }
 
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiError> handleUnreadableRequest(HttpServletRequest request) {
+        return ResponseEntity.badRequest().body(error("VALIDATION_ERROR", "请求格式或选项无效，请检查后重新提交", request, Map.of()));
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiError> handleValidation(MethodArgumentNotValidException exception, HttpServletRequest request) {
         Map<String, Object> fields = new LinkedHashMap<>();

@@ -275,7 +275,7 @@ onMounted(async () => {
 }
 
 .task-summary__item--warning strong {
-  color: #b7791f;
+  color: var(--theme-warning, #b7791f);
 }
 
 .task-summary__item--active strong {

@@ -83,12 +83,15 @@ async def task_projection(session: AsyncSession, task_id: int) -> tuple[dict, li
         (
             await session.execute(
                 text("""
-        SELECT i.id AS issue_id, i.batch_id, i.remote_market_id, i.remote_configuration_id,
-               i.remote_group_key, i.tier_name, i.claim_date, i.min_deposit_amount,
-               i.bonus_amount, i.bonus_max_amount, i.remote_label_ids_json, i.redemption_code,
+        SELECT i.id AS issue_id, i.batch_id, i.remote_market_id,
+               COALESCE(owner.remote_configuration_id, i.remote_configuration_id) AS remote_configuration_id,
+               COALESCE(owner.remote_group_key, i.remote_group_key) AS remote_group_key, i.tier_name, i.claim_date, i.min_deposit_amount,
+               i.bonus_amount, i.bonus_max_amount, i.remote_label_ids_json,
+               COALESCE(owner.redemption_code, i.redemption_code) AS redemption_code,
                b.remote_connection_id, b.redemption_type, b.lookback_days,
                b.valid_from_day_offset, b.valid_to_day_offset, c.name AS campaign_name
         FROM erp_compat_redemption_code_issues i
+        LEFT JOIN erp_compat_redemption_code_issues owner ON owner.id=i.reused_from_issue_id
         JOIN erp_compat_redemption_code_batches b ON b.id=i.batch_id
         JOIN erp_compat_redemption_campaigns c ON c.id=b.campaign_id
         WHERE b.task_id=:id ORDER BY b.id, i.claim_date, i.campaign_tier_id
@@ -130,10 +133,10 @@ async def projected_groups(
     codes = (
         await session.execute(
             text("""
-        SELECT codes.issue_id, codes.code FROM erp_compat_redemption_issue_codes codes
-        JOIN erp_compat_redemption_code_issues i ON i.id=codes.issue_id
+        SELECT i.id AS issue_id, codes.code FROM erp_compat_redemption_code_issues i
+        JOIN erp_compat_redemption_issue_codes codes ON codes.issue_id=COALESCE(i.reused_from_issue_id,i.id)
         JOIN erp_compat_redemption_code_batches b ON b.id=i.batch_id
-        WHERE b.task_id=:id ORDER BY codes.issue_id, codes.code_index
+        WHERE b.task_id=:id ORDER BY i.id, codes.code_index
     """),
             {"id": task_id},
         )
@@ -311,6 +314,9 @@ async def summary(
         groups = [g for g in groups if g.source_id == source_id]
     if not groups:
         raise ClaimError("当前任务没有匹配的盘口或配置。", 404)
+    # Database row order changes as snapshots are updated. Keep page and export
+    # columns in task/batch issue order across independent reads of one version.
+    groups = sorted(groups, key=lambda group: (group.batch_id, group.issue_id, group.id))
     end = end or max(now.astimezone(ZoneInfo(g.snapshot["timezone"])).date() for g in groups)
     start = start or min(
         end, max(min(day(g.snapshot["validFrom"]) for g in groups), end - timedelta(days=30))
@@ -456,7 +462,11 @@ async def record_details(
         await session.scalars(
             select(RedemptionClaimRecord)
             .where(*filters)
-            .order_by(RedemptionClaimRecord.received_at, RedemptionClaimRecord.remote_id)
+            .order_by(
+                RedemptionClaimRecord.received_at,
+                RedemptionClaimRecord.remote_id,
+                RedemptionClaimRecord.uid,
+            )
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
@@ -620,14 +630,14 @@ async def save_schedule(
 async def publish_group(
     session: AsyncSession, group: RedemptionClaimGroup, records: list[dict]
 ) -> None:
-    old_ids = set(
-        await session.scalars(
-            select(RedemptionClaimRecord.remote_id).where(
+    old_identities = set(
+        await session.execute(
+            select(RedemptionClaimRecord.remote_id, RedemptionClaimRecord.uid).where(
                 RedemptionClaimRecord.group_id == group.id
             )
         )
     )
-    if old_ids - {r["remote_id"] for r in records}:
+    if old_identities - {(r["remote_id"], r["uid"]) for r in records}:
         raise ClaimError("远端领取记录减少，需核对后再更新；已保留上次完整结果。")
     await session.execute(
         delete(RedemptionClaimRecord).where(RedemptionClaimRecord.group_id == group.id)

@@ -176,7 +176,7 @@ class ErpCompatibilityRemoteCreateOptions(ApiSchema):
     register_ip_reward_limit: int = Field(ge=1, le=100)
 
 
-class ErpCompatibilityRemoteCreateRequest(ApiSchema):
+class ErpCompatibilityRemoteConfigurationExpectation(ApiSchema):
     """Explicit remote-create request from the preserved ERP UI.
 
     The numeric account ID is a compatibility projection only.  The API
@@ -195,7 +195,6 @@ class ErpCompatibilityRemoteCreateRequest(ApiSchema):
     bonus_max_amount: Decimal = Field(ge=0, max_digits=24, decimal_places=8)
     options: ErpCompatibilityRemoteCreateOptions
     gift_code: str | None = Field(default=None, max_length=255, pattern=r"^[A-Za-z0-9]+$")
-    execution_confirmed: bool = False
 
     @field_validator("label_ids")
     @classmethod
@@ -205,7 +204,7 @@ class ErpCompatibilityRemoteCreateRequest(ApiSchema):
         return list(dict.fromkeys(value))
 
     @model_validator(mode="after")
-    def validate_remote_confirmation(self) -> ErpCompatibilityRemoteCreateRequest:
+    def validate_remote_expectation(self) -> ErpCompatibilityRemoteConfigurationExpectation:
         if self.gift_code is not None and self.options.key_number != 1:
             raise ValueError("特殊兑换码每组只能生成 1 个码。")
         if self.bonus_max_amount < self.bonus_amount:
@@ -220,9 +219,60 @@ class ErpCompatibilityRemoteCreateRequest(ApiSchema):
             raise ValueError(
                 "兑换码生效日期不能早于开始兑换日，结束日不能早于开始日，且最多延后 365 天。"
             )
+        return self
+
+
+class ErpCompatibilityRemoteCreateRequest(ErpCompatibilityRemoteConfigurationExpectation):
+    execution_confirmed: bool = False
+
+    @model_validator(mode="after")
+    def validate_remote_confirmation(self) -> ErpCompatibilityRemoteCreateRequest:
         if not self.execution_confirmed:
             raise ValueError("必须明确确认本次远端兑换码创建。")
         return self
+
+
+class ErpCompatibilityRemoteDuplicateCheckRequest(ApiSchema):
+    account_id: int = Field(gt=0)
+    gift_codes: list[str] = Field(min_length=1, max_length=10000)
+
+    @field_validator("gift_codes")
+    @classmethod
+    def validate_codes(cls, codes: list[str]) -> list[str]:
+        import re
+
+        if any(not re.fullmatch(r"[A-Za-z0-9]{1,255}", code) for code in codes):
+            raise ValueError("特殊兑换码仅支持英文字母和数字")
+        return list(dict.fromkeys(code.casefold() for code in codes))
+
+
+class ErpCompatibilityRemoteReuseCheckRequest(ErpCompatibilityRemoteConfigurationExpectation):
+    """Read one existing configuration; this request cannot authorize a remote write."""
+
+    remote_configuration_id: str = Field(pattern=r"^[1-9][0-9]*$", max_length=255)
+
+
+class ErpCompatibilityRemoteReuseCheckResponse(ApiSchema):
+    remote_configuration_id: str
+    remote_group_key: str | None = None
+    actual_bonus_amount: Decimal | None = None
+    actual_bonus_max_amount: Decimal | None = None
+    matched: bool
+    differences: list[str]
+    checked_at: datetime
+
+
+class ErpCompatibilityRemoteRecoveryCheckRequest(ErpCompatibilityRemoteReuseCheckRequest):
+    remote_group_key: str | None = Field(default=None, max_length=255)
+    check_inventory: bool = False
+
+
+class ErpCompatibilityRemoteRecoveryCheckResponse(ApiSchema):
+    remote_configuration_id: str
+    state: Literal["PRESENT", "ABSENT", "CODE_EXISTS"]
+    scanned_rows: int = 0
+    scanned_pages: int = 0
+    checked_at: datetime
 
 
 class ErpCompatibilityRemoteCreateResponse(ApiSchema):
@@ -398,3 +448,41 @@ class RewardTierPresetResponse(ApiSchema):
     tag_snapshot: list[RemoteTag]
     saved_at: datetime | None
     row_version: int | None
+
+
+class ErpCompatibilityRemoteRewardUpdateRequest(ErpCompatibilityRemoteReuseCheckRequest):
+    execution_confirmed: bool = False
+
+    @model_validator(mode="after")
+    def require_confirmation(self):
+        if not self.execution_confirmed:
+            raise ValueError("必须明确确认本次已有配置奖励修改。")
+        return self
+
+
+class ErpCompatibilityRewardPermissionRequest(ApiSchema):
+    account_id: int = Field(gt=0)
+    issue_id: int = Field(gt=0)
+
+class ErpCompatibilityRemoteAbsenceCheckRequest(ApiSchema):
+    account_id: int = Field(gt=0)
+    issue_id: int = Field(gt=0)
+    gift_code: str = Field(min_length=1, max_length=255, pattern=r"^[A-Za-z0-9]+$")
+
+
+class ErpCompatibilityRemoteAbsenceCheckResponse(ApiSchema):
+    gift_code: str
+    confirmed_absent: bool
+    scanned_rows: int
+    scanned_pages: int
+    checked_at: datetime
+
+
+
+
+class ErpCompatibilityRemoteDeleteRequest(ApiSchema):
+    account_id: int = Field(gt=0)
+    issue_id: int = Field(gt=0)
+    remote_configuration_id: str = Field(pattern=r"^[1-9][0-9]{0,18}$")
+    expected_fingerprint: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    execution_confirmed: bool = False

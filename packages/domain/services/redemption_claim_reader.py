@@ -21,6 +21,14 @@ class ClaimReadError(ValueError):
     pass
 
 
+class ClaimPaginationChanged(ClaimReadError):
+    """A complete scan may be retried at the same supported page size."""
+
+
+class ClaimPageSizeError(ClaimReadError):
+    """Only page-size rejection/inconsistent sizing permits a smaller size."""
+
+
 @dataclass(frozen=True)
 class ClaimSnapshot:
     records: list[dict]
@@ -121,8 +129,10 @@ async def fetch_claim_snapshot(
                 # Detect silent page-size caps from the actual pagination.
                 effective_size = len(first) if pages > 1 else size
                 if pages != ceil(total / effective_size):
-                    raise ClaimReadError("远端领取分页大小被限制或分页信息不一致。")
-                records: dict[str, dict] = {}
+                    raise ClaimPageSizeError("远端领取分页大小被限制或分页信息不一致。")
+                # IDs repeat across different users in real userGift responses.
+                # Keep both immutable identity fields; time/amount remain facts.
+                records: dict[tuple[str, str], dict] = {}
                 for current in range(1, pages + 1):
                     items, current_info = (
                         (first, info) if current == 1 else await page(current, size)
@@ -133,24 +143,27 @@ async def fetch_claim_snapshot(
                         or (current < pages and len(items) != effective_size)
                         or not items
                     ):
-                        raise ClaimReadError("分页期间领取记录发生变化或未取全，请重试。")
+                        raise ClaimPaginationChanged("分页期间领取记录发生变化或未取全，请重试。")
                     for item in items:
                         record = parse_record(item, group_key, timezone_name)
-                        previous = records.get(record["remote_id"])
+                        identity = (record["remote_id"], record["uid"])
+                        previous = records.get(identity)
                         if previous is not None and previous != record:
                             raise ClaimReadError("分页中同一领取记录内容不一致。")
-                        records[record["remote_id"]] = record
+                        records[identity] = record
                 if len(records) != total:
-                    raise ClaimReadError("领取记录去重后数量与远端总数不一致。")
+                    raise ClaimPaginationChanged("领取记录去重后数量与远端总数不一致。")
                 if pages > 1:
                     check, check_info = await page(1, size)
                     if _number(check_info.get("total")) != total or check != first:
-                        raise ClaimReadError("领取列表在抓取期间变化，请稍后重试。")
+                        raise ClaimPaginationChanged("领取列表在抓取期间变化，请稍后重试。")
                 return ClaimSnapshot(list(records.values()), fetched_pages)
-            except ClaimReadError as exc:
-                last_error = str(exc)
-                if "保护上限" in last_error:
+            except ClaimPaginationChanged:
+                if _attempt == 1:
                     raise
+            except ClaimPageSizeError as exc:
+                last_error = str(exc)
+                break
             except ErpRedemptionRemoteHttpError as exc:
                 if "HTTP 400" not in str(exc) and "HTTP 422" not in str(exc):
                     raise

@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Optional;
 
 public interface RedemptionCodeBatchRepository extends JpaRepository<RedemptionCodeBatch, Long> {
+    List<RedemptionCodeBatch> findByTaskIdOrderByIdAsc(Long taskId);
     List<RedemptionCodeBatch> findByCampaignIdOrderByCreatedAtDesc(Long campaignId);
     List<RedemptionCodeBatch> findAllByOrderByCreatedAtDesc();
     List<RedemptionCodeBatch> findByExportGroupKeyOrderByCreatedAtAsc(String exportGroupKey);

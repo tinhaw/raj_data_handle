@@ -1,5 +1,5 @@
 .erp-compat-page {
-  color: #182230;
+  color: var(--theme-text-strong, #182230);
   font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
 }
 
@@ -13,14 +13,14 @@
 
 .erp-compat-page .page-title-row h2 {
   margin: 0;
-  color: #101828;
+  color: var(--theme-text-strong, #101828);
   font-size: 20px;
   line-height: 1.4;
 }
 
 .erp-compat-page .page-subtitle {
   margin: 5px 0 0;
-  color: #667085;
+  color: var(--theme-text-muted, #667085);
   font-size: 13px;
   line-height: 1.55;
 }
@@ -35,8 +35,8 @@
 
 .erp-compat-page .panel {
   margin-bottom: 18px;
-  background: #fff;
-  border: 1px solid #eaecf0;
+  background: var(--theme-surface, #fff);
+  border: 1px solid var(--theme-border, #eaecf0);
   border-radius: 12px;
   box-shadow: 0 1px 2px rgba(16, 24, 40, 0.02);
 }
@@ -67,20 +67,20 @@
 }
 
 .erp-compat-page .table-card .el-table {
-  --el-table-header-bg-color: #f9fafb;
-  --el-table-border-color: #eaecf0;
-  --el-table-row-hover-bg-color: #f8fbff;
+  --el-table-header-bg-color: var(--theme-surface-muted, #f9fafb);
+  --el-table-border-color: var(--theme-border, #eaecf0);
+  --el-table-row-hover-bg-color: var(--theme-info-bg, #f8fbff);
   cursor: default;
 }
 
 .erp-compat-page .table-card .el-table th.el-table__cell {
-  color: #475467;
+  color: var(--theme-text, #475467);
   font-size: 12px;
   font-weight: 650;
 }
 
 .erp-compat-page .table-card .el-table td.el-table__cell {
-  color: #344054;
+  color: var(--theme-text, #344054);
   font-size: 13px;
 }
 
@@ -90,29 +90,29 @@
 }
 
 .erp-compat-page .money--negative {
-  color: #d92d20;
+  color: var(--theme-danger, #d92d20);
   font-weight: 650;
 }
 
 .erp-compat-page .money--positive {
-  color: #027a48;
+  color: var(--theme-success, #027a48);
 }
 
 .erp-compat-page .muted {
-  color: #98a2b3;
+  color: var(--theme-text-muted, #98a2b3);
 }
 
 .erp-compat-page .hint {
-  color: #667085;
+  color: var(--theme-text-muted, #667085);
   font-size: 12px;
 }
 
 .erp-compat-page .required-note {
-  color: #d92d20;
+  color: var(--theme-danger, #d92d20);
 }
 
 .erp-compat-page .warning-row td {
-  background: #fffaeb !important;
+  background: var(--theme-warning-bg, #fffaeb) !important;
 }
 
 .erp-compat-page .table-footer {
@@ -120,26 +120,26 @@
   align-items: center;
   justify-content: space-between;
   padding: 13px 16px;
-  color: #667085;
+  color: var(--theme-text-muted, #667085);
   font-size: 12px;
-  border-top: 1px solid #eaecf0;
+  border-top: 1px solid var(--theme-border, #eaecf0);
 }
 
 .erp-compat-page .empty-panel {
   display: grid;
   min-height: 220px;
   padding: 36px;
-  color: #667085;
+  color: var(--theme-text-muted, #667085);
   text-align: center;
-  background: #fff;
-  border: 1px solid #eaecf0;
+  background: var(--theme-surface, #fff);
+  border: 1px solid var(--theme-border, #eaecf0);
   border-radius: 12px;
   place-items: center;
 }
 
 .erp-compat-page .field-note {
   margin-top: 5px;
-  color: #98a2b3;
+  color: var(--theme-text-muted, #98a2b3);
   font-size: 12px;
   line-height: 1.45;
 }

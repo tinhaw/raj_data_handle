@@ -362,15 +362,15 @@ onMounted(load)
 
 <style scoped>
 .company-name { display: grid; gap: 3px; }
-.company-name strong { color: #182230; font-weight: 650; }
-.company-name span { color: #98a2b3; font-size: 12px; }
+.company-name strong { color: var(--theme-text-strong, #182230); font-weight: 650; }
+.company-name span { color: var(--theme-text-muted, #98a2b3); font-size: 12px; }
 .line-list { display: flex; flex-wrap: wrap; gap: 6px; }
-.line-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; color: #344054; font-size: 12px; background: #f9fafb; border: 1px solid #eaecf0; border-radius: 5px; }
+.line-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; color: var(--theme-text, #344054); font-size: 12px; background: var(--theme-surface-muted, #f9fafb); border: 1px solid var(--theme-border, #eaecf0); border-radius: 5px; }
 .line-chip b { font-weight: 550; }
-.line-chip em { color: #667085; font-style: normal; }
+.line-chip em { color: var(--theme-text-muted, #667085); font-style: normal; }
 .operator-actions { display: flex; align-items: center; gap: 12px; white-space: nowrap; }
 .operator-actions :deep(.el-button + .el-button) { margin-left: 0; }
-.inactive-row td { color: #98a2b3; background: #fcfcfd; }
+.inactive-row td { color: var(--theme-text-muted, #98a2b3); background: var(--theme-surface-muted, #fcfcfd); }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
 .dialog-form { margin-top: 18px; }
 </style>

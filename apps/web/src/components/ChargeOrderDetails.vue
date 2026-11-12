@@ -472,28 +472,28 @@ onMounted(async () => {
   min-height: 360px;
   height: clamp(360px, calc(100vh - 430px), 720px);
   overflow: hidden;
-  border: 1px solid #dce6ee;
+  border: 1px solid var(--theme-border, #dce6ee);
   border-radius: 8px;
-  background: #ffffff;
-  --el-table-border-color: #dce6ee;
-  --el-table-header-bg-color: #f5f8fb;
-  --el-table-row-hover-bg-color: #f7fbfb;
-  --el-table-text-color: #43576a;
-  --el-table-header-text-color: #183955;
+  background: var(--theme-surface, #ffffff);
+  --el-table-border-color: var(--theme-border, #dce6ee);
+  --el-table-header-bg-color: var(--theme-surface-muted, #f5f8fb);
+  --el-table-row-hover-bg-color: var(--theme-surface-muted, #f7fbfb);
+  --el-table-text-color: var(--theme-text, #43576a);
+  --el-table-header-text-color: var(--theme-text-strong, #183955);
 }
 .charge-virtual-table :deep(.el-table-v2__header-cell) {
   padding: 0 14px;
-  color: #183955;
+  color: var(--theme-text-strong, #183955);
   font-size: 12px;
   font-weight: 750;
 }
 .charge-virtual-table :deep(.el-table-v2__row-cell) {
   padding: 0 14px;
-  color: #43576a;
+  color: var(--theme-text, #43576a);
   font-size: 12px;
 }
 .charge-virtual-table :deep(.el-table-v2__header-cell + .el-table-v2__header-cell),
-.charge-virtual-table :deep(.el-table-v2__row-cell + .el-table-v2__row-cell) { border-left: 1px solid #dce6ee; }
+.charge-virtual-table :deep(.el-table-v2__row-cell + .el-table-v2__row-cell) { border-left: 1px solid var(--theme-border, #dce6ee); }
 .charge-virtual-table :deep(.el-table-v2__row-cell .el-tag) { font-weight: 650; }
 .charge-virtual-cell { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .charge-pagination { display: flex; justify-content: flex-end; padding: 16px 20px; }

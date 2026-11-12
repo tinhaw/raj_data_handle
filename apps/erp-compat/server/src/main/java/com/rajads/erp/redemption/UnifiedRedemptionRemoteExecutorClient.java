@@ -97,12 +97,181 @@ public class UnifiedRedemptionRemoteExecutorClient {
                 body,
                 "remoteConfigurationId",
                 "remote_configuration_id");
-        if (configurationId == null || configurationId.isBlank()) {
-            throw new CompatibilityIdentityUnavailableException("统一远端创建服务返回无效结果");
-        }
+        configurationId = RemoteConfigurationIds.requireCreated(configurationId);
         String groupKey = responseText(body, "remoteGroupKey", "remote_group_key");
         String requestId = responseText(body, "remoteRequestId", "remote_request_id");
         return new CreatedConfiguration(configurationId, groupKey, requestId);
+    }
+
+    public record ReuseCheck(String configurationId, boolean matched, List<String> differences, String groupKey, BigDecimal actualMin, BigDecimal actualMax) {
+        public ReuseCheck(String configurationId, boolean matched, List<String> differences) {
+            this(configurationId, matched, differences, null, null, null);
+        }
+        public ReuseCheck(String configurationId, boolean matched, List<String> differences, String groupKey) {
+            this(configurationId, matched, differences, groupKey, null, null);
+        }
+    }
+
+    public record DuplicateCode(String code, String configurationId) { }
+
+    public List<DuplicateCode> checkDuplicateCodes(Long accountId, List<String> codes) {
+        var body = postJson("/duplicate-check", Map.of("account_id", accountId, "gift_codes", codes),
+                "远端查重失败，本次未创建配置", "REMOTE_DUPLICATE_CHECK_REJECTED", "远端查重未完成，请稍后重试或选择仅本地查重");
+        if (!body.path("complete").isBoolean() || !body.path("complete").asBoolean() || !body.path("matches").isArray())
+            throw new CompatibilityIdentityUnavailableException("远端查重结果不完整");
+        var result = new java.util.ArrayList<DuplicateCode>();
+        for (var match : body.path("matches")) {
+            String code = match.path("gift_code").asText();
+            String id = match.path("configuration_id").asText();
+            if (!codes.contains(code) || !RemoteConfigurationIds.isValid(id))
+                throw new CompatibilityIdentityUnavailableException("远端查重返回无效配置");
+            result.add(new DuplicateCode(code, id));
+        }
+        return List.copyOf(result);
+    }
+
+    public ReuseCheck checkReuse(Long accountId, Long issueId, String configurationId, String description,
+            LocalDate claimDate, LocalDate validFrom, LocalDate validTo, List<Long> labelIds,
+            BigDecimal bonusMin, BigDecimal bonusMax, RemoteCreationOptions options, String giftCode) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("account_id", accountId);
+        payload.put("issue_id", issueId);
+        payload.put("remote_configuration_id", configurationId);
+        payload.put("description", description);
+        payload.put("claim_date", claimDate.toString());
+        payload.put("valid_from", validFrom.toString());
+        payload.put("valid_to", validTo.toString());
+        payload.put("label_ids", labelIds);
+        payload.put("bonus_amount", bonusMin);
+        payload.put("bonus_max_amount", bonusMax);
+        payload.put("options", options(options));
+        payload.put("gift_code", giftCode);
+        JsonNode body = postJson("/reuse-check", payload, "远端复用核验被拒绝",
+                "REMOTE_REUSE_CHECK_REJECTED", "远端复用核验暂时不可用");
+        return decodeReuseCheck(body, configurationId);
+    }
+
+    private ReuseCheck decodeReuseCheck(JsonNode body, String configurationId) {
+        String returnedId = responseText(body, "remoteConfigurationId", "remote_configuration_id");
+        if (!configurationId.equals(returnedId) || !body.path("matched").isBoolean()
+                || !body.path("differences").isArray()) {
+            throw new CompatibilityIdentityUnavailableException("远端复用核验返回无效结果");
+        }
+        List<String> differences = new java.util.ArrayList<>();
+        for (var field : body.path("differences")) {
+            if (!field.isTextual()) throw new CompatibilityIdentityUnavailableException("远端复用核验返回无效差异");
+            differences.add(field.asText());
+        }
+        boolean matched = body.path("matched").asBoolean();
+        if (matched != differences.isEmpty()) throw new CompatibilityIdentityUnavailableException("远端复用核验结果不一致");
+        return new ReuseCheck(returnedId, matched, List.copyOf(differences), responseText(body, "remoteGroupKey", "remote_group_key"),
+                responseAmount(body,"actualBonusAmount","actual_bonus_amount"), responseAmount(body,"actualBonusMaxAmount","actual_bonus_max_amount"));
+    }
+
+    public JsonNode deletion(Long accountId,Long issueId,String configurationId,String operation,String fingerprint) {
+        var payload=new LinkedHashMap<String,Object>(); payload.put("account_id",accountId);payload.put("issue_id",issueId);
+        payload.put("remote_configuration_id",configurationId);
+        if (fingerprint!=null) payload.put("expected_fingerprint",fingerprint);
+        payload.put("execution_confirmed","execute".equals(operation));
+        boolean permission = "permission".equals(operation);
+        var result=postJson("/deletion/"+operation,payload,
+                permission ? "账号删除能力检查未通过" : "远端删除操作被拒绝",
+                permission ? "DELETE_PERMISSION_REJECTED" : "REMOTE_DELETE_REJECTED",
+                "execute".equals(operation) ? "远端删除结果待核对，请勿重复提交" : "删除前检查暂不可用，请稍后重新预检；尚未提交删除");
+        if ("permission".equals(operation)) { if(!result.path("allowed").asBoolean()) throw ApiException.conflict("DELETE_NOT_AUTHORIZED","账号未获删除能力"); }
+        else if (!configurationId.equals(result.path("configurationId").asText()) || !java.util.Set.of("PRESENT","ABSENT").contains(result.path("state").asText()))
+            throw ApiException.conflict("REMOTE_DELETE_INVALID_RESPONSE","删除核验响应不完整");
+        return result;
+    }
+
+    public void requireRewardUpdateCapability(Long accountId, Long issueId) {
+        var result = postJson("/reward-update/permission", Map.of("account_id", accountId, "issue_id", issueId),
+                "账号缺少独立奖励修改及回读能力，未提交修改", "REWARD_UPDATE_NOT_AUTHORIZED", "奖励修改授权核验不可用");
+        if (!result.path("allowed").isBoolean() || !result.path("allowed").asBoolean())
+            throw ApiException.conflict("REWARD_UPDATE_NOT_AUTHORIZED", "奖励修改能力未确认，未提交修改");
+    }
+
+    public ReuseCheck updateReward(RedemptionRecoveryService.Snapshot snapshot, String configurationId) {
+        var payload = expectation(snapshot, configurationId); payload.put("execution_confirmed", true);
+        var body = postJson("/reward-update", payload, "远端奖励修改被拒绝", "REMOTE_REWARD_UPDATE_REJECTED", "奖励修改结果待核对");
+        var result = decodeReuseCheck(body, configurationId);
+        if (!result.matched() || result.actualMin() == null || result.actualMax() == null
+                || result.actualMin().compareTo(snapshot.bonusMin()) != 0 || result.actualMax().compareTo(snapshot.bonusMax()) != 0)
+            throw new CompatibilityIdentityUnavailableException("奖励修改回读未匹配，结果待核对");
+        return result;
+    }
+    private BigDecimal responseAmount(JsonNode body, String camel, String snake) {
+        var node = body.has(camel) ? body.path(camel) : body.path(snake);
+        if (node.isMissingNode() || node.isNull()) return null;
+        if (!node.isTextual() && !node.isNumber()) throw new CompatibilityIdentityUnavailableException("实际奖励回读无效");
+        try { return new BigDecimal(node.asText()); }
+        catch (NumberFormatException exception) { throw new CompatibilityIdentityUnavailableException("实际奖励回读无效"); }
+    }
+
+    public record RecoveryCheck(String configurationId, String state, java.time.Instant checkedAt, int scannedRows, int scannedPages) {
+        public RecoveryCheck(String configurationId, String state, java.time.Instant checkedAt) { this(configurationId, state, checkedAt, 0, 1); }
+    }
+
+    public RecoveryCheck checkRecovery(RedemptionRecoveryService.Snapshot snapshot, String configurationId,
+            String groupKey, boolean checkInventory) {
+        Map<String, Object> payload = expectation(snapshot, configurationId);
+        payload.put("remote_group_key", groupKey);
+        payload.put("check_inventory", checkInventory);
+        JsonNode body = postJson("/recovery-check", payload, "远端缺失核验被拒绝",
+                "REMOTE_RECOVERY_CHECK_REJECTED", "远端缺失核验暂时不可用");
+        String id = responseText(body, "remoteConfigurationId", "remote_configuration_id");
+        String state = responseText(body, "state", "state");
+        try {
+            var checkedAt = java.time.Instant.parse(responseText(body, "checkedAt", "checked_at"));
+            if (!configurationId.equals(id) || !java.util.Set.of("ABSENT", "PRESENT", "CODE_EXISTS").contains(state)
+                    || checkedAt.isBefore(java.time.Instant.now().minusSeconds(60))
+                    || checkedAt.isAfter(java.time.Instant.now().plusSeconds(5))) throw new IllegalArgumentException();
+            int rows = (body.has("scannedRows") ? body.path("scannedRows") : body.path("scanned_rows")).asInt(-1);
+            int pages = (body.has("scannedPages") ? body.path("scannedPages") : body.path("scanned_pages")).asInt(-1);
+            if ("ABSENT".equals(state) && (!(body.has("scannedRows") ? body.path("scannedRows") : body.path("scanned_rows")).isIntegralNumber()
+                    || !(body.has("scannedPages") ? body.path("scannedPages") : body.path("scanned_pages")).isIntegralNumber()
+                    || rows < 0 || pages < 1 || pages > 200)) throw new IllegalArgumentException();
+            return new RecoveryCheck(id, state, checkedAt, rows, pages);
+        } catch (RuntimeException exception) {
+            throw new CompatibilityIdentityUnavailableException("远端缺失核验返回无效或过期结果");
+        }
+    }
+
+    private Map<String, Object> expectation(RedemptionRecoveryService.Snapshot s, String configurationId) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("account_id", s.accountId()); payload.put("issue_id", s.issueId());
+        payload.put("remote_configuration_id", configurationId); payload.put("description", s.description());
+        payload.put("claim_date", s.claimDate().toString()); payload.put("valid_from", s.validFrom().toString());
+        payload.put("valid_to", s.validTo().toString()); payload.put("label_ids", s.labels());
+        payload.put("bonus_amount", s.bonusMin()); payload.put("bonus_max_amount", s.bonusMax());
+        payload.put("options", options(s.options())); payload.put("gift_code", s.code());
+        return payload;
+    }
+
+    public record AbsenceCheck(String giftCode, int scannedRows, int scannedPages, String checkedAt) { }
+
+    public AbsenceCheck checkAbsence(Long accountId, Long issueId, String giftCode) {
+        JsonNode body = postJson("/absence-check", Map.of("account_id", accountId,
+                "issue_id", issueId, "gift_code", giftCode), "远端兑换码不存在性核验被拒绝",
+                "REMOTE_ABSENCE_CHECK_REJECTED", "远端兑换码目录暂时无法完整核验");
+        String returnedCode = responseText(body, "giftCode", "gift_code");
+        JsonNode absent = body.has("confirmedAbsent") ? body.path("confirmedAbsent") : body.path("confirmed_absent");
+        JsonNode rows = body.has("scannedRows") ? body.path("scannedRows") : body.path("scanned_rows");
+        JsonNode pages = body.has("scannedPages") ? body.path("scannedPages") : body.path("scanned_pages");
+        String checkedAt = responseText(body, "checkedAt", "checked_at");
+        if (!giftCode.equalsIgnoreCase(returnedCode) || !absent.isBoolean() || !absent.booleanValue()
+                || !rows.isInt() || rows.intValue() < 0 || !pages.isInt() || pages.intValue() < 1
+                || pages.intValue() > 200 || checkedAt == null) {
+            throw new CompatibilityIdentityUnavailableException("远端不存在性核验返回无效结果");
+        }
+        try {
+            java.time.Instant instant = java.time.Instant.parse(checkedAt);
+            if (instant.isBefore(java.time.Instant.now().minusSeconds(60)) || instant.isAfter(java.time.Instant.now().plusSeconds(10)))
+                throw new IllegalArgumentException("Stale absence result");
+        } catch (RuntimeException invalid) {
+            throw new CompatibilityIdentityUnavailableException("远端不存在性核验时间无效");
+        }
+        return new AbsenceCheck(returnedCode, rows.intValue(), pages.intValue(), checkedAt);
     }
 
     public PublishedBatch publish(
@@ -237,7 +406,7 @@ public class UnifiedRedemptionRemoteExecutorClient {
         try {
             URI uri = URI.create(executorUri.toString().replaceAll("/$", "") + suffix);
             HttpRequest request = HttpRequest.newBuilder(uri)
-                    .timeout(Duration.ofSeconds(45))
+                    .timeout(Duration.ofSeconds(suffix.startsWith("/deletion/") || suffix.equals("/duplicate-check") ? 90 : 45))
                     .header("Accept", "application/json")
                     .header("Content-Type", "application/json")
                     .header("Cookie", sessionCookieName + "=" + cookieValue)

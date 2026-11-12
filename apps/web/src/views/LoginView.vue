@@ -79,13 +79,13 @@ onMounted(loadCaptcha)
     <section class="login-card">
       <div class="login-intro">
         <span class="brand-badge">RAJ DATA</span>
-        <h1>让每一笔支付<br />都有迹可循</h1>
+        <h1>业务与数据<br />一站式管理</h1>
         <p>
-          连接 RajWin 与 RajLuck，只读拉取远端订单，识别支付平台存在但管理后台遗漏或状态异常的记录。
+          汇集多盘口业务管理、资金台账、订单对账、兑换码管理与远端监控，让日常运营与数据核对在同一工作台完成。
         </p>
         <div class="security-note">
-          <strong>安全边界</strong>
-          <span>本系统不审核、不补单、不修改远端订单。</span>
+          <strong>一体化工作台</strong>
+          <span>业务管理 · 数据对账 · 远端监控</span>
         </div>
       </div>
 

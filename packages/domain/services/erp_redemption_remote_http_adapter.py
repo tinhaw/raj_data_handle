@@ -8,9 +8,12 @@ semantics available without enabling remote writes during code deployment.
 
 from __future__ import annotations
 
+import hashlib
+import json as json_module
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -20,6 +23,11 @@ from openpyxl import load_workbook
 
 from packages.common.totp import generate_totp
 from packages.domain.schemas.remote_account import (
+    ErpCompatibilityRemoteRecoveryCheckRequest,
+    ErpCompatibilityRemoteRecoveryCheckResponse,
+    ErpCompatibilityRemoteReuseCheckRequest,
+    ErpCompatibilityRemoteReuseCheckResponse,
+    ErpCompatibilityRemoteRewardUpdateRequest,
     ErpCompatibilityRemoteVerifyRequest,
     ErpCompatibilityRemoteVerifyResponse,
     ErpRemoteConfigurationVerification,
@@ -61,6 +69,17 @@ class ErpRedemptionRemoteHttpError(ValueError):
         self.retryable = retryable
 
 
+class ErpRedemptionRemoteReviewPending(ErpRedemptionRemoteHttpError):
+    """The create request was accepted for review, but no configuration exists yet."""
+
+    def __init__(self) -> None:
+        # Retain the established uncertainty prefix for older Java retry guards.
+        super().__init__(
+            "远端创建结果未确认：待远端主管审核。配置触发风控规则，"
+            "需主管审核通过后才可以生成配置；请勿重复创建，审核通过后核对配置再登记和发布。"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ErpRemoteAccountReadGrant:
     account_id: str
@@ -97,6 +116,31 @@ def _first_text(payload: object, *paths: str) -> str | None:
         if value:
             return value
     return None
+
+
+def _created_configuration_id(payload: object) -> str:
+    raw = _nested(payload, "data.id")
+    if raw is None:
+        raw = _nested(payload, "id")
+    value = str(raw).strip() if isinstance(raw, (str, int)) and not isinstance(raw, bool) else ""
+    message = _first_text(payload, "message") or ""
+    if value == "-1" and "触发风控规则" in message and "需主管审核通过后才可以生成配置" in message:
+        raise ErpRedemptionRemoteReviewPending()
+    numeric = re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", value)
+    valid_numeric = re.fullmatch(r"[0-9]+", value) and any(char != "0" for char in value)
+    if (
+        not value
+        or len(value) > 255
+        or value.lower() in {"null", "none", "true", "false", "nan", "infinity", "-infinity"}
+        or any(ord(char) < 32 for char in value)
+        or (numeric and not valid_numeric)
+    ):
+        # A malformed response does not prove whether the remote write happened.
+        # Keep this prefix stable: the Java retry gate preserves this uncertainty.
+        raise ErpRedemptionRemoteHttpError(
+            "远端创建结果未确认：接口返回无效配置 ID，请先核对远端后台，禁止直接重试。"
+        )
+    return value
 
 
 def _extract_token(payload: object) -> str | None:
@@ -143,6 +187,14 @@ def _success_payload(response: httpx.Response) -> object:
                 retryable=str(code) in {"429", "500", "502", "503", "504"},
             )
     return payload
+
+
+def _native_reward(value):
+    try:
+        amount = Decimal(str(value))
+        return amount / 1000 if amount.is_finite() else None
+    except (InvalidOperation, ValueError):
+        return None
 
 
 def _extract_code_text(content: bytes, expected_count: int = 1) -> str:
@@ -226,6 +278,9 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
             grant.account_id != self.account_id
             or grant.source_id != self.source_id
             or grant.operation != operation
+            or operation in {"UPDATE", "DELETE"}
+            and grant.capability
+            != {"UPDATE": "ERP_REDEMPTION_UPDATE", "DELETE": "ERP_REDEMPTION_DELETE"}[operation]
         ):
             raise ErpRedemptionRemoteHttpError("远端执行授权与账号或操作不匹配。")
 
@@ -421,6 +476,498 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
                 tags.append(RemoteDirectoryTag(id=tag_id, name=name))
         return tags, request_id
 
+    async def confirm_special_code_absent(
+        self, *, grant: ErpRemoteAccountReadGrant, gift_code: str
+    ) -> tuple[int, int]:
+        """Require two identical complete directories; the remote gift_code filter is ignored."""
+        self._assert_read_grant(grant, "CHECK")
+        previous = None
+        wanted = gift_code.casefold()
+        for _ in range(2):
+            records = {}
+            pagination = None
+            for page in range(1, 201):
+                response, _ = await self._request(
+                    "GET", INDEX_PATH, params={"page": page, "pageSize": 100}
+                )
+                data = _nested(response, "data")
+                if not isinstance(data, dict):
+                    raise ErpRedemptionRemoteHttpError("远端目录格式无效，不能确认兑换码不存在。")
+                items, info = data.get("items"), data.get("pageInfo")
+                if not isinstance(items, list) or not isinstance(info, dict):
+                    raise ErpRedemptionRemoteHttpError("远端目录缺少分页，不能确认兑换码不存在。")
+                # Booleans, strings, fractional counts and missing metadata are not evidence.
+                fields = [info.get(k) for k in ("currentPage", "total", "totalPage")]
+                if any(type(value) is not int for value in fields):
+                    raise ErpRedemptionRemoteHttpError("远端目录分页无效，不能确认兑换码不存在。")
+                current, total, pages = fields
+                if current != page or total < 0 or not 1 <= pages <= 200:
+                    raise ErpRedemptionRemoteHttpError("远端目录分页超出核验范围。")
+                if pagination is None:
+                    pagination = (total, pages)
+                if pagination != (total, pages) or (page < pages and not items):
+                    raise ErpRedemptionRemoteHttpError("远端目录核验期间发生变化或分页不完整。")
+                for item in items:
+                    if (
+                        not isinstance(item, dict)
+                        or not str(item.get("id", "")).isdigit()
+                        or int(item["id"]) <= 0
+                    ):
+                        raise ErpRedemptionRemoteHttpError("远端目录配置 ID 无效。")
+                    identifier = str(item["id"])
+                    if identifier in records or "gift_code" not in item:
+                        raise ErpRedemptionRemoteHttpError("远端目录记录重复或缺少码串。")
+                    code = str(item.get("gift_code") or "").strip().casefold()
+                    if code == wanted:
+                        raise ErpRedemptionRemoteHttpError(
+                            "远端已存在同码配置，请先核对配置关联，未重新创建。"
+                        )
+                    records[identifier] = code
+                if page == pages:
+                    break
+            if len(records) != pagination[0]:
+                raise ErpRedemptionRemoteHttpError("远端完整目录数量不符，不能确认兑换码不存在。")
+            snapshot = (pagination, records)
+            if previous is not None and previous != snapshot:
+                raise ErpRedemptionRemoteHttpError("两次远端目录不一致，不能确认兑换码不存在。")
+            previous = snapshot
+        return pagination
+
+    async def check_duplicate_codes(
+        self, *, grant: ErpRemoteAccountReadGrant, gift_codes: list[str]
+    ) -> dict:
+        """Scan twice per market, not per code. Never use the ignored gift_code query filter."""
+        self._assert_read_grant(grant, "CHECK")
+        wanted = {code.casefold() for code in gift_codes}
+        previous = None
+        for _ in range(2):
+            records = {}
+            pagination = None
+            for page in range(1, 201):
+                response, _ = await self._request(
+                    "GET", INDEX_PATH, params={"page": page, "pageSize": 100}
+                )
+                data = _nested(response, "data")
+                if not isinstance(data, dict):
+                    raise ErpRedemptionRemoteHttpError("远端查重目录格式无效。")
+                items, info = data.get("items"), data.get("pageInfo")
+                if not isinstance(items, list) or not isinstance(info, dict):
+                    raise ErpRedemptionRemoteHttpError("远端查重目录缺少完整分页。")
+                fields = [info.get(k) for k in ("currentPage", "total", "totalPage")]
+                if any(type(value) is not int for value in fields):
+                    raise ErpRedemptionRemoteHttpError("远端查重目录分页无效。")
+                current, total, pages = fields
+                if current != page or total < 0 or not 1 <= pages <= 200:
+                    raise ErpRedemptionRemoteHttpError("远端查重目录超出核验范围。")
+                if pagination is None:
+                    pagination = (total, pages)
+                if pagination != (total, pages) or (page < pages and not items):
+                    raise ErpRedemptionRemoteHttpError(
+                        "远端查重期间目录变化或分页不完整，请重新查重。"
+                    )
+                for item in items:
+                    if (
+                        not isinstance(item, dict)
+                        or not str(item.get("id", "")).isdigit()
+                        or int(item["id"]) <= 0
+                    ):
+                        raise ErpRedemptionRemoteHttpError("远端查重目录配置 ID 无效。")
+                    identifier = str(item["id"])
+                    if identifier in records or "gift_code" not in item:
+                        raise ErpRedemptionRemoteHttpError("远端查重目录记录重复或缺少码串。")
+                    records[identifier] = str(item.get("gift_code") or "").strip().casefold()
+                if page == pages:
+                    break
+            if len(records) != pagination[0]:
+                raise ErpRedemptionRemoteHttpError("远端查重目录数量不符，查重未完成。")
+            snapshot = (pagination, records)
+            if previous is not None and previous != snapshot:
+                raise ErpRedemptionRemoteHttpError("两次远端查重目录不一致，请重新查重。")
+            previous = snapshot
+        return {
+            "complete": True,
+            "matches": [{"gift_code": code, "configuration_id": identifier}
+                        for identifier, code in records.items() if code in wanted],
+            "scanned_rows": pagination[0], "scanned_pages": pagination[1],
+        }
+
+    async def _confirm_configuration_absent(
+        self, *, grant: ErpRemoteAccountReadGrant, gift_code: str | None, configuration_id: str
+    ) -> tuple[int, int]:
+        """Require two identical complete directories; the remote gift_code filter is ignored."""
+        self._assert_read_grant(grant, "CHECK")
+        previous = None
+        wanted = gift_code.casefold() if gift_code else None
+        for _ in range(2):
+            records = {}
+            pagination = None
+            for page in range(1, 201):
+                response, _ = await self._request(
+                    "GET", INDEX_PATH, params={"page": page, "pageSize": 100}
+                )
+                data = _nested(response, "data")
+                if not isinstance(data, dict):
+                    raise ErpRedemptionRemoteHttpError("远端目录格式无效，不能确认兑换码不存在。")
+                items, info = data.get("items"), data.get("pageInfo")
+                if not isinstance(items, list) or not isinstance(info, dict):
+                    raise ErpRedemptionRemoteHttpError("远端目录缺少分页，不能确认兑换码不存在。")
+                # Booleans, strings, fractional counts and missing metadata are not evidence.
+                fields = [info.get(k) for k in ("currentPage", "total", "totalPage")]
+                if any(type(value) is not int for value in fields):
+                    raise ErpRedemptionRemoteHttpError("远端目录分页无效，不能确认兑换码不存在。")
+                current, total, pages = fields
+                if current != page or total < 0 or not 1 <= pages <= 200:
+                    raise ErpRedemptionRemoteHttpError("远端目录分页超出核验范围。")
+                if pagination is None:
+                    pagination = (total, pages)
+                if pagination != (total, pages) or (page < pages and not items):
+                    raise ErpRedemptionRemoteHttpError("远端目录核验期间发生变化或分页不完整。")
+                for item in items:
+                    if (
+                        not isinstance(item, dict)
+                        or not str(item.get("id", "")).isdigit()
+                        or int(item["id"]) <= 0
+                    ):
+                        raise ErpRedemptionRemoteHttpError("远端目录配置 ID 无效。")
+                    identifier = str(item["id"])
+                    if identifier in records or "gift_code" not in item:
+                        raise ErpRedemptionRemoteHttpError("远端目录记录重复或缺少码串。")
+                    code = str(item.get("gift_code") or "").strip().casefold()
+                    if identifier == configuration_id:
+                        raise ErpRedemptionRemoteHttpError("原配置仍在远端目录中，不能确认缺失。")
+                    if wanted is not None and code == wanted:
+                        raise ErpRedemptionRemoteHttpError(
+                            "远端已存在同码配置，请先核对配置关联，未重新创建。"
+                        )
+                    records[identifier] = code
+                if page == pages:
+                    break
+            if len(records) != pagination[0]:
+                raise ErpRedemptionRemoteHttpError("远端完整目录数量不符，不能确认兑换码不存在。")
+            snapshot = (pagination, records)
+            if previous is not None and previous != snapshot:
+                raise ErpRedemptionRemoteHttpError("两次远端目录不一致，不能确认兑换码不存在。")
+            previous = snapshot
+        return pagination
+
+    async def check_configuration_recovery(
+        self,
+        *,
+        grant: ErpRemoteAccountReadGrant,
+        payload: ErpCompatibilityRemoteRecoveryCheckRequest,
+        inventory_grant: ErpRemoteExecutionGrant | None = None,
+    ) -> ErpCompatibilityRemoteRecoveryCheckResponse:
+        """Only a successful empty read plus two complete directories can prove absence."""
+        self._assert_read_grant(grant, "CHECK")
+        response, _ = await self._request(
+            "GET", f"/api/common/giftCodeConfig/read/{payload.remote_configuration_id}"
+        )
+        data = _nested(response, "data")
+        if isinstance(data, dict) and str(data.get("id")) == payload.remote_configuration_id:
+            return ErpCompatibilityRemoteRecoveryCheckResponse(
+                remote_configuration_id=payload.remote_configuration_id,
+                state="PRESENT",
+                checked_at=datetime.now(UTC),
+            )
+        if data != []:
+            raise ErpRedemptionRemoteHttpError("远端读取身份或结构不符，不能确认配置缺失。")
+        rows, pages = await self._confirm_configuration_absent(
+            grant=grant,
+            gift_code=payload.gift_code,
+            configuration_id=payload.remote_configuration_id,
+        )
+        if payload.check_inventory:
+            if inventory_grant is None or not payload.remote_group_key:
+                raise ErpRedemptionRemoteHttpError("缺少库存核验能力或原兑换组标识，不能重建。")
+            self._assert_grant(inventory_grant, "DOWNLOAD")
+            content, _ = await self._request(
+                "POST",
+                EXPORT_PATH,
+                params={"groupKey": payload.remote_group_key},
+                json={},
+                bytes_response=True,
+            )
+            # Zero must be proven by a valid workbook with the native code header.
+            _extract_code_text(content, expected_count=0)
+        return ErpCompatibilityRemoteRecoveryCheckResponse(
+            remote_configuration_id=payload.remote_configuration_id,
+            state="ABSENT",
+            scanned_rows=rows,
+            scanned_pages=pages,
+            checked_at=datetime.now(UTC),
+        )
+
+    async def check_reusable_configuration(
+        self, *, grant: ErpRemoteAccountReadGrant, payload: ErpCompatibilityRemoteReuseCheckRequest
+    ) -> ErpCompatibilityRemoteReuseCheckResponse:
+        self._assert_read_grant(grant, "CHECK")
+        response, _ = await self._request(
+            "GET", f"/api/common/giftCodeConfig/read/{payload.remote_configuration_id}"
+        )
+        data = _nested(response, "data")
+        if not isinstance(data, dict) or str(data.get("id")) != payload.remote_configuration_id:
+            raise ErpRedemptionRemoteHttpError("远端配置读取未返回指定 ID，不能复用。")
+        return self._configuration_expectation(data, payload)
+
+    def _configuration_expectation(
+        self, data: dict, payload: ErpCompatibilityRemoteReuseCheckRequest
+    ):
+        options = payload.options
+        expected = {
+            "key_number": options.key_number,
+            "flow_times": options.flow_times,
+            "single_user_limit": options.single_user_limit,
+            "single_key_limit": options.single_key_limit,
+            "is_need_bind_bank_card": int(options.require_bind_bank_card),
+            "is_need_bind_phone": int(options.require_bind_phone),
+            "is_need_check_uuid": int(options.check_uuid),
+            "uuid_reward_limit": options.uuid_reward_limit,
+            "is_need_check_login_ip": int(options.check_login_ip),
+            "login_ip_reward_limit": options.login_ip_reward_limit,
+            "is_need_check_register_ip": int(options.check_register_ip),
+            "register_ip_reward_limit": options.register_ip_reward_limit,
+            "gift_type": 1 if payload.gift_code is not None else 0,
+            "user_type": 0 if not payload.label_ids else 1,
+            "reward_condition_type": 0,
+            "refresh_flag": 0,
+            "channel_type": 1,
+            "agent_uid": 0,
+            "clear_status": 0,
+            "activity_id": options.activity_id or 0,
+            "activity_recharge_count": options.activity_recharge_count or 0,
+        }
+        differences = []
+        for field, value in expected.items():
+            try:
+                equal = Decimal(str(data.get(field))) == Decimal(value)
+            except (InvalidOperation, ValueError):
+                equal = False
+            if not equal:
+                differences.append(field)
+        # /read returns raw thousandths, unlike /index and the create form.
+        for field, amount in (
+            ("reward_min", payload.bonus_amount),
+            ("reward_max", payload.bonus_max_amount),
+        ):
+            try:
+                equal = Decimal(str(data.get(field))) == amount * 1000
+            except InvalidOperation:
+                equal = False
+            if not equal:
+                differences.append(field)
+        # The nonzero activity amount unit has no verified read contract. Do not guess.
+        if options.activity_recharge or str(data.get("activity_recharge")) not in {"0", "0.0"}:
+            differences.append("activity_recharge")
+        if (
+            payload.gift_code is not None
+            and str(data.get("gift_code", "")).casefold() != payload.gift_code.casefold()
+        ):
+            differences.append("gift_code")
+        try:
+            actual_labels = sorted(int(label) for label in data["label_array"])
+        except (KeyError, TypeError, ValueError):
+            actual_labels = None
+        if actual_labels != sorted(payload.label_ids):
+            differences.append("label_array")
+        for field in (
+            "user_array",
+            "no_label_array",
+            "channel_list",
+            "face_channel",
+            "no_face_channel",
+            "agent_reward_array",
+            "company_array",
+        ):
+            if data.get(field) not in (None, []):
+                differences.append(field)
+        start = f"{payload.valid_from or payload.claim_date:%Y-%m-%d} 00:00:00"
+        end = f"{payload.valid_to or payload.claim_date:%Y-%m-%d} 23:59:59"
+        if data.get("start_timestamp") != start or data.get("end_timestamp") != end:
+            differences.append("valid_time")
+        if str(data.get("status")) not in {"1", "2"}:
+            differences.append("status")
+        return ErpCompatibilityRemoteReuseCheckResponse(
+            remote_configuration_id=payload.remote_configuration_id,
+            remote_group_key=_first_text(data, "group_key", "groupKey"),
+            actual_bonus_amount=_native_reward(data.get("reward_min")),
+            actual_bonus_max_amount=_native_reward(data.get("reward_max")),
+            matched=not differences,
+            differences=differences,
+            checked_at=datetime.now(UTC),
+        )
+
+    async def inspect_deletion(self, *, grant, configuration_id: str) -> dict:
+        self._assert_read_grant(grant, "CHECK")
+        if not re.fullmatch(r"[1-9][0-9]{0,18}", configuration_id):
+            raise ErpRedemptionRemoteHttpError("删除配置 ID 无效。")
+        response, _ = await self._request(
+            "GET", f"/api/common/giftCodeConfig/read/{configuration_id}"
+        )
+        data = _nested(response, "data")
+        if data == []:
+            await self._confirm_configuration_absent(
+                grant=grant, gift_code=None, configuration_id=configuration_id
+            )
+            return {"configurationId": configuration_id, "state": "ABSENT"}
+        if not isinstance(data, dict) or str(data.get("id")) != configuration_id:
+            raise ErpRedemptionRemoteHttpError("远端身份不可核验，未执行删除。")
+        # Secret-free confirmation facts; do not retain user arrays or remote response bodies.
+        fields = (
+            "id",
+            "group_key",
+            "gift_code",
+            "group_desc",
+            "remark",
+            "gift_type",
+            "status",
+            "reward_min",
+            "reward_max",
+            "start_timestamp",
+            "end_timestamp",
+            "updated_at",
+        )
+        facts = {key: data.get(key) for key in fields}
+        if not facts["group_key"]:
+            raise ErpRedemptionRemoteHttpError("配置缺少兑换码组身份，不能删除。")
+        fingerprint = hashlib.sha256(
+            json_module.dumps(
+                facts, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
+        return {
+            "configurationId": configuration_id,
+            "state": "PRESENT",
+            "fingerprint": fingerprint,
+            "groupKey": str(facts["group_key"]),
+            "giftCode": str(facts["gift_code"] or ""),
+            "description": str(facts["group_desc"] or ""),
+            "status": str(facts["status"]),
+        }
+
+    async def delete_configuration(self, *, grant, read_grant, payload) -> dict:
+        self._assert_grant(grant, "DELETE")
+        if not payload.execution_confirmed or not payload.expected_fingerprint:
+            raise ErpRedemptionRemoteHttpError("请先核对配置并明确确认永久删除。")
+        before = await self.inspect_deletion(
+            grant=read_grant, configuration_id=payload.remote_configuration_id
+        )
+        if before["state"] != "PRESENT" or before["fingerprint"] != payload.expected_fingerprint:
+            raise ErpRedemptionRemoteHttpError("远端配置已变化，请重新核验确认；未提交删除。")
+        # No relogin/replay on destructive writes. Unknown outcomes are reconciled read-only.
+        await self._request(
+            "DELETE",
+            "/api/common/giftCodeConfig/realDelete",
+            json={"ids": [int(payload.remote_configuration_id)]},
+            allow_relogin=False,
+        )
+        after = await self.inspect_deletion(
+            grant=read_grant, configuration_id=payload.remote_configuration_id
+        )
+        if after["state"] != "ABSENT":
+            raise ErpRedemptionRemoteHttpError("删除后仍能读到配置，结果待核对；禁止重复提交。")
+        return after
+
+    async def update_reward_policy(
+        self,
+        *,
+        grant: ErpRemoteExecutionGrant,
+        read_grant: ErpRemoteAccountReadGrant,
+        payload: ErpCompatibilityRemoteRewardUpdateRequest,
+    ) -> ErpCompatibilityRemoteReuseCheckResponse:
+        """Update an identified existing configuration's rewards, never delete/recreate it."""
+        self._assert_grant(grant, "UPDATE")
+        self._assert_read_grant(read_grant, "CHECK")
+        if not payload.execution_confirmed:
+            raise ErpRedemptionRemoteHttpError("缺少本次奖励修改确认。")
+        response, _ = await self._request(
+            "GET", f"/api/common/giftCodeConfig/read/{payload.remote_configuration_id}"
+        )
+        data = _nested(response, "data")
+        if not isinstance(data, dict) or str(data.get("id")) != payload.remote_configuration_id:
+            raise ErpRedemptionRemoteHttpError("原配置不可读，停止奖励修改；不会新建配置。")
+        checked = self._configuration_expectation(data, payload)
+        if checked.actual_bonus_amount is None or checked.actual_bonus_max_amount is None:
+            raise ErpRedemptionRemoteHttpError("未读到有效的原奖励，停止修改。")
+        if set(checked.differences) - {"reward_min", "reward_max"}:
+            raise ErpRedemptionRemoteHttpError(
+                "远端还有奖励之外的参数不匹配，停止修改并保留原配置。"
+            )
+        if checked.matched:
+            return checked
+        if any(
+            value != value.to_integral_value()
+            for value in (payload.bonus_amount, payload.bonus_max_amount)
+        ):
+            raise ErpRedemptionRemoteHttpError("远端奖励仅支持整数。")
+        # Native edit form fields. Preserve the live description, code, status, audience and limits.
+        keys = {
+            "id",
+            "gift_type",
+            "group_key",
+            "code_key",
+            "valid_type",
+            "gift_code",
+            "key_number",
+            "group_desc",
+            "remark",
+            "status",
+            "flow_times",
+            "reward_condition_type",
+            "refresh_flag",
+            "user_type",
+            "label_array",
+            "no_label_array",
+            "user_array",
+            "channel_type",
+            "channel_list",
+            "face_channel",
+            "no_face_channel",
+            "agent_uid",
+            "agent_reward_array",
+            "company_array",
+            "clear_status",
+            "single_user_limit",
+            "single_key_limit",
+            "is_need_bind_bank_card",
+            "is_need_bind_phone",
+            "is_need_check_uuid",
+            "uuid_reward_limit",
+            "is_need_check_login_ip",
+            "login_ip_reward_limit",
+            "is_need_check_register_ip",
+            "register_ip_reward_limit",
+            "activity_recharge",
+            "activity_recharge_count",
+            "activity_id",
+        }
+        form = {key: data[key] for key in keys if key in data}
+        if not form.get("group_desc") or "remark" not in form:
+            raise ErpRedemptionRemoteHttpError("未读到原配置描述及备注，停止修改。")
+        for key in (
+            "label_array",
+            "no_label_array",
+            "user_array",
+            "channel_list",
+            "face_channel",
+            "no_face_channel",
+            "agent_reward_array",
+            "company_array",
+        ):
+            if key in form and form[key] is None:
+                form[key] = []
+        form.update(
+            reward_min=int(payload.bonus_amount),
+            reward_max=int(payload.bonus_max_amount),
+            valid_time=[data["start_timestamp"], data["end_timestamp"]],
+        )
+        await self._request(
+            "PUT", f"/api/common/giftCodeConfig/update/{payload.remote_configuration_id}", json=form
+        )
+        result = await self.check_reusable_configuration(grant=read_grant, payload=payload)
+        if not result.matched:
+            raise ErpRedemptionRemoteHttpError("奖励修改回读尚未匹配，结果待核对；不要重复提交。")
+        return result
+
     async def create_configuration(
         self, *, grant: ErpRemoteExecutionGrant, command: RemoteCreateCommand
     ) -> RemoteCreateResult:
@@ -486,9 +1033,7 @@ class RajAdminGiftCodeAdapter(ErpRedemptionRemoteAdapter):
             if value is not None:
                 payload[key] = str(value) if key == "activity_recharge" else value
         response, request_id = await self._request("POST", CREATE_PATH, json=payload)
-        configuration_id = _first_text(response, "data.id", "id")
-        if not configuration_id:
-            raise ErpRedemptionRemoteHttpError("远端创建接口未返回配置 ID。")
+        configuration_id = _created_configuration_id(response)
         group_key = _first_text(response, "data.group_key", "data.groupKey")
         if not group_key:
             try:

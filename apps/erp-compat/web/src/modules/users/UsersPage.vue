@@ -385,29 +385,29 @@ onMounted(() => { void load() })
 <style scoped>
 .load-error { margin-bottom: 16px; }
 .permission-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-.permission-card { display: flex; gap: 12px; padding: 15px; background: #f9fafb; border: 1px solid #eaecf0; border-radius: 8px; }
-.permission-card .el-icon { display: grid; place-items: center; flex: 0 0 auto; width: 32px; height: 32px; color: #155eef; font-size: 18px; background: #eff4ff; border-radius: 8px; }
-.permission-card strong { color: #344054; font-size: 14px; }
-.permission-card p { margin: 5px 0 0; color: #667085; font-size: 12px; line-height: 1.6; }
+.permission-card { display: flex; gap: 12px; padding: 15px; background: var(--theme-surface-muted, #f9fafb); border: 1px solid var(--theme-border, #eaecf0); border-radius: 8px; }
+.permission-card .el-icon { display: grid; place-items: center; flex: 0 0 auto; width: 32px; height: 32px; color: var(--theme-info, #155eef); font-size: 18px; background: var(--theme-info-bg, #eff4ff); border-radius: 8px; }
+.permission-card strong { color: var(--theme-text, #344054); font-size: 14px; }
+.permission-card p { margin: 5px 0 0; color: var(--theme-text-muted, #667085); font-size: 12px; line-height: 1.6; }
 .user-name { display: grid; gap: 3px; }
-.user-name strong { color: #182230; font-weight: 650; }
-.user-name span { color: #98a2b3; font-size: 12px; }
+.user-name strong { color: var(--theme-text-strong, #182230); font-weight: 650; }
+.user-name span { color: var(--theme-text-muted, #98a2b3); font-size: 12px; }
 .role-tags { display: flex; flex-wrap: wrap; gap: 5px; }
-.scope-all { color: #027a48; font-weight: 600; }
+.scope-all { color: var(--theme-success, #027a48); font-weight: 600; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
 .role-select-option { display: grid; gap: 2px; padding: 3px 0; }
-.role-select-option strong { color: #344054; }
-.role-select-option span { color: #98a2b3; font-size: 12px; }
+.role-select-option strong { color: var(--theme-text, #344054); }
+.role-select-option span { color: var(--theme-text-muted, #98a2b3); font-size: 12px; }
 .user-role-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 18px; }
 .role-option { display: grid; align-content: start; height: auto; min-height: 96px; margin: 0; padding: 13px 14px; white-space: normal; }
 .role-option :deep(.el-checkbox__label) { display: grid; gap: 4px; min-width: 0; padding-left: 9px; white-space: normal; }
-.role-option strong { color: #344054; font-size: 13px; }
-.role-option span { color: #667085; font-size: 12px; line-height: 1.45; }
-.role-option small { color: #98a2b3; font-size: 10px; line-height: 1.4; }
+.role-option strong { color: var(--theme-text, #344054); font-size: 13px; }
+.role-option span { color: var(--theme-text-muted, #667085); font-size: 12px; line-height: 1.45; }
+.role-option small { color: var(--theme-text-muted, #98a2b3); font-size: 10px; line-height: 1.4; }
 .scope-form { margin-top: 18px; }
-.empty-icon { margin-bottom: 9px; color: #98a2b3; font-size: 36px; }
-.access-denied h3 { margin: 4px 0; color: #344054; }
+.empty-icon { margin-bottom: 9px; color: var(--theme-text-muted, #98a2b3); font-size: 36px; }
+.access-denied h3 { margin: 4px 0; color: var(--theme-text, #344054); }
 .access-denied p { max-width: 510px; margin: 0; line-height: 1.7; }
-.access-denied code { padding: 1px 4px; color: #6941c6; background: #f4f3ff; border-radius: 4px; }
+.access-denied code { padding: 1px 4px; color: var(--theme-purple, #6941c6); background: var(--theme-purple-bg, #f4f3ff); border-radius: 4px; }
 @media (max-width: 1280px) { .user-role-grid { grid-template-columns: 1fr; } }
 </style>

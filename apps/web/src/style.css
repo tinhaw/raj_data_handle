@@ -1,12 +1,14 @@
 :root {
   font-family:
     Inter, "SF Pro Display", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-  color: #243b53;
-  background: #f4f7fa;
+  color: var(--theme-text, #243b53);
+  background: var(--page-bg);
+  color-scheme: light;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --page-bg: #f4f7fa;
   --surface: #ffffff;
+  --surface-muted: #f7fafc;
   --ink-strong: #102a43;
   --ink: #334e68;
   --ink-muted: #829ab1;

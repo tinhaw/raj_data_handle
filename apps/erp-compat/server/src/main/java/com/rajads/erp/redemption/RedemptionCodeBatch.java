@@ -24,6 +24,14 @@ public class RedemptionCodeBatch {
     @Enumerated(EnumType.STRING)
     @Column(name = "redemption_type", nullable = false, length = 30)
     private RedemptionCodeType redemptionType = RedemptionCodeType.SEVEN_DAY_DEPOSIT;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "special_code_naming", nullable = false, updatable = false, length = 20)
+    private RedemptionCodeNaming specialCodeNaming = RedemptionCodeNaming.ORIGINAL;
+
+    String specialCode(LocalDate date, java.math.BigDecimal deposit) {
+        return redemptionType.specialCode(date, deposit, specialCodeNaming);
+    }
+
     @Column(name = "expected_code_count", nullable = false) private Integer expectedCodeCount;
     @Column(nullable = false, length = 30) private String status = "CREATING";
     @Column(name = "remote_connection_id") private Long remoteConnectionId;

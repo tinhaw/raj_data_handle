@@ -25,6 +25,12 @@ public class RedemptionCodeExcelExporter {
     private static final String DEFAULT_SHEET_NAME = "Bonus Codes";
     private static final DateTimeFormatter SHORT_DATE = DateTimeFormatter.ofPattern("dd/MM");
 
+    private static void requireRewardChecks(List<RedemptionDtos.CodeIssueResponse> issues) {
+        if (issues.stream().anyMatch(issue -> issue.workflowStatus() != null && (RedemptionRewardCheck.PENDING.contains(issue.workflowStatus()) || issue.workflowStatus().startsWith("REMOTE_DELET"))))
+            throw com.rajads.erp.shared.ApiException.conflict("REWARD_CONFIRMATION_REQUIRED",
+                    "实际奖励尚未核验一致，不能导出完整任务，请先确认并完成奖励核验。");
+    }
+
     /** An explicit partial export contains only already imported codes and names every unresolved configuration. */
     public byte[] exportAvailableOnly(List<RedemptionDtos.CodeIssueResponse> issues) {
         List<RedemptionDtos.CodeIssueResponse> imported = issues.stream()
@@ -104,6 +110,7 @@ public class RedemptionCodeExcelExporter {
     public byte[] export(RedemptionDtos.CampaignResponse campaign, List<RedemptionDtos.CodeIssueResponse> issues,
                          LocalDate from, LocalDate to, String sheetName, RedemptionCodeType redemptionType,
                          Integer validFromDayOffset) {
+        requireRewardChecks(issues);
         if (redemptionType == RedemptionCodeType.AGENT) {
             return exportMultiMarket(List.of(new MarketSheet(sheetName, campaign, redemptionType, issues, from, to,
                     validFromDayOffset)));
@@ -138,6 +145,7 @@ public class RedemptionCodeExcelExporter {
     /** Produces one workbook for a multi-market creation, including an All sheet plus each market sheet. */
     public byte[] exportMultiMarket(List<MarketSheet> marketSheets) {
         if (marketSheets == null || marketSheets.isEmpty()) throw new IllegalArgumentException("At least one market sheet is required");
+        marketSheets.forEach(sheet -> requireRewardChecks(sheet.issues()));
         try (Workbook workbook = new XSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             if (marketSheets.stream().allMatch(this::isAgent)) {
                 writeAgentMultiMarketWorkbook(workbook, marketSheets);

@@ -24,6 +24,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { fetchUnreadNotifications, markNotificationRead } from '../api/notifications'
 import { clearSession, currentUser, hasErpPermission, isAdmin } from '../stores/auth'
+import ThemeToggle from './ThemeToggle.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -233,7 +234,12 @@ onBeforeUnmount(() => {
     </aside>
 
     <main class="app-main">
-      <router-view />
+      <header class="app-toolbar" aria-label="全局工具栏">
+        <ThemeToggle />
+      </header>
+      <div class="app-content">
+        <router-view />
+      </div>
     </main>
   </div>
 </template>
@@ -425,6 +431,22 @@ onBeforeUnmount(() => {
 
 .app-main {
   min-width: 0;
+}
+
+.app-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 60px;
+  padding: 8px 28px;
+  border-bottom: 1px solid var(--border);
+  background: var(--page-bg);
+}
+
+.app-content {
   padding: 28px;
 }
 
@@ -434,8 +456,12 @@ onBeforeUnmount(() => {
     grid-template-columns: 76px minmax(0, 1fr);
   }
 
-  .app-main {
+  .app-content {
     padding: 18px;
+  }
+
+  .app-toolbar {
+    padding-right: 18px;
   }
 
   .brand-copy,

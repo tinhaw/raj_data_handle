@@ -50,7 +50,7 @@ public final class RedemptionDtos {
                                     String state, String remoteReferenceId, String remoteError, Instant generatedAt,
                                     Long rowVersion, BigDecimal bonusMaxAmount, Long batchId, String workflowStatus,
                                     String remoteConfigurationId, String remoteGroupKey, List<Long> remoteLabelIds,
-                                    String remoteConfigurationName, String remoteConfigurationRemark) {
+                                    String remoteConfigurationName, String remoteConfigurationRemark, Long reusedFromIssueId, Long reusedFromBatchId, RedemptionRecoveryService.Summary recovery) {
         public CodeIssueResponse(Long id, Long campaignId, Long campaignTierId, String tierName,
                                  BigDecimal minDepositAmount, BigDecimal bonusAmount, LocalDate claimDate,
                                  LocalDate depositWindowStart, LocalDate depositWindowEnd, String redemptionCode,
@@ -60,15 +60,39 @@ public final class RedemptionDtos {
             this(id, campaignId, campaignTierId, tierName, minDepositAmount, bonusAmount, claimDate,
                     depositWindowStart, depositWindowEnd, redemptionCode, state, remoteReferenceId, remoteError,
                     generatedAt, rowVersion, bonusMaxAmount, batchId, workflowStatus,
-                    remoteConfigurationId, remoteGroupKey, remoteLabelIds, null, null);
+                    remoteConfigurationId, remoteGroupKey, remoteLabelIds, null, null, null, null, null);
+        }
+        public CodeIssueResponse(Long id, Long campaignId, Long campaignTierId, String tierName,
+                                 BigDecimal minDepositAmount, BigDecimal bonusAmount, LocalDate claimDate,
+                                 LocalDate depositWindowStart, LocalDate depositWindowEnd, String redemptionCode,
+                                 String state, String remoteReferenceId, String remoteError, Instant generatedAt,
+                                 Long rowVersion, BigDecimal bonusMaxAmount, Long batchId, String workflowStatus,
+                                 String remoteConfigurationId, String remoteGroupKey, List<Long> remoteLabelIds,
+                                 String remoteConfigurationName, String remoteConfigurationRemark) {
+            this(id, campaignId, campaignTierId, tierName, minDepositAmount, bonusAmount, claimDate,
+                    depositWindowStart, depositWindowEnd, redemptionCode, state, remoteReferenceId, remoteError,
+                    generatedAt, rowVersion, bonusMaxAmount, batchId, workflowStatus, remoteConfigurationId,
+                    remoteGroupKey, remoteLabelIds, remoteConfigurationName, remoteConfigurationRemark, null, null, null);
         }
         @com.fasterxml.jackson.annotation.JsonProperty
         public List<String> redemptionCodes() {
             return redemptionCode == null ? List.of() : redemptionCode.lines().filter(code -> !code.isBlank()).toList();
         }
+        @com.fasterxml.jackson.annotation.JsonProperty
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_DEFAULT)
+        public boolean creationNeedsReconciliation() {
+            return RemoteConfigurationIds.needsReconciliation(remoteConfigurationId, remoteReferenceId, remoteError);
+        }
+        @com.fasterxml.jackson.annotation.JsonProperty
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_DEFAULT)
+        public boolean creationAwaitingRemoteReview() {
+            return RemoteConfigurationIds.isAwaitingReview(remoteError);
+        }
     }
 
     /** Creates a local task sheet; the actual code configuration stays manual in the remote management backend. */
+    public record ReuseConfigurationRequest(@NotNull Long rowVersion, @Size(max=255) String configurationId) { }
+
     public record ManualBatchCreateRequest(@NotNull Long campaignId, @NotNull LocalDate claimDateFrom,
                                            @NotNull LocalDate claimDateTo,
                                            @Min(0) @Max(365) Integer validFromDayOffset,
@@ -76,7 +100,7 @@ public final class RedemptionDtos {
                                            Long remoteConnectionId,
                                            Map<Long, List<Long>> tierLabelIds,
                                            @Valid RemoteCreationOptionsRequest remoteOptions,
-                                           RedemptionCodeType redemptionType) { }
+                                           RedemptionCodeType redemptionType, RedemptionCodeNaming specialCodeNaming) { }
 
     /**
      * The simplified operation-facing entry point.  A code group owns a new active campaign and one batch,
@@ -96,7 +120,9 @@ public final class RedemptionDtos {
                                          RedemptionCodeType redemptionType,
                                          @Size(max = 50) List<@NotNull @Pattern(regexp = "ALL_USERS|LABEL_USERS") String> tierUserTypes,
                                          @NotEmpty List<List<@NotNull @Min(1) Long>> tierLabelIds,
-                                         @NotNull @Valid RemoteCreationOptionsRequest remoteOptions) { }
+                                         @NotNull @Valid RemoteCreationOptionsRequest remoteOptions,
+                                         @Valid RedemptionDuplicateCheckService.Review duplicateReview,
+                                         RedemptionCodeNaming specialCodeNaming) { }
     public record RemoteCreationOptionsRequest(
             @NotBlank @Pattern(regexp = "test|prod") String publishEnvironment,
             @NotNull @Min(0) @Max(1000) Integer flowTimes,
@@ -119,8 +145,6 @@ public final class RedemptionDtos {
                                                 Integer registerIpRewardLimit) { }
     public record RemoteConfigurationRequest(@NotBlank @Size(max = 255) String remoteConfigurationId, Long rowVersion) { }
     public record PublishBatchRequest(Long rowVersion) { }
-    public record ExternalPublicationRequest(@NotNull Long rowVersion,
-            @NotBlank @Pattern(regexp = "^[1-9][0-9]*$") @Size(max = 255) String remotePublishTaskId) { }
     public record RemotePublishRequest(Long rowVersion, @NotBlank @Pattern(regexp = "IMMEDIATE|SCHEDULED") String mode,
                                        @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss") java.time.LocalDateTime scheduledTime,
                                        Boolean fallbackToScheduled) { }
@@ -137,7 +161,8 @@ public final class RedemptionDtos {
                                 String remotePublishTaskId, String remotePublishError, String remotePublishMode,
                                 java.time.LocalDateTime remoteScheduledPublishAt, String remotePublishNote,
                                 Instant remotePublishCancelledAt, RemoteCreationOptionsResponse remoteOptions,
-                                Long taskId, String taskNumber, String subtaskNumber, String operatorUsername) {
+                                Long taskId, String taskNumber, String subtaskNumber, String operatorUsername,
+                                RedemptionCodeNaming specialCodeNaming) {
         /** Historical expectedCodeCount/importedCount count configurations, not individual codes. */
         @com.fasterxml.jackson.annotation.JsonProperty
         public int plannedCodeCount() { return expectedCodeCount * codesPerGroup(); }
@@ -146,6 +171,14 @@ public final class RedemptionDtos {
         private int codesPerGroup() { return remoteOptions == null || remoteOptions.keyNumber() == null ? 1 : remoteOptions.keyNumber(); }
     }
     public record BatchDetailResponse(BatchResponse batch, List<CodeIssueResponse> issues) { }
+
+    /** Counted list states have no issue identity and cannot be used for writes. */
+    public record IssueSummaryResponse(String state, String workflowStatus, String remoteError,
+            boolean creationNeedsReconciliation, boolean creationAwaitingRemoteReview,
+            boolean hasRemoteConfiguration, boolean hasRemoteReference, List<Long> remoteLabelIds,
+            int count, LocalDate earliestClaimDate, List<String> configurationIds, RedemptionRecoveryService.Summary recovery) { }
+
+    public record BatchSummaryResponse(BatchResponse batch, List<IssueSummaryResponse> issueSummaries) { }
     public record CodeImportResponse(int importedCount, BatchResponse batch, List<CodeIssueResponse> issues) { }
 
     public record RemoteMarketCreateRequest(@NotBlank @Size(max = 60) String code,

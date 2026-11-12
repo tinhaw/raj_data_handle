@@ -93,7 +93,7 @@ public class RemoteGiftCodeBackendClient {
         payload.put("valid_time", List.of(remoteDayStart(input.validFrom()), remoteDayEnd(input.validTo())));
         JsonNode response = postJson(connection, "/api/common/giftCodeConfig/save", payload);
         String configurationId = firstText(response, "data.id", "id");
-        if (configurationId == null) throw new RemoteGiftCodeException("远端创建接口未返回兑换码配置 ID");
+        configurationId = RemoteConfigurationIds.requireCreated(configurationId, firstText(response, "message"));
         // Save returns only the configuration ID. Group-key lookup is deliberately a separate call so a successful
         // remote creation is still recorded even when the list endpoint is temporarily unavailable.
         return new CreatedConfiguration(configurationId, null);

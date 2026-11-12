@@ -2936,7 +2936,7 @@ onMounted(async () => {
   gap: 16px;
   padding: 13px 18px;
   border-top: 1px solid var(--border);
-  background: #f9fbfd;
+  background: var(--theme-surface-muted, #f9fbfd);
 }
 
 .query-card__footer span {
@@ -2948,7 +2948,7 @@ onMounted(async () => {
   position: relative;
   overflow: hidden;
   padding: 18px;
-  background: linear-gradient(180deg, #ffffff 0%, #f9fcfe 100%);
+  background: linear-gradient(180deg, var(--theme-surface, #ffffff) 0%, var(--theme-surface-muted, #f9fcfe) 100%);
 }
 
 .withdraw-channel-chart-card::before {
@@ -3108,32 +3108,32 @@ onMounted(async () => {
   min-height: 360px;
   height: clamp(360px, calc(100vh - 430px), 720px);
   overflow: hidden;
-  border: 1px solid #dce6ee;
+  border: 1px solid var(--theme-border, #dce6ee);
   border-radius: 8px;
-  background: #ffffff;
-  --el-table-border-color: #dce6ee;
-  --el-table-header-bg-color: #f5f8fb;
-  --el-table-row-hover-bg-color: #f7fbfb;
-  --el-table-text-color: #43576a;
-  --el-table-header-text-color: #183955;
+  background: var(--theme-surface, #ffffff);
+  --el-table-border-color: var(--theme-border, #dce6ee);
+  --el-table-header-bg-color: var(--theme-surface-muted, #f5f8fb);
+  --el-table-row-hover-bg-color: var(--theme-surface-muted, #f7fbfb);
+  --el-table-text-color: var(--theme-text, #43576a);
+  --el-table-header-text-color: var(--theme-text-strong, #183955);
 }
 
 .withdraw-virtual-table :deep(.el-table-v2__header-cell) {
   padding: 0 14px;
-  color: #183955;
+  color: var(--theme-text-strong, #183955);
   font-size: 12px;
   font-weight: 750;
 }
 
 .withdraw-virtual-table :deep(.el-table-v2__row-cell) {
   padding: 0 14px;
-  color: #43576a;
+  color: var(--theme-text, #43576a);
   font-size: 12px;
 }
 
 .withdraw-virtual-table :deep(.el-table-v2__header-cell + .el-table-v2__header-cell),
 .withdraw-virtual-table :deep(.el-table-v2__row-cell + .el-table-v2__row-cell) {
-  border-left: 1px solid #dce6ee;
+  border-left: 1px solid var(--theme-border, #dce6ee);
 }
 
 .withdraw-virtual-table :deep(.el-table-v2__row-cell .el-tag) {
@@ -3160,9 +3160,9 @@ onMounted(async () => {
   gap: 16px;
   margin-bottom: 16px;
   padding: 14px 16px;
-  border: 1px solid #dce9ed;
+  border: 1px solid var(--theme-border, #dce9ed);
   border-radius: 10px;
-  background: linear-gradient(135deg, #f8fcfd 0%, #f7faff 100%);
+  background: linear-gradient(135deg, var(--theme-surface-muted, #f8fcfd) 0%, var(--theme-surface-muted, #f7faff) 100%);
 }
 
 .withdraw-scoring-drawer__heading > div {
@@ -3193,14 +3193,14 @@ onMounted(async () => {
 .withdraw-scoring-details__grid > div {
   min-width: 0;
   padding: 9px 10px;
-  border: 1px solid #e5edf3;
+  border: 1px solid var(--theme-border, #e5edf3);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.82);
 }
 
 .withdraw-scoring-details__grid dt {
   margin: 0 0 4px;
-  color: #718399;
+  color: var(--theme-text-muted, #718399);
   font-size: 11px;
   font-weight: 700;
 }
@@ -3208,7 +3208,7 @@ onMounted(async () => {
 .withdraw-scoring-details__grid dd {
   overflow-wrap: anywhere;
   margin: 0;
-  color: #38546f;
+  color: var(--theme-text, #38546f);
   font-size: 13px;
   line-height: 1.55;
 }
@@ -3258,7 +3258,7 @@ onMounted(async () => {
 
 .operator-chart-summary {
   margin: 0 0 14px;
-  color: #647e99;
+  color: var(--theme-text-muted, #647e99);
   font-size: 13px;
 }
 
@@ -3293,7 +3293,7 @@ onMounted(async () => {
 
 .operator-chart-summary strong {
   margin: 0 4px;
-  color: #244867;
+  color: var(--theme-text-strong, #244867);
   font-size: 16px;
   font-variant-numeric: tabular-nums;
 }
@@ -3319,9 +3319,9 @@ onMounted(async () => {
   column-gap: 8px;
   min-height: 42px;
   padding: 8px 10px;
-  border: 1px solid #e6eef5;
+  border: 1px solid var(--theme-border, #e6eef5);
   border-radius: 10px;
-  background: #f8fbfd;
+  background: var(--theme-surface-muted, #f8fbfd);
 }
 
 .operator-chart-legend__dot {
@@ -3332,7 +3332,7 @@ onMounted(async () => {
 
 .operator-chart-legend__label {
   overflow: hidden;
-  color: #38546f;
+  color: var(--theme-text, #38546f);
   font-size: 13px;
   font-weight: 700;
   text-overflow: ellipsis;
@@ -3340,7 +3340,7 @@ onMounted(async () => {
 }
 
 .operator-chart-legend__item strong {
-  color: #23425f;
+  color: var(--theme-text-strong, #23425f);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -3348,7 +3348,7 @@ onMounted(async () => {
 
 .operator-chart-legend__item small {
   min-width: 39px;
-  color: #7890a6;
+  color: var(--theme-text-muted, #7890a6);
   font-size: 12px;
   text-align: right;
   font-variant-numeric: tabular-nums;

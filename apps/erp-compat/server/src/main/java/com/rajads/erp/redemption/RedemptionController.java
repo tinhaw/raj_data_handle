@@ -20,7 +20,13 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class RedemptionController {
     private final RedemptionService service;
+    private final RedemptionDeletionService deletions;
+    private final RedemptionTaskDeletionService taskDeletions;
     private final RedemptionRemoteOperationService remoteOperations;
+    private final RedemptionReuseService reuseService;
+    private final RedemptionDuplicateCheckService duplicateChecks;
+    private final RedemptionRecoveryService recoveryService;
+    private final RedemptionPolicyUpdateService policyUpdates;
     private final RedemptionCodeExcelExporter excelExporter;
     private final AuditService auditService;
 
@@ -40,6 +46,26 @@ public class RedemptionController {
     @PreAuthorize("hasAuthority('REDEMPTION_MANAGE') and hasAuthority('REDEMPTION_GENERATE')")
     public RedemptionDtos.BatchDetailResponse createCodeGroup(@Valid @RequestBody RedemptionDtos.CodeGroupCreateRequest request) {
         return service.createCodeGroup(request);
+    }
+
+    @PostMapping("/groups/duplicate-check")
+    @PreAuthorize("hasAuthority('REDEMPTION_VIEW') and hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionDuplicateCheckService.Result checkDuplicates(
+            @Valid @RequestBody RedemptionDuplicateCheckService.Request request) {
+        return duplicateChecks.check(request);
+    }
+
+    @PostMapping("/batches/{batchId}/creation-duplicate-check")
+    @PreAuthorize("hasAuthority('REDEMPTION_VIEW') and hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionDuplicateCheckService.Result checkPendingTaskDuplicates(@PathVariable Long batchId) {
+        return duplicateChecks.checkPendingTask(batchId);
+    }
+
+    @PostMapping("/batches/{batchId}/creation-duplicate-review")
+    @PreAuthorize("hasAuthority('REDEMPTION_VIEW') and hasAuthority('REDEMPTION_GENERATE')")
+    public void confirmPendingTaskDuplicates(@PathVariable Long batchId,
+            @Valid @RequestBody RedemptionDuplicateCheckService.Review review) {
+        duplicateChecks.confirmTaskReview(batchId, review);
     }
 
     @PatchMapping("/{id}")
@@ -64,6 +90,10 @@ public class RedemptionController {
     @PreAuthorize("hasAuthority('REDEMPTION_VIEW')")
     public List<RedemptionDtos.BatchDetailResponse> batchOverviews() { return service.batchOverviews(); }
 
+    @GetMapping("/batches/summaries")
+    @PreAuthorize("hasAuthority('REDEMPTION_VIEW')")
+    public List<RedemptionDtos.BatchSummaryResponse> batchSummaries() { return service.batchSummaries(); }
+
     @GetMapping("/batches/{batchId}")
     @PreAuthorize("hasAuthority('REDEMPTION_VIEW')")
     public RedemptionDtos.BatchDetailResponse batch(@PathVariable Long batchId) { return service.batch(batchId); }
@@ -84,9 +114,88 @@ public class RedemptionController {
     @PostMapping("/code-tasks/{issueId}/remote-create")
     @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
     public RedemptionDtos.BatchDetailResponse createRemoteConfiguration(@PathVariable Long issueId,
-                                                                         @RequestParam(defaultValue = "false") boolean retryFailed) {
-        return service.batch(remoteOperations.createConfiguration(issueId, retryFailed));
+                                                                         @RequestParam(defaultValue = "false") boolean retryFailed,
+            @Valid @RequestBody(required=false) RedemptionDuplicateCheckService.Review review) {
+        return service.batch(remoteOperations.createConfiguration(issueId, retryFailed, review));
     }
+
+    @PostMapping("/code-tasks/{issueId}/deletion/keep-preview")
+    @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionDeletionService.View previewKeep(@PathVariable Long issueId) { return deletions.previewKeep(issueId); }
+
+    @PostMapping("/code-tasks/{issueId}/deletion/keep-confirm")
+    @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionDeletionService.View confirmKeep(@PathVariable Long issueId,@RequestBody RedemptionDeletionService.KeepConfirm request) { return deletions.confirmKeep(issueId,request); }
+
+    @PostMapping("/code-tasks/{issueId}/reuse")
+    @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionDtos.BatchDetailResponse reuseExistingConfiguration(@PathVariable Long issueId,
+            @Valid @RequestBody RedemptionDtos.ReuseConfigurationRequest request) {
+        return service.batch(reuseService.reuse(issueId, request.rowVersion(), request.configurationId()));
+    }
+
+    @PostMapping("/code-tasks/{issueId}/recovery-check")
+    @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionRecoveryService.View inspectRecovery(@PathVariable Long issueId,
+            @RequestBody RedemptionRecoveryService.InspectRequest request) {
+        return recoveryService.inspect(issueId, request.rowVersion());
+    }
+
+    @PostMapping("/code-tasks/{issueId}/rebuild")
+    @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionDtos.BatchDetailResponse rebuild(@PathVariable Long issueId,
+            @RequestBody RedemptionRecoveryService.RebuildRequest request) {
+        return service.batch(recoveryService.rebuild(issueId, request));
+    }
+
+    @PostMapping("/code-tasks/{issueId}/reward-policy/check")
+    @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionPolicyUpdateService.View checkRewardPolicy(@PathVariable Long issueId,
+            @RequestBody RedemptionRecoveryService.InspectRequest request) { return policyUpdates.check(issueId, request.rowVersion()); }
+
+    @PostMapping("/code-tasks/{issueId}/reward-policy/apply")
+    @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionDtos.BatchDetailResponse applyRewardPolicy(@PathVariable Long issueId,
+            @RequestBody RedemptionPolicyUpdateService.ApplyRequest request) { return service.batch(policyUpdates.apply(issueId, request)); }
+
+    @PostMapping("/code-tasks/{issueId}/deletion/preview")
+    @PreAuthorize("hasAuthority('REDEMPTION_MANAGE') and hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionDeletionService.View deletionPreview(@PathVariable Long issueId,
+            @RequestBody RedemptionRecoveryService.InspectRequest request) { return deletions.preview(issueId,request.rowVersion()); }
+
+    @PostMapping("/code-tasks/{issueId}/deletion/confirm")
+    @PreAuthorize("hasAuthority('REDEMPTION_MANAGE') and hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionDeletionService.View deletionConfirm(@PathVariable Long issueId,
+            @RequestBody RedemptionDeletionService.Confirm request) { return deletions.confirm(issueId,request); }
+
+    @PostMapping("/code-tasks/{issueId}/deletion/reconcile")
+    @PreAuthorize("hasAuthority('REDEMPTION_MANAGE') and hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionDeletionService.View deletionReconcile(@PathVariable Long issueId) { return deletions.reconcile(issueId); }
+
+    @GetMapping("/tasks/{taskId}/deletion")
+    @PreAuthorize("hasAuthority('REDEMPTION_MANAGE') and hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionTaskDeletionService.View taskDeletionLatest(@PathVariable Long taskId) { return taskDeletions.latest(taskId); }
+
+    @PostMapping("/tasks/{taskId}/deletion/preview")
+    @PreAuthorize("hasAuthority('REDEMPTION_MANAGE') and hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionTaskDeletionService.View taskDeletionPreview(@PathVariable Long taskId) { return taskDeletions.preview(taskId); }
+
+    @GetMapping("/tasks/{taskId}/deletion/{jobId}")
+    @PreAuthorize("hasAuthority('REDEMPTION_MANAGE') and hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionTaskDeletionService.View taskDeletionGet(@PathVariable Long taskId,@PathVariable Long jobId) { return taskDeletions.get(taskId,jobId); }
+
+    @PostMapping("/tasks/{taskId}/deletion/{jobId}/confirm")
+    @PreAuthorize("hasAuthority('REDEMPTION_MANAGE') and hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionTaskDeletionService.View taskDeletionConfirm(@PathVariable Long taskId,@PathVariable Long jobId,
+            @RequestBody RedemptionTaskDeletionService.Confirm request) { return taskDeletions.confirm(taskId,jobId,request); }
+
+    @PostMapping("/tasks/{taskId}/deletion/{jobId}/next")
+    @PreAuthorize("hasAuthority('REDEMPTION_MANAGE') and hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionTaskDeletionService.View taskDeletionNext(@PathVariable Long taskId,@PathVariable Long jobId) { return taskDeletions.next(taskId,jobId); }
+
+    @PostMapping("/tasks/{taskId}/deletion/{jobId}/reconcile")
+    @PreAuthorize("hasAuthority('REDEMPTION_MANAGE') and hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionTaskDeletionService.View taskDeletionReconcile(@PathVariable Long taskId,@PathVariable Long jobId) { return taskDeletions.reconcile(taskId,jobId); }
 
     @PostMapping("/code-tasks/{issueId}/remote-download")
     @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
@@ -112,13 +221,6 @@ public class RedemptionController {
     @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
     public UnifiedRedemptionRemoteExecutorClient.PublicationVerification verifyRemotePublish(@PathVariable Long batchId) {
         return remoteOperations.verifyPublication(batchId);
-    }
-
-    @PostMapping("/batches/{batchId}/external-publication")
-    @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
-    public RedemptionDtos.BatchDetailResponse adoptExternalPublication(@PathVariable Long batchId,
-            @Valid @RequestBody RedemptionDtos.ExternalPublicationRequest request) {
-        return service.batch(remoteOperations.adoptExternalPublication(batchId, request));
     }
 
     @PostMapping("/batches/{batchId}/missing-configurations/repair")

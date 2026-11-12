@@ -32,84 +32,147 @@ class RedemptionRemoteIdentityHttpTest {
     @MockBean RemoteOperationGate gate;
     @MockBean UnifiedRedemptionRemoteExecutorClient executor;
 
+    @org.junit.jupiter.api.BeforeEach
+    void actualRewardReadback() {
+        when(executor.checkReuse(anyLong(), anyLong(), anyString(), anyString(), any(), any(), any(), anyList(), any(), any(), any(), any()))
+                .thenAnswer(call -> new UnifiedRedemptionRemoteExecutorClient.ReuseCheck(call.getArgument(2), true,
+                        java.util.List.of(), null, call.getArgument(8), call.getArgument(9)));
+    }
+
     @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(strings = {"success", "waiting", "failed", "unknown", "missing", "mismatch", "empty", "config_error", "unavailable", "stale", "reserved", "changed_market", "race", "config_race"})
-    void externalPublicationOnlyAssociatesVerifiedConfigurationsAndNeverPublishes(String scenario) throws Exception {
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"-1", "0"})
+    void manualBindingCannotIntroduceInvalidConfigurationIds(String invalidId) throws Exception {
         var session = login();
-        String prefix = "EXTERNAL_" + scenario.toUpperCase();
-        long market = market(session, prefix);
-        long accountId = account(session, market, prefix.toLowerCase());
-        var group = group(session, market, prefix + "_GROUP");
-        register(session, group).andExpect(status().isOk());
-        long batchId = group.at("/batch/id").asLong();
-        long issueId = group.at("/issues/0/id").asLong();
-        jdbc.update("update erp_compat_redemption_code_issues set remote_group_key='external-group' where id=?", issueId);
-        long version = jdbc.queryForObject("select row_version from erp_compat_redemption_code_batches where id=?", Long.class, batchId);
-        String state = switch (scenario) { case "waiting" -> "WAITING"; case "failed" -> "FAILED"; case "unknown" -> "UNKNOWN"; default -> "COMPLETED"; };
-        var configs = scenario.equals("empty") ? java.util.List.<UnifiedRedemptionRemoteExecutorClient.ConfigurationVerification>of()
-                : java.util.List.of(new UnifiedRedemptionRemoteExecutorClient.ConfigurationVerification("manual-scope-id",
-                        scenario.equals("missing") ? "MISSING" : scenario.equals("mismatch") ? "MISMATCH" : "MATCHED"));
-        var verified = new UnifiedRedemptionRemoteExecutorClient.PublicationVerification("987", 4, state, false,
-                configs, java.time.Instant.now().toString(), scenario.equals("config_error") ? "configuration query failed" : null);
-        when(executor.verifyPublication(eq(accountId), eq(batchId), eq("987"), eq("test"), anyList())).thenReturn(verified);
-        if (scenario.equals("unavailable")) when(executor.verifyPublication(anyLong(), anyLong(), anyString(), anyString(), anyList()))
-                .thenThrow(new com.rajads.erp.identity.CompatibilityIdentityUnavailableException("verification unavailable"));
-        if (scenario.equals("reserved")) jdbc.update("update erp_compat_redemption_code_batches set remote_publish_task_id='PENDING:other' where id=?", batchId);
-        if (scenario.equals("changed_market")) {
-            long other = market(session, prefix + "_OTHER");
-            long otherAccount = account(session, other, "external-other");
-            jdbc.update("update erp_compat_redemption_code_batches set remote_connection_id=? where id=?", otherAccount, batchId);
-        }
-        if (scenario.equals("race") || scenario.equals("config_race")) {
-            when(executor.verifyPublication(anyLong(), anyLong(), anyString(), anyString(), anyList())).thenAnswer(invocation -> {
-                if (scenario.equals("race")) jdbc.update("update erp_compat_redemption_code_batches set row_version=row_version+1 where id=?", batchId);
-                else jdbc.update("update erp_compat_redemption_code_issues set remote_group_key='changed-group' where id=?", issueId);
-                return verified;
-            });
-        }
-        String path = "/api/v1/redemption-campaigns/batches/" + batchId + "/external-publication";
-        var request = mapper.writeValueAsString(java.util.Map.of("rowVersion", scenario.equals("stale") ? version - 1 : version, "remotePublishTaskId", "987"));
-        var result = mvc.perform(post(path).session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(request));
-        if (scenario.equals("success")) {
-            result.andExpect(status().isOk()).andExpect(jsonPath("$.data.batch.status").value("PUBLISHED"))
-                    .andExpect(jsonPath("$.data.batch.remotePublishMode").value("EXTERNAL"))
-                    .andExpect(jsonPath("$.data.batch.remotePublishTaskId").value("987"))
-                    .andExpect(jsonPath("$.data.issues[0].workflowStatus").value("CREATED"));
-            assertThat(jdbc.queryForObject("select remote_publish_task_id from erp_compat_redemption_code_batches where id=?", String.class, batchId)).isEqualTo("987");
-            // Replaying the association cannot overwrite an existing task.
-            mvc.perform(post(path).session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(request)).andExpect(status().isConflict());
-            when(executor.download(eq(accountId), eq(issueId), eq("manual-scope-id"), eq("external-group"), eq(1)))
-                    .thenReturn(new UnifiedRedemptionRemoteExecutorClient.DownloadedCodes(java.util.List.of("EXTERNAL-CODE-1"), "external-group"));
-            mvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + issueId + "/remote-download").session(session).with(csrf()))
-                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.batch.status").value("COMPLETED"))
-                    .andExpect(jsonPath("$.data.issues[0].redemptionCode").value("EXTERNAL-CODE-1"));
-            assertThat(jdbc.queryForObject("select workflow_status from erp_compat_redemption_code_issues where id=?", String.class, issueId)).isEqualTo("CODE_IMPORTED");
-        } else {
-            if (scenario.equals("unavailable")) result.andExpect(status().isServiceUnavailable());
-            else result.andExpect(status().isConflict());
-            assertThat(jdbc.queryForObject("select status from erp_compat_redemption_code_batches where id=?", String.class, batchId)).isEqualTo("READY_TO_PUBLISH");
-            assertThat(jdbc.queryForObject("select remote_publish_mode from erp_compat_redemption_code_batches where id=?", String.class, batchId)).isNull();
-            verify(executor, never()).download(anyLong(), anyLong(), anyString(), any(), anyInt());
-        }
-        verify(executor, never()).publish(anyLong(), anyLong(), anyString(), anyBoolean(), any(), anyBoolean());
-        verify(executor, never()).create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any(), any());
-        verify(executor, never()).cancelScheduledPublish(anyLong(), anyLong(), anyString());
-        verifyNoInteractions(standalone, gate);
+        String suffix = java.util.UUID.randomUUID().toString().substring(0, 8);
+        long market = market(session, "INVALID_BIND_" + suffix);
+        account(session, market, "invalid-bind");
+        var group = group(session, market, "INVALID_BIND_GROUP_" + suffix);
+        long issue = group.at("/issues/0/id").asLong();
+        mvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + issue + "/remote-configuration")
+                .session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(java.util.Map.of("remoteConfigurationId", invalidId,
+                        "rowVersion", group.at("/issues/0/rowVersion").asLong()))))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("INVALID_REMOTE_CONFIGURATION_ID"));
+        assertThat(jdbc.queryForMap("select workflow_status,remote_configuration_id from erp_compat_redemption_code_issues where id=?", issue))
+                .containsEntry("workflow_status", "PENDING_CREATION").containsEntry("remote_configuration_id", null);
+        verifyNoInteractions(executor, standalone);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"-1", "0", "false"})
+    void invalidCreateReceiptIsUnconfirmedAndCannotBeReplayed(String invalidId) throws Exception {
+        var session = login();
+        String suffix = java.util.UUID.randomUUID().toString().substring(0, 8);
+        long market = market(session, "BAD_RECEIPT_" + suffix);
+        account(session, market, "bad-receipt");
+        var group = group(session, market, "BAD_RECEIPT_GROUP_" + suffix);
+        long issue = group.at("/issues/0/id").asLong();
+        when(executor.create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any(), any()))
+                .thenReturn(new UnifiedRedemptionRemoteExecutorClient.CreatedConfiguration(invalidId, null, null));
+        create(session, issue, false).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("REMOTE_CREATE_RESULT_UNCONFIRMED"));
+        assertThat(jdbc.queryForMap("select workflow_status,remote_configuration_id,remote_reference_id,remote_create_receipt_id from erp_compat_redemption_code_issues where id=?", issue))
+                .containsEntry("workflow_status", "FAILED").containsEntry("remote_configuration_id", null)
+                .containsEntry("remote_reference_id", null).containsEntry("remote_create_receipt_id", null);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/redemption-campaigns/batches/" + group.at("/batch/id").asLong()).session(session))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.issues[0].creationNeedsReconciliation").value(true));
+        create(session, issue, true).andExpect(status().isConflict());
+        verify(executor, times(1)).create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any(), any());
+        verifyNoInteractions(standalone);
     }
 
     @Test
-    void externalPublicationRejectsInvalidInputAndRequiresLoginAndCsrf() throws Exception {
+    void historicalMinusOneRemainsUnchangedAndBlocksRecoveryPublishAndDownload() throws Exception {
         var session = login();
-        String path = "/api/v1/redemption-campaigns/batches/999999/external-publication";
-        for (String invalid : java.util.List.of("{}", "{\"rowVersion\":0,\"remotePublishTaskId\":\"0\"}", "{\"rowVersion\":0,\"remotePublishTaskId\":\"other\"}")) {
-            mvc.perform(post(path).session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(invalid))
-                    .andExpect(status().isBadRequest());
-        }
-        mvc.perform(post(path).with(csrf()).contentType(MediaType.APPLICATION_JSON).content("{\"rowVersion\":0,\"remotePublishTaskId\":\"987\"}"))
-                .andExpect(status().isUnauthorized());
-        mvc.perform(post(path).session(session).contentType(MediaType.APPLICATION_JSON).content("{\"rowVersion\":0,\"remotePublishTaskId\":\"987\"}"))
-                .andExpect(status().isForbidden());
+        long market = market(session, "HISTORICAL_MINUS_ONE");
+        account(session, market, "historical-receipt");
+        var group = group(session, market, "HISTORICAL_MINUS_ONE_GROUP");
+        long issue = group.at("/issues/0/id").asLong();
+        long batch = group.at("/batch/id").asLong();
+        jdbc.update("update erp_compat_redemption_code_issues set workflow_status='CREATED',remote_configuration_id='-1',remote_reference_id='-1' where id=?", issue);
+        jdbc.update("update erp_compat_redemption_code_batches set status='READY_TO_PUBLISH' where id=?", batch);
+        var before = jdbc.queryForMap("select * from erp_compat_redemption_code_issues where id=?", issue);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/redemption-campaigns/batches/" + batch).session(session))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.batch.createdCount").value(0))
+                .andExpect(jsonPath("$.data.issues[0].workflowStatus").value("CREATED"))
+                .andExpect(jsonPath("$.data.issues[0].creationNeedsReconciliation").value(true));
+        create(session, issue, true).andExpect(status().isConflict());
+        long version = jdbc.queryForObject("select row_version from erp_compat_redemption_code_batches where id=?", Long.class, batch);
+        mvc.perform(post("/api/v1/redemption-campaigns/batches/" + batch + "/remote-publish").session(session).with(csrf())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"mode\":\"IMMEDIATE\",\"fallbackToScheduled\":false,\"rowVersion\":" + version + "}"))
+                .andExpect(status().isConflict());
+        assertThat(jdbc.queryForMap("select * from erp_compat_redemption_code_issues where id=?", issue)).isEqualTo(before);
+        jdbc.update("update erp_compat_redemption_code_issues set workflow_status='FAILED',remote_configuration_id=null,remote_create_receipt_id='-1' where id=?", issue);
+        create(session, issue, true).andExpect(status().isConflict());
+        jdbc.update("update erp_compat_redemption_code_issues set workflow_status='PUBLISHED',remote_configuration_id='-1' where id=?", issue);
+        jdbc.update("update erp_compat_redemption_code_batches set status='PUBLISHED',remote_publish_task_id='123' where id=?", batch);
+        mvc.perform(post("/api/v1/redemption-campaigns/code-tasks/" + issue + "/remote-download").session(session).with(csrf()))
+                .andExpect(status().isConflict());
         verifyNoInteractions(executor, standalone);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+    void uncertainCreateStopsSiblingMarketsAndDoesNotRewritePendingRows(boolean review) throws Exception {
+        var session = login();
+        String suffix = java.util.UUID.randomUUID().toString().substring(0, 8);
+        long marketA = market(session, "REVIEW_A_" + suffix);
+        long marketB = market(session, "REVIEW_B_" + suffix);
+        account(session, marketA, "review-a");
+        account(session, marketB, "review-b");
+        var first = group(session, marketA, "REVIEW_FIRST_" + suffix);
+        var second = group(session, marketB, "REVIEW_SECOND_" + suffix);
+        long issue = first.at("/issues/0/id").asLong();
+        long sibling = second.at("/issues/0/id").asLong();
+        long batch = first.at("/batch/id").asLong();
+        Long task = jdbc.queryForObject("select task_id from erp_compat_redemption_code_batches where id=?", Long.class, batch);
+        jdbc.update("update erp_compat_redemption_code_batches set task_id=? where id=?", task, second.at("/batch/id").asLong());
+        var untouched = jdbc.queryForMap("select * from erp_compat_redemption_code_issues where id=?", sibling);
+        when(executor.create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any(), any()))
+                .thenThrow(review ? RemoteConfigurationIds.awaitingReview() : RemoteConfigurationIds.unconfirmed());
+        create(session, issue, false).andExpect(status().isConflict());
+        var read = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
+                "/api/v1/redemption-campaigns/batches/" + batch).session(session))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.batch.createdCount").value(0))
+                .andExpect(jsonPath("$.data.issues[0].creationNeedsReconciliation").value(true));
+        if (review) read.andExpect(jsonPath("$.data.issues[0].creationAwaitingRemoteReview").value(true));
+        else read.andExpect(jsonPath("$.data.issues[0].creationAwaitingRemoteReview").doesNotExist());
+        create(session, issue, true).andExpect(status().isConflict());
+        create(session, sibling, false).andExpect(status().isConflict());
+        assertThat(jdbc.queryForMap("select * from erp_compat_redemption_code_issues where id=?", sibling)).isEqualTo(untouched);
+        verify(executor, times(1)).create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any(), any());
+        verifyNoInteractions(standalone);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void storedSpecialCodeIsBlockedBeforeRemoteCallAcrossAccountsButNotMarkets(boolean collection) throws Exception {
+        var session = login();
+        String suffix = Boolean.toString(collection);
+        long market = market(session, "DUPLICATE_CODE_" + suffix);
+        account(session, market, "first-account");
+        var old = group(session, market, "EXISTING_CODE_" + suffix);
+        long oldIssue = old.at("/issues/0/id").asLong();
+        if (collection) {
+            jdbc.update("insert into erp_compat_redemption_issue_codes(issue_id,code_index,remote_market_id,code) values(?,?,?,?)", oldIssue, 0, market, "OTHER-CODE");
+            jdbc.update("insert into erp_compat_redemption_issue_codes(issue_id,code_index,remote_market_id,code) values(?,?,?,?)", oldIssue, 1, market, "0905RAJ7DAYS0");
+        } else jdbc.update("update erp_compat_redemption_code_issues set redemption_code='0905RAJ7DAYS0' where id=?", oldIssue);
+        account(session, market, "second-account");
+        var duplicate = group(session, market, "DUPLICATE_CODE_GROUP_" + suffix);
+        long issue = duplicate.at("/issues/0/id").asLong();
+        create(session, issue, false).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("LOCAL_REDEMPTION_DUPLICATE"));
+        assertThat(jdbc.queryForObject("select workflow_status from erp_compat_redemption_code_issues where id=?", String.class, issue)).isEqualTo("FAILED");
+        verifyNoInteractions(executor, standalone);
+
+        long otherMarket = market(session, "OTHER_CODE_" + suffix);
+        account(session, otherMarket, "other-account");
+        var allowed = group(session, otherMarket, "ALLOWED_CODE_GROUP_" + suffix);
+        when(executor.create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any(), any()))
+                .thenReturn(new UnifiedRedemptionRemoteExecutorClient.CreatedConfiguration("valid-other-id", null, null));
+        create(session, allowed.at("/issues/0/id").asLong(), false).andExpect(status().isOk());
+        verify(executor, times(1)).create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any(), any());
     }
 
     @org.junit.jupiter.params.ParameterizedTest
@@ -179,7 +242,7 @@ class RedemptionRemoteIdentityHttpTest {
     }
 
     @Test
-    void sameIdAcrossMarketsWorksButSameMarketAcrossAccountsConflictsWithoutRecreation() throws Exception {
+    void sameIdAcrossMarketsWorksAndSameMarketAcrossAccountsReusesWithoutRecreation() throws Exception {
         MockHttpSession session = login();
         long marketA = market(session, "SCOPE_A");
         long accountA = account(session, marketA, "scope-a");
@@ -204,17 +267,19 @@ class RedemptionRemoteIdentityHttpTest {
         assertThatThrownBy(() -> jdbc.update("update erp_compat_redemption_code_issues set remote_configuration_id='1632-scope' where id=?", issueA2))
                 .isInstanceOf(DataIntegrityViolationException.class);
 
-        create(session, issueA2, false).andExpect(status().isConflict());
-        assertThat(jdbc.queryForMap("select workflow_status,remote_reference_id,remote_configuration_id from erp_compat_redemption_code_issues where id=?", issueA2))
-                .containsEntry("workflow_status", "FAILED").containsEntry("remote_reference_id", "1632-scope")
-                .containsEntry("remote_configuration_id", null);
-        create(session, issueA2, true).andExpect(status().isConflict());
-        verify(executor, times(3)).create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any(), eq("0905raj7days0"));
+        when(executor.checkReuse(eq(accountA2), eq(issueA2), eq("1632-scope"), anyString(), any(), any(), any(), anyList(), any(), any(), any(), anyString()))
+                .thenReturn(new UnifiedRedemptionRemoteExecutorClient.ReuseCheck("1632-scope", true, java.util.List.of(), "group-scope", java.math.BigDecimal.ONE, java.math.BigDecimal.valueOf(3)));
+        mvc.perform(post("/api/v1/redemption-campaigns/code-tasks/"+issueA2+"/reuse").session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content("{\"rowVersion\":0}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.issues[0].reusedFromIssueId").value(issueA));
+        assertThat(jdbc.queryForMap("select reused_from_issue_id,remote_configuration_id from erp_compat_redemption_code_issues where id=?", issueA2))
+                .containsEntry("reused_from_issue_id", issueA).containsEntry("remote_configuration_id", null);
+        create(session, issueA2, true).andExpect(status().isOk());
+        verify(executor, times(2)).create(anyLong(), anyLong(), anyString(), any(), any(), any(), anyList(), any(), any(), any(), eq("0905raj7days0"));
         verifyNoInteractions(standalone);
     }
 
     @Test
-    void receiptRecoveryOnlyRegistersLocallyAndLegacyLostReceiptBlocksRetry() throws Exception {
+    void receiptRecoveryReadsActualRewardsWithoutRecreatingAndLegacyLostReceiptBlocksRetry() throws Exception {
         MockHttpSession session = login();
         long market = market(session, "RECEIPT_MARKET");
         account(session, market, "receipt-account");
@@ -226,9 +291,11 @@ class RedemptionRemoteIdentityHttpTest {
                 .andExpect(jsonPath("$.data.issues[0].remoteConfigurationId").value("receipt-123"));
 
         long legacy = group(session, market, "LOST_RECEIPT_GROUP").at("/issues/0/id").asLong();
-        jdbc.update("update erp_compat_redemption_code_issues set workflow_status='FAILED', remote_error='duplicate key violates unique constraint remote_configuration_id' where id=?", legacy);
+        jdbc.update("update erp_compat_redemption_code_issues set workflow_status='FAILED', claim_date='2026-09-06', remote_error='duplicate key violates unique constraint remote_configuration_id' where id=?", legacy);
         create(session, legacy, true).andExpect(status().isConflict());
-        verifyNoInteractions(executor, standalone);
+        verify(executor, times(1)).checkReuse(anyLong(), anyLong(), eq("receipt-123"), anyString(), any(), any(), any(), anyList(), any(), any(), any(), any());
+        verify(executor, never()).create(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verifyNoInteractions(standalone);
     }
 
     @org.junit.jupiter.params.ParameterizedTest

@@ -14,10 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.domain.models import RemoteAccount, RemoteAccountCapability, SourceConfig
 
-ErpRedemptionRemoteOperation = Literal["CREATE", "PUBLISH", "DOWNLOAD", "CANCEL"]
+ErpRedemptionRemoteOperation = Literal[
+    "CREATE", "PUBLISH", "DOWNLOAD", "CANCEL", "UPDATE", "DELETE"
+]
 
 ERP_REDEMPTION_REMOTE_CAPABILITIES: dict[ErpRedemptionRemoteOperation, str] = {
     "CREATE": "ERP_REDEMPTION_CREATE",
+    "UPDATE": "ERP_REDEMPTION_UPDATE",
+    "DELETE": "ERP_REDEMPTION_DELETE",
     "PUBLISH": "ERP_REDEMPTION_PUBLISH",
     "DOWNLOAD": "ERP_REDEMPTION_DOWNLOAD",
     "CANCEL": "ERP_REDEMPTION_CANCEL",
@@ -78,9 +82,7 @@ async def authorize_erp_redemption_remote_execution(
         )
     )
     if not capability_enabled:
-        raise ErpRemoteExecutionNotAuthorizedError(
-            f"远端账号未获得 {capability} 能力授权。"
-        )
+        raise ErpRemoteExecutionNotAuthorizedError(f"远端账号未获得 {capability} 能力授权。")
 
     return ErpRemoteExecutionGrant(
         account_id=account.id,

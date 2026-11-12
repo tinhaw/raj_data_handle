@@ -269,9 +269,10 @@ export interface DownloadFile {
 
 export type RedemptionCampaignStatus = 'DRAFT' | 'ACTIVE' | 'ARCHIVED'
 export type RedemptionCodeState = 'PENDING' | 'GENERATED' | 'FAILED'
-export type RedemptionWorkflowStatus = 'PENDING_CREATION' | 'CREATING_REMOTE' | 'CREATED' | 'PUBLISHED' | 'CODE_IMPORTED' | 'FAILED'
+export type RedemptionWorkflowStatus = 'REWARD_CHECK_REQUIRED' | 'REWARD_CONFIRM_REQUIRED' | 'REMOTE_DELETE_PENDING' | 'REMOTE_DELETED' | 'RECOVERY_REQUIRED' | 'PENDING_CREATION' | 'CREATING_REMOTE' | 'CREATED' | 'PUBLISHED' | 'CODE_IMPORTED' | 'FAILED'
 export type RedemptionBatchStatus = 'CREATING' | 'READY_TO_PUBLISH' | 'PUBLISHED' | 'COMPLETED'
 export type RedemptionCodeType = 'SEVEN_DAY_DEPOSIT' | 'PREVIOUS_DAY_DEPOSIT' | 'AGENT'
+export type RedemptionCodeNaming = 'ORIGINAL' | 'TEN_K'
 
 export interface RedemptionCampaignTier {
   id?: string | number
@@ -298,7 +299,50 @@ export interface RedemptionCampaign {
   updatedAt?: string
 }
 
+export type RedemptionRecoveryStatus = 'CHECK_UNAVAILABLE' | 'PRESENT' | 'MISSING' | 'CREATING' | 'UNCONFIRMED' | 'RECEIPT_SAVED' | 'APPLYING' | 'COMPLETED'
+export interface RedemptionRecoverySummary {
+  id: string | number
+  status: RedemptionRecoveryStatus
+  reason: string
+  rowVersion: number
+  requestedIssueId: string | number
+  oldConfigurationId: string
+  newConfigurationId?: string
+}
+export interface RedemptionRecoveryView extends RedemptionRecoverySummary {
+  ownerIssueId: string | number
+  checkedAt?: string
+  relatedBatchCount: number
+  parameters: {
+    issueId: string | number
+    issueVersion: number
+    ownerId: string | number
+    ownerVersion: number
+    batchId: string | number
+    batchVersion: number
+    sharedBatches?: Array<{ id: string | number; rowVersion: number }>
+    linkedIssueIds?: Array<string | number>
+    accountId: string | number
+    marketId: string | number
+    marketName: string
+    description: string
+    claimDate: string
+    validFrom: string
+    validTo: string
+    labels: Array<string | number>
+    bonusMin: string | number
+    bonusMax: string | number
+    options: RedemptionRemoteCreationOptions
+    code?: string
+  }
+}
+
 export interface RedemptionCodeIssue {
+  /** Read-only counted list state; never an individual configuration identity. */
+  overviewCount?: number
+  overviewHasConfiguration?: boolean
+  overviewHasReference?: boolean
+  overviewConfigurationIds?: string[]
   id: string | number
   campaignId: string | number
   campaignTierId: string | number
@@ -312,6 +356,11 @@ export interface RedemptionCodeIssue {
   redemptionCode?: string
   state: RedemptionCodeState
   remoteReferenceId?: string
+  recovery?: RedemptionRecoverySummary
+  creationNeedsReconciliation?: boolean
+  creationAwaitingRemoteReview?: boolean
+  reusedFromIssueId?: string | number
+  reusedFromBatchId?: string | number
   remoteError?: string
   generatedAt?: string
   rowVersion?: number
@@ -343,6 +392,7 @@ export interface RedemptionCodeBatch {
   validToDayOffset: number
   lookbackDays: number
   redemptionType: RedemptionCodeType
+  specialCodeNaming?: RedemptionCodeNaming
   expectedCodeCount: number
   /** Number of individual codes; expectedCodeCount remains the configuration count. */
   plannedCodeCount: number
@@ -363,7 +413,7 @@ export interface RedemptionCodeBatch {
   exportGroupKey?: string
   remotePublishTaskId?: string
   remotePublishError?: string
-  remotePublishMode?: 'IMMEDIATE' | 'SCHEDULED' | 'EXTERNAL'
+  remotePublishMode?: 'IMMEDIATE' | 'SCHEDULED'
   remoteScheduledPublishAt?: string
   remotePublishNote?: string
   remotePublishCancelledAt?: string
@@ -371,11 +421,13 @@ export interface RedemptionCodeBatch {
 }
 
 export interface RedemptionBatchDetail {
+  overview?: boolean
   batch: RedemptionCodeBatch
   issues: RedemptionCodeIssue[]
 }
 
 export interface RedemptionCodeGroupInput {
+  duplicateReview?: RedemptionDuplicateReview
   code: string
   name: string
   claimDateFrom: string
@@ -389,11 +441,45 @@ export interface RedemptionCodeGroupInput {
   remoteMarketId: string | number
   exportGroupKey?: string
   redemptionType: RedemptionCodeType
+  specialCodeNaming?: RedemptionCodeNaming
   /** Each entry declares whether the same-indexed tier targets all users or label users. */
   tierUserTypes: Array<'ALL_USERS' | 'LABEL_USERS'>
   /** Each entry corresponds to the same-indexed recharge tier. */
   tierLabelIds: Array<Array<string | number>>
   remoteOptions: RedemptionRemoteCreationOptions
+}
+
+export interface RedemptionDuplicateMarket {
+  marketId: string | number
+  redemptionType: RedemptionCodeType
+  specialCodeNaming?: RedemptionCodeNaming
+  from: string
+  to: string
+  deposits: string[]
+}
+export interface RedemptionDuplicateConflict {
+  marketId: string | number
+  code: string
+  source: 'LOCAL' | 'REMOTE'
+  issueId?: number
+  batchId?: number
+  taskNumber?: string
+  configurationId?: string
+  localStatus?: string
+  localRewardMin?: string | number
+  localRewardMax?: string | number
+  reviewFingerprint?: string
+}
+
+export interface RedemptionDuplicateReview {
+  confirmed: boolean
+  fingerprints: Record<string, string>
+}
+export interface RedemptionDuplicateResult {
+  checkedCodes: number
+  remoteChecked: boolean
+  conflicts: RedemptionDuplicateConflict[]
+  reviewConfirmed?: boolean
 }
 
 /** These options are selected when establishing a batch and are snapshotted with that batch. */
@@ -486,4 +572,45 @@ export interface RedemptionRemoteTagSyncResult {
 export interface PageResult<T> {
   content: T[]
   totalElements?: number
+}
+
+export interface RedemptionRewardPolicyView {
+  id?: string | number
+  status: 'CHECKED' | 'MATCHED' | 'UPDATING' | 'UNCONFIRMED' | 'UPDATED' | 'APPLIED'
+  reason: string
+  rowVersion?: number
+  requestedIssueId: string | number
+  ownerIssueId: string | number
+  configurationId: string
+  previousMin: string | number
+  previousMax: string | number
+  parameters: RedemptionRecoveryView['parameters']
+}
+
+
+export interface RedemptionDeletionView {
+  id: string | number
+  rowVersion: number
+  status: 'CHECKED' | 'DELETING' | 'UNKNOWN' | 'DELETED' | 'KEPT'
+  configurationId: string
+  parameters: RedemptionRecoveryView['parameters']
+  remote: { giftCode?: string; description?: string; status?: string; fingerprint?: string; keepSnapshotFingerprint?: string }
+  message: string
+}
+
+export interface RedemptionTaskDeletionView {
+  id: string | number
+  rowVersion: number
+  taskId: string | number
+  taskNumber: string
+  status: 'CHECKING' | 'CHECKED' | 'RUNNING' | 'PAUSED' | 'FINISHED' | 'STOPPED'
+  busy: boolean
+  items: Array<{
+    issueId: string | number
+    configurationId?: string
+    status: 'WAITING' | 'CHECKED' | 'SKIPPED' | 'BLOCKED' | 'UNKNOWN' | 'DELETED' | 'KEPT'
+    message: string
+    plan?: RedemptionDeletionView
+    sharedTasks: string[]
+  }>
 }

@@ -9,18 +9,29 @@ No legacy Java credential record is read here.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.common.settings import Settings
-from packages.domain.models import RemoteAccount, SourceConfig
+from packages.domain.models import RemoteAccount, RemoteAccountCapability, SourceConfig
 from packages.domain.schemas.remote_account import (
+    ErpCompatibilityRemoteAbsenceCheckRequest,
+    ErpCompatibilityRemoteAbsenceCheckResponse,
     ErpCompatibilityRemoteCancelRequest,
     ErpCompatibilityRemoteCreateRequest,
     ErpCompatibilityRemoteDownloadRequest,
+    ErpCompatibilityRemoteDuplicateCheckRequest,
     ErpCompatibilityRemotePublishRequest,
+    ErpCompatibilityRemoteRecoveryCheckRequest,
+    ErpCompatibilityRemoteRecoveryCheckResponse,
+    ErpCompatibilityRemoteReuseCheckRequest,
+    ErpCompatibilityRemoteReuseCheckResponse,
+    ErpCompatibilityRemoteRewardUpdateRequest,
     ErpCompatibilityRemoteVerifyRequest,
     ErpCompatibilityRemoteVerifyResponse,
 )
@@ -42,10 +53,13 @@ from packages.domain.services.erp_redemption_remote_adapter import (
 )
 from packages.domain.services.erp_redemption_remote_gate import (
     ErpRemoteExecutionGateError,
+    ErpRemoteExecutionGrant,
     authorize_erp_redemption_remote_execution,
 )
 from packages.domain.services.erp_redemption_remote_http_adapter import (
     ErpRedemptionRemoteHttpError,
+    ErpRedemptionRemoteReviewPending,
+    ErpRemoteAccountReadGrant,
     RajAdminGiftCodeAdapter,
 )
 from packages.domain.services.remote_account_credentials import (
@@ -172,7 +186,9 @@ async def execute_compatibility_remote_create(
             actor_user_id=actor_user_id,
             target_type="erp_compatibility_remote_account",
             target_id=str(payload.account_id),
-            result="failure",
+            result=(
+                "pending_review" if isinstance(exc, ErpRedemptionRemoteReviewPending) else "failure"
+            ),
             metadata={"issue_id": payload.issue_id, "operation": "CREATE"},
         )
         await session.commit()
@@ -537,3 +553,513 @@ async def execute_compatibility_remote_verify(
     )
     await session.commit()
     return result
+
+
+async def check_compatibility_remote_duplicates(
+    session: AsyncSession,
+    *,
+    payload: ErpCompatibilityRemoteDuplicateCheckRequest,
+    actor_user_id: int,
+    settings: Settings,
+    transport=None,
+) -> dict:
+    """Optional batch duplicate scan using the unified read capability and session."""
+    try:
+        account_id = await resolve_erp_compatibility_id(
+            session, entity_type="remote_account", legacy_id=payload.account_id
+        )
+        account = await session.get(RemoteAccount, account_id)
+        source = await session.get(SourceConfig, account.source_id) if account else None
+        if (
+            not account
+            or not source
+            or not account.enabled
+            or not source.enabled
+            or not source.base_url
+        ):
+            raise ErpCompatibilityRemoteExecutionError("统一远端账号或盘口不可用。")
+        allowed = await session.scalar(
+            select(RemoteAccountCapability.enabled).where(
+                RemoteAccountCapability.account_id == account_id,
+                RemoteAccountCapability.capability == "ERP_REMOTE_CHECK",
+            )
+        )
+        if not allowed:
+            raise ErpCompatibilityRemoteExecutionError(
+                "账号未获远端配置读取能力，不能执行远端查重。"
+            )
+        envelope = credential_envelope_for_account(account=account, source=source)
+        if envelope is None:
+            raise ErpCompatibilityRemoteExecutionError("统一远端账号凭据配置不完整。")
+        credentials = decrypt_remote_account_credentials(envelope, settings=settings)
+        async with RajAdminGiftCodeAdapter(
+            remote_session=account_session(
+                session, envelope=envelope, base_url=source.base_url, settings=settings
+            ),
+            account_id=account.id,
+            source_id=source.source_id,
+            base_url=source.base_url,
+            username=credentials["username"],
+            password=credentials["password"],
+            totp_secret=credentials["totp_secret"],
+            business_timezone=source.business_timezone,
+            transport=transport,
+        ) as adapter:
+            result = await asyncio.wait_for(adapter.check_duplicate_codes(
+                grant=ErpRemoteAccountReadGrant(
+                    account_id=account.id,
+                    source_id=source.source_id,
+                    operation="CHECK",
+                    capability="ERP_REMOTE_CHECK",
+                ),
+                gift_codes=payload.gift_codes,
+            ), timeout=75)
+    except (
+        TimeoutError,
+        ErpCompatibilityRemoteExecutionError,
+        ErpCompatibilityIdError,
+        RemoteAccountCredentialsError,
+        ErpRedemptionRemoteHttpError,
+    ) as exc:
+        await write_audit(
+            session,
+            action="erp_compatibility_redemption.duplicate_check",
+            actor_user_id=actor_user_id,
+            target_type="erp_compatibility_remote_account",
+            target_id=str(payload.account_id),
+            result="failure",
+            metadata={"code_count": len(payload.gift_codes), "operation": "READ_DUPLICATES"},
+        )
+        await session.commit()
+        raise ErpCompatibilityRemoteExecutionError(
+            str(exc) or "远端查重超时，本次查重未完成。"
+        ) from exc
+    await write_audit(
+        session,
+        action="erp_compatibility_redemption.duplicate_check",
+        actor_user_id=actor_user_id,
+        target_type="remote_account",
+        target_id=account.id,
+        metadata={"code_count": len(payload.gift_codes), "operation": "READ_DUPLICATES",
+                  "matched_count": len(result["matches"])},
+    )
+    await session.commit()
+    return result
+
+
+async def check_compatibility_remote_reuse(
+    session: AsyncSession,
+    *,
+    payload: ErpCompatibilityRemoteReuseCheckRequest,
+    actor_user_id: int,
+    settings: Settings,
+    transport=None,
+) -> ErpCompatibilityRemoteReuseCheckResponse:
+    """Verify the live policy through the unified read capability and session only."""
+    try:
+        account_id = await resolve_erp_compatibility_id(
+            session, entity_type="remote_account", legacy_id=payload.account_id
+        )
+        account = await session.get(RemoteAccount, account_id)
+        source = await session.get(SourceConfig, account.source_id) if account else None
+        if (
+            not account
+            or not source
+            or not account.enabled
+            or not source.enabled
+            or not source.base_url
+        ):
+            raise ErpCompatibilityRemoteExecutionError("统一远端账号或盘口不可用。")
+        allowed = await session.scalar(
+            select(RemoteAccountCapability.enabled).where(
+                RemoteAccountCapability.account_id == account_id,
+                RemoteAccountCapability.capability == "ERP_REMOTE_CHECK",
+            )
+        )
+        if not allowed:
+            raise ErpCompatibilityRemoteExecutionError("账号未获远端配置读取能力，不能核验复用。")
+        envelope = credential_envelope_for_account(account=account, source=source)
+        if envelope is None:
+            raise ErpCompatibilityRemoteExecutionError("统一远端账号凭据配置不完整。")
+        credentials = decrypt_remote_account_credentials(envelope, settings=settings)
+        async with RajAdminGiftCodeAdapter(
+            remote_session=account_session(
+                session, envelope=envelope, base_url=source.base_url, settings=settings
+            ),
+            account_id=account.id,
+            source_id=source.source_id,
+            base_url=source.base_url,
+            username=credentials["username"],
+            password=credentials["password"],
+            totp_secret=credentials["totp_secret"],
+            business_timezone=source.business_timezone,
+            transport=transport,
+        ) as adapter:
+            result = await adapter.check_reusable_configuration(
+                grant=ErpRemoteAccountReadGrant(
+                    account_id=account.id,
+                    source_id=source.source_id,
+                    operation="CHECK",
+                    capability="ERP_REMOTE_CHECK",
+                ),
+                payload=payload,
+            )
+    except (
+        ErpCompatibilityRemoteExecutionError,
+        ErpCompatibilityIdError,
+        RemoteAccountCredentialsError,
+        ErpRedemptionRemoteHttpError,
+    ) as exc:
+        await write_audit(
+            session,
+            action="erp_compatibility_redemption.reuse_check",
+            actor_user_id=actor_user_id,
+            target_type="erp_compatibility_remote_account",
+            target_id=str(payload.account_id),
+            result="failure",
+            metadata={"issue_id": payload.issue_id, "operation": "READ_REUSE"},
+        )
+        await session.commit()
+        raise ErpCompatibilityRemoteExecutionError(str(exc)) from exc
+    await write_audit(
+        session,
+        action="erp_compatibility_redemption.reuse_check",
+        actor_user_id=actor_user_id,
+        target_type="remote_account",
+        target_id=account.id,
+        metadata={
+            "issue_id": payload.issue_id,
+            "configuration_id": payload.remote_configuration_id,
+            "matched": result.matched,
+            "differences": result.differences,
+        },
+    )
+    await session.commit()
+    return result
+
+
+async def check_compatibility_remote_recovery(
+    session: AsyncSession,
+    *,
+    payload: ErpCompatibilityRemoteRecoveryCheckRequest,
+    actor_user_id: int,
+    settings: Settings,
+    transport=None,
+) -> ErpCompatibilityRemoteRecoveryCheckResponse:
+    """Verify the live policy through the unified read capability and session only."""
+    try:
+        account_id = await resolve_erp_compatibility_id(
+            session, entity_type="remote_account", legacy_id=payload.account_id
+        )
+        account = await session.get(RemoteAccount, account_id)
+        source = await session.get(SourceConfig, account.source_id) if account else None
+        if (
+            not account
+            or not source
+            or not account.enabled
+            or not source.enabled
+            or not source.base_url
+        ):
+            raise ErpCompatibilityRemoteExecutionError("统一远端账号或盘口不可用。")
+        allowed = await session.scalar(
+            select(RemoteAccountCapability.enabled).where(
+                RemoteAccountCapability.account_id == account_id,
+                RemoteAccountCapability.capability == "ERP_REMOTE_CHECK",
+            )
+        )
+        if not allowed:
+            raise ErpCompatibilityRemoteExecutionError("账号未获远端配置读取能力，不能核验复用。")
+        if payload.check_inventory:
+            download_allowed = await session.scalar(
+                select(RemoteAccountCapability.enabled).where(
+                    RemoteAccountCapability.account_id == account_id,
+                    RemoteAccountCapability.capability == "ERP_REDEMPTION_DOWNLOAD",
+                )
+            )
+            if not download_allowed:
+                raise ErpCompatibilityRemoteExecutionError(
+                    "账号未获兑换码下载能力，不能核验历史库存。"
+                )
+        envelope = credential_envelope_for_account(account=account, source=source)
+        if envelope is None:
+            raise ErpCompatibilityRemoteExecutionError("统一远端账号凭据配置不完整。")
+        credentials = decrypt_remote_account_credentials(envelope, settings=settings)
+        async with RajAdminGiftCodeAdapter(
+            remote_session=account_session(
+                session, envelope=envelope, base_url=source.base_url, settings=settings
+            ),
+            account_id=account.id,
+            source_id=source.source_id,
+            base_url=source.base_url,
+            username=credentials["username"],
+            password=credentials["password"],
+            totp_secret=credentials["totp_secret"],
+            business_timezone=source.business_timezone,
+            transport=transport,
+        ) as adapter:
+            result = await asyncio.wait_for(
+                adapter.check_configuration_recovery(
+                    grant=ErpRemoteAccountReadGrant(
+                        account_id=account.id,
+                        source_id=source.source_id,
+                        operation="CHECK",
+                        capability="ERP_REMOTE_CHECK",
+                    ),
+                    payload=payload,
+                    inventory_grant=ErpRemoteExecutionGrant(
+                        account_id=account.id,
+                        source_id=source.source_id,
+                        operation="DOWNLOAD",
+                        capability="ERP_REDEMPTION_DOWNLOAD",
+                    )
+                    if payload.check_inventory
+                    else None,
+                ),
+                timeout=35,
+            )
+    except (
+        TimeoutError,
+        ErpCompatibilityRemoteExecutionError,
+        ErpCompatibilityIdError,
+        RemoteAccountCredentialsError,
+        ErpRedemptionRemoteHttpError,
+    ) as exc:
+        await write_audit(
+            session,
+            action="erp_compatibility_redemption.recovery_check",
+            actor_user_id=actor_user_id,
+            target_type="erp_compatibility_remote_account",
+            target_id=str(payload.account_id),
+            result="failure",
+            metadata={"issue_id": payload.issue_id, "operation": "READ_RECOVERY"},
+        )
+        await session.commit()
+        raise ErpCompatibilityRemoteExecutionError(
+            str(exc) or "远端目录核验超时；未重新创建。"
+        ) from exc
+    await write_audit(
+        session,
+        action="erp_compatibility_redemption.recovery_check",
+        actor_user_id=actor_user_id,
+        target_type="remote_account",
+        target_id=account.id,
+        metadata={
+            "issue_id": payload.issue_id,
+            "configuration_id": payload.remote_configuration_id,
+            "state": result.state,
+            "scanned_rows": result.scanned_rows,
+            "scanned_pages": result.scanned_pages,
+        },
+    )
+    await session.commit()
+    return result
+
+
+async def execute_compatibility_remote_reward_update(
+    session: AsyncSession,
+    *,
+    payload: ErpCompatibilityRemoteRewardUpdateRequest,
+    actor_user_id: int,
+    settings: Settings,
+    transport=None,
+) -> ErpCompatibilityRemoteReuseCheckResponse:
+    """Verify the live policy through the unified read capability and session only."""
+    try:
+        account_id = await resolve_erp_compatibility_id(
+            session, entity_type="remote_account", legacy_id=payload.account_id
+        )
+        account = await session.get(RemoteAccount, account_id)
+        source = await session.get(SourceConfig, account.source_id) if account else None
+        if (
+            not account
+            or not source
+            or not account.enabled
+            or not source.enabled
+            or not source.base_url
+        ):
+            raise ErpCompatibilityRemoteExecutionError("统一远端账号或盘口不可用。")
+        allowed = await session.scalar(
+            select(RemoteAccountCapability.enabled).where(
+                RemoteAccountCapability.account_id == account_id,
+                RemoteAccountCapability.capability == "ERP_REMOTE_CHECK",
+            )
+        )
+        if not allowed:
+            raise ErpCompatibilityRemoteExecutionError("账号未获远端配置读取能力，不能核验复用。")
+        grant = await authorize_erp_redemption_remote_execution(
+            session,
+            account_id=account_id,
+            operation="UPDATE",
+            execution_authorized=payload.execution_confirmed,
+        )
+        envelope = credential_envelope_for_account(account=account, source=source)
+        if envelope is None:
+            raise ErpCompatibilityRemoteExecutionError("统一远端账号凭据配置不完整。")
+        credentials = decrypt_remote_account_credentials(envelope, settings=settings)
+        async with RajAdminGiftCodeAdapter(
+            remote_session=account_session(
+                session, envelope=envelope, base_url=source.base_url, settings=settings
+            ),
+            account_id=account.id,
+            source_id=source.source_id,
+            base_url=source.base_url,
+            username=credentials["username"],
+            password=credentials["password"],
+            totp_secret=credentials["totp_secret"],
+            business_timezone=source.business_timezone,
+            transport=transport,
+        ) as adapter:
+            result = await adapter.update_reward_policy(
+                grant=grant,
+                read_grant=ErpRemoteAccountReadGrant(
+                    account_id=account.id,
+                    source_id=source.source_id,
+                    operation="CHECK",
+                    capability="ERP_REMOTE_CHECK",
+                ),
+                payload=payload,
+            )
+    except (
+        ErpRemoteExecutionGateError,
+        ErpCompatibilityRemoteExecutionError,
+        ErpCompatibilityIdError,
+        RemoteAccountCredentialsError,
+        ErpRedemptionRemoteHttpError,
+    ) as exc:
+        await write_audit(
+            session,
+            action="erp_compatibility_redemption.reward_update",
+            actor_user_id=actor_user_id,
+            target_type="erp_compatibility_remote_account",
+            target_id=str(payload.account_id),
+            result="failure",
+            metadata={"issue_id": payload.issue_id, "operation": "UPDATE_REWARD"},
+        )
+        await session.commit()
+        raise ErpCompatibilityRemoteExecutionError(str(exc)) from exc
+    await write_audit(
+        session,
+        action="erp_compatibility_redemption.reward_update",
+        actor_user_id=actor_user_id,
+        target_type="remote_account",
+        target_id=account.id,
+        metadata={
+            "issue_id": payload.issue_id,
+            "configuration_id": payload.remote_configuration_id,
+            "matched": result.matched,
+            "differences": result.differences,
+            "operation": "UPDATE_REWARD",
+            "bonus_amount": str(payload.bonus_amount),
+            "bonus_max_amount": str(payload.bonus_max_amount),
+        },
+    )
+    await session.commit()
+    return result
+
+async def check_compatibility_remote_absence(
+    session: AsyncSession,
+    *,
+    payload: ErpCompatibilityRemoteAbsenceCheckRequest,
+    actor_user_id: int,
+    settings: Settings,
+    transport=None,
+) -> ErpCompatibilityRemoteAbsenceCheckResponse:
+    """Prove absence without changing any original task or remote configuration."""
+    try:
+        account_id = await resolve_erp_compatibility_id(
+            session, entity_type="remote_account", legacy_id=payload.account_id
+        )
+        account = await session.get(RemoteAccount, account_id)
+        source = await session.get(SourceConfig, account.source_id) if account else None
+        if (
+            not account
+            or not source
+            or not account.enabled
+            or not source.enabled
+            or not source.base_url
+        ):
+            raise ErpCompatibilityRemoteExecutionError("统一远端账号或盘口不可用。")
+        allowed = await session.scalar(
+            select(RemoteAccountCapability.enabled).where(
+                RemoteAccountCapability.account_id == account_id,
+                RemoteAccountCapability.capability == "ERP_REMOTE_CHECK",
+            )
+        )
+        if not allowed:
+            raise ErpCompatibilityRemoteExecutionError("账号未获远端配置读取能力，不能核验复用。")
+        envelope = credential_envelope_for_account(account=account, source=source)
+        if envelope is None:
+            raise ErpCompatibilityRemoteExecutionError("统一远端账号凭据配置不完整。")
+        credentials = decrypt_remote_account_credentials(envelope, settings=settings)
+        async with RajAdminGiftCodeAdapter(
+            remote_session=account_session(
+                session, envelope=envelope, base_url=source.base_url, settings=settings
+            ),
+            account_id=account.id,
+            source_id=source.source_id,
+            base_url=source.base_url,
+            username=credentials["username"],
+            password=credentials["password"],
+            totp_secret=credentials["totp_secret"],
+            business_timezone=source.business_timezone,
+            transport=transport,
+        ) as adapter:
+            try:
+                rows, pages = await asyncio.wait_for(
+                    adapter.confirm_special_code_absent(
+                        grant=ErpRemoteAccountReadGrant(
+                            account_id=account.id,
+                            source_id=source.source_id,
+                            operation="CHECK",
+                            capability="ERP_REMOTE_CHECK",
+                        ),
+                        gift_code=payload.gift_code,
+                    ),
+                    timeout=35,
+                )
+            except TimeoutError as exc:
+                raise ErpCompatibilityRemoteExecutionError(
+                    "完整远端目录核验超时；未重新创建。"
+                ) from exc
+            result = ErpCompatibilityRemoteAbsenceCheckResponse(
+                gift_code=payload.gift_code,
+                confirmed_absent=True,
+                scanned_rows=rows,
+                scanned_pages=pages,
+                checked_at=datetime.now(UTC),
+            )
+    except (
+        ErpCompatibilityRemoteExecutionError,
+        ErpCompatibilityIdError,
+        RemoteAccountCredentialsError,
+        ErpRedemptionRemoteHttpError,
+    ) as exc:
+        await write_audit(
+            session,
+            action="erp_compatibility_redemption.absence_check",
+            actor_user_id=actor_user_id,
+            target_type="erp_compatibility_remote_account",
+            target_id=str(payload.account_id),
+            result="failure",
+            metadata={"issue_id": payload.issue_id, "operation": "READ_ABSENCE"},
+        )
+        await session.commit()
+        raise ErpCompatibilityRemoteExecutionError(str(exc)) from exc
+    await write_audit(
+        session,
+        action="erp_compatibility_redemption.absence_check",
+        actor_user_id=actor_user_id,
+        target_type="remote_account",
+        target_id=account.id,
+        metadata={
+            "issue_id": payload.issue_id,
+            "gift_code": payload.gift_code,
+            "confirmed_absent": result.confirmed_absent,
+            "scanned_rows": result.scanned_rows,
+            "scanned_pages": result.scanned_pages,
+        },
+    )
+    await session.commit()
+    return result
+
+

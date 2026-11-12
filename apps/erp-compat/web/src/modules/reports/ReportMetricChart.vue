@@ -113,7 +113,7 @@ function shortLabel(label: string) {
 }
 
 function barColor(value: number) {
-  return value < 0 ? '#f04438' : '#155eef'
+  return value < 0 ? 'var(--theme-danger, #f04438)' : 'var(--theme-info, #155eef)'
 }
 
 function piePath(startAngle: number, endAngle: number) {
@@ -169,7 +169,7 @@ function showPieDetails(slice: PieSlice) {
           @click="showPieDetails(slice)"
         ><title>{{ slice.label }}：{{ formatMoney(slice.value) }}（{{ slice.percentage.toFixed(1) }}%）</title></path>
       </template>
-      <circle cx="140" cy="132" r="49" fill="#fff" />
+      <circle cx="140" cy="132" r="49" fill="var(--theme-surface, #fff)" />
       <text x="140" y="126" text-anchor="middle" class="pie-center__label">{{ metricLabel }}</text>
       <text x="140" y="148" text-anchor="middle" class="pie-center__asset">{{ assetLabel }}</text>
     </svg>
@@ -222,29 +222,29 @@ function showPieDetails(slice: PieSlice) {
 <style scoped>
 .metric-chart { padding: 8px 20px 14px; }
 .metric-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
-.metric-chart__grid line { stroke: #eaecf0; stroke-width: 1; }
-.metric-chart__grid text, .metric-chart__x-axis text { fill: #98a2b3; font-size: 11px; }
-.metric-chart__zero { stroke: #98a2b3; stroke-width: 1; }
-.metric-chart__line { fill: none; stroke: #155eef; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
-.metric-chart:not(.metric-chart--pie) circle { fill: #fff; stroke: #155eef; stroke-width: 3; }
-.metric-chart .metric-chart__point--negative { stroke: #f04438; }
-.metric-chart__caption { display: flex; justify-content: space-between; gap: 18px; margin-top: 1px; color: #98a2b3; font-size: 12px; }
-.metric-chart__caption span:first-child { color: #667085; font-weight: 650; }
-.metric-chart__empty { padding: 42px 20px; color: #98a2b3; font-size: 13px; text-align: center; }
+.metric-chart__grid line { stroke: var(--theme-border, #eaecf0); stroke-width: 1; }
+.metric-chart__grid text, .metric-chart__x-axis text { fill: var(--theme-text-muted, #98a2b3); font-size: 11px; }
+.metric-chart__zero { stroke: var(--theme-text-muted, #98a2b3); stroke-width: 1; }
+.metric-chart__line { fill: none; stroke: var(--theme-info, #155eef); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.metric-chart:not(.metric-chart--pie) circle { fill: var(--theme-surface, #fff); stroke: var(--theme-info, #155eef); stroke-width: 3; }
+.metric-chart .metric-chart__point--negative { stroke: var(--theme-danger, #f04438); }
+.metric-chart__caption { display: flex; justify-content: space-between; gap: 18px; margin-top: 1px; color: var(--theme-text-muted, #98a2b3); font-size: 12px; }
+.metric-chart__caption span:first-child { color: var(--theme-text-muted, #667085); font-weight: 650; }
+.metric-chart__empty { padding: 42px 20px; color: var(--theme-text-muted, #98a2b3); font-size: 13px; text-align: center; }
 .metric-chart--pie { display: grid; grid-template-columns: minmax(260px, .8fr) minmax(260px, 1.2fr); align-items: center; gap: 18px; padding: 18px 20px; }
 .metric-chart--pie svg { max-width: 520px; }
 .metric-chart__pie-slice { cursor: pointer; outline: none; transition: opacity .15s ease, stroke-width .15s ease; }
-.metric-chart__pie-slice:hover, .metric-chart__pie-slice:focus, .metric-chart__pie-slice--active { opacity: .88; stroke: #fff; stroke-width: 3; }
-.pie-center__label { fill: #344054; font-size: 14px; font-weight: 700; }
-.pie-center__asset { fill: #98a2b3; font-size: 12px; }
-.metric-chart__pie-detail { display: flex; align-items: center; gap: 10px; min-height: 42px; margin: 0 0 10px; padding: 10px 12px; color: #667085; background: #f8fafc; border: 1px solid #e4e7ec; border-radius: 7px; font-size: 12px; }
-.metric-chart__pie-detail span:first-child { display: inline-flex; align-items: center; gap: 7px; min-width: 0; color: #344054; }
+.metric-chart__pie-slice:hover, .metric-chart__pie-slice:focus, .metric-chart__pie-slice--active { opacity: .88; stroke: var(--theme-surface, #fff); stroke-width: 3; }
+.pie-center__label { fill: var(--theme-text, #344054); font-size: 14px; font-weight: 700; }
+.pie-center__asset { fill: var(--theme-text-muted, #98a2b3); font-size: 12px; }
+.metric-chart__pie-detail { display: flex; align-items: center; gap: 10px; min-height: 42px; margin: 0 0 10px; padding: 10px 12px; color: var(--theme-text-muted, #667085); background: var(--theme-surface-muted, #f8fafc); border: 1px solid var(--theme-border, #e4e7ec); border-radius: 7px; font-size: 12px; }
+.metric-chart__pie-detail span:first-child { display: inline-flex; align-items: center; gap: 7px; min-width: 0; color: var(--theme-text, #344054); }
 .metric-chart__pie-detail i { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
-.metric-chart__pie-detail strong { margin-left: auto; color: #101828; font-size: 14px; white-space: nowrap; }
-.metric-chart__pie-detail b { color: #027a48; white-space: nowrap; font-weight: 700; }
+.metric-chart__pie-detail strong { margin-left: auto; color: var(--theme-text-strong, #101828); font-size: 14px; white-space: nowrap; }
+.metric-chart__pie-detail b { color: var(--theme-success, #027a48); white-space: nowrap; font-weight: 700; }
 .metric-chart__legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px 14px; max-height: 210px; padding: 8px 0; overflow: auto; }
-.metric-chart__legend-item { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 6px; color: #667085; font-size: 12px; }
+.metric-chart__legend-item { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 6px; color: var(--theme-text-muted, #667085); font-size: 12px; }
 .metric-chart__legend-item i { width: 8px; height: 8px; border-radius: 50%; }
 .metric-chart__legend-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.metric-chart__legend-item b { color: #344054; font-weight: 650; }
+.metric-chart__legend-item b { color: var(--theme-text, #344054); font-weight: 650; }
 </style>

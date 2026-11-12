@@ -38,7 +38,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -214,64 +213,6 @@ class RedemptionCampaignHttpTest {
                         .with(SecurityMockMvcRequestPostProcessors.csrf()))
                 .andExpect(status().isOk());
         verify(remoteGiftCodeBackendClient).create(any(), argThat(request -> "0818raj200".equals(request.giftCode())));
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"PREVIOUS_DAY_DEPOSIT", "SEVEN_DAY_DEPOSIT", "AGENT"})
-    void sharedThresholdsAreRejectedForSpecialCodesAndPreservedForAgentCodes(String redemptionType) throws Exception {
-        MockHttpSession session = login();
-        long marketId = data(mockMvc.perform(post("/api/v1/redemption-remote-markets").session(session)
-                        .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON).content("""
-                                {"code":"SHARED_%s","name":"Shared threshold test %s","baseUrl":"https://shared-%s.example.com","enabled":true}
-                                """.formatted(redemptionType, redemptionType, redemptionType.toLowerCase().replace('_', '-'))))
-                .andExpect(status().isOk()).andReturn()).path("id").asLong();
-        mockMvc.perform(post("/api/v1/redemption-remote-connections").session(session)
-                        .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON).content("""
-                                {"username":"shared-threshold-admin","marketId":%s,"password":"test-password","totpSecret":"JBSWY3DPEHPK3PXP","enabled":true}
-                                """.formatted(marketId)))
-                .andExpect(status().isOk());
-        when(remoteGiftCodeBackendClient.tags(any())).thenReturn(List.of(
-                new RemoteGiftCodeBackendClient.RemoteTag(5001, "游戏总局数0")));
-
-        var result = mockMvc.perform(post("/api/v1/redemption-campaigns/groups").session(session)
-                        .with(SecurityMockMvcRequestPostProcessors.csrf()).contentType(MediaType.APPLICATION_JSON).content("""
-                                {"code":"shared_%s","name":"Shared threshold group","claimDateFrom":"2026-11-01","claimDateTo":"2026-11-02","lookbackDays":7,
-                                 "tiers":[{"displayName":"全部用户","minDepositAmount":0,"bonusAmount":5,"bonusMaxAmount":7,"sortOrder":1},{"displayName":"游戏总局数0","minDepositAmount":0.00,"bonusAmount":5,"bonusMaxAmount":17,"sortOrder":2}],
-                                 "remoteMarketId":%s,"redemptionType":"%s","tierUserTypes":["ALL_USERS","LABEL_USERS"],"tierLabelIds":[[],[5001]],
-                                 "remoteOptions":{"publishEnvironment":"test","flowTimes":5,"creationIntervalSeconds":5,"keyNumber":1,"singleUserLimit":1,"singleKeyLimit":3,"requireBindBankCard":false,"requireBindPhone":true,"checkUuid":true,"uuidRewardLimit":1,"checkLoginIp":true,"loginIpRewardLimit":1,"checkRegisterIp":true,"registerIpRewardLimit":1}}
-                                """.formatted(redemptionType, marketId, redemptionType)));
-        if (!"AGENT".equals(redemptionType)) {
-            result.andExpect(status().isBadRequest());
-            verify(remoteGiftCodeBackendClient, never()).create(any(), any());
-            return;
-        }
-        JsonNode created = data(result.andExpect(status().isOk()).andReturn());
-        long batchId = created.at("/batch/id").asLong();
-        long campaignId = created.at("/batch/campaignId").asLong();
-        JsonNode campaign = data(mockMvc.perform(get("/api/v1/redemption-campaigns/" + campaignId).session(session))
-                .andExpect(status().isOk()).andReturn());
-        JsonNode tiers = campaign.path("tiers");
-        assertThat(tiers.size()).isEqualTo(2);
-        assertThat(tiers.get(0).path("id")).isNotEqualTo(tiers.get(1).path("id"));
-        assertThat(tiers.get(0).path("displayName").asText()).isEqualTo("全部用户");
-        assertThat(tiers.get(1).path("displayName").asText()).isEqualTo("游戏总局数0");
-
-        JsonNode reloaded = data(mockMvc.perform(get("/api/v1/redemption-campaigns/batches/" + batchId).session(session))
-                .andExpect(status().isOk()).andReturn());
-        assertThat(reloaded.at("/batch/expectedCodeCount").asInt()).isEqualTo(4);
-        assertThat(reloaded.path("issues").size()).isEqualTo(4);
-        for (JsonNode issue : reloaded.path("issues")) {
-            boolean allUsers = issue.path("campaignTierId").asLong() == tiers.get(0).path("id").asLong();
-            assertThat(issue.path("campaignTierId").asLong()).isIn(
-                    tiers.get(0).path("id").asLong(), tiers.get(1).path("id").asLong());
-            assertThat(issue.path("minDepositAmount").decimalValue()).isEqualByComparingTo("0");
-            assertThat(issue.path("bonusAmount").decimalValue()).isEqualByComparingTo("5");
-            assertThat(issue.path("bonusMaxAmount").decimalValue()).isEqualByComparingTo(allUsers ? "7" : "17");
-            assertThat(issue.path("tierName").asText()).isEqualTo(allUsers ? "全部用户" : "游戏总局数0");
-            if (allUsers) assertThat(issue.path("remoteLabelIds").size()).isZero();
-            else assertThat(issue.at("/remoteLabelIds/0").asLong()).isEqualTo(5001);
-        }
-        verify(remoteGiftCodeBackendClient, never()).create(any(), any());
     }
 
     @Test

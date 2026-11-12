@@ -10,14 +10,21 @@ import type {
   RedemptionBatchDetail,
   RedemptionCampaign,
   RedemptionCodeGroupInput,
+  RedemptionDuplicateConflict,
+  RedemptionDuplicateMarket,
+  RedemptionDuplicateReview,
   RedemptionCodeIssue,
+  RedemptionRecoveryView,
+  RedemptionRewardPolicyView,
   RedemptionCodeType,
+  RedemptionCodeNaming,
   RedemptionRemoteConnection,
   RedemptionRemoteCreationOptions,
   RedemptionRemoteTag,
   RedemptionRewardTierPreset,
 } from '@/api/types'
 import { saveDownloadedFile } from '@/utils/download'
+import RedemptionTaskDeletionDialog from './RedemptionTaskDeletionDialog.vue'
 import { useSessionStore } from '@/stores/session'
 
 interface TierProfile {
@@ -54,6 +61,7 @@ interface CodeGroupForm {
   /** The selected market currently being configured in the editor. */
   remoteMarketId?: string | number
   redemptionType: RedemptionCodeType
+  specialCodeNaming: RedemptionCodeNaming
   tiers: CodeGroupTierDraft[]
   remoteOptions: RedemptionRemoteCreationOptions
 }
@@ -111,6 +119,19 @@ const rewardTierPreset = ref<RedemptionRewardTierPreset>()
 const marketTierDrafts = ref<Record<string, MarketTierDraft>>({})
 const activeMarketTab = ref('')
 const selectedGroup = ref<CodeGroupRow>()
+const checkRemoteDuplicates = ref(false)
+const checkingDuplicates = ref(false)
+const duplicateCheckProgress = ref('')
+const duplicateConflicts = ref<RedemptionDuplicateConflict[]>([])
+const duplicateDialogVisible = ref(false)
+const duplicateReviewAcknowledged = ref(false)
+const duplicateCreationReview = ref<RedemptionDuplicateReview>()
+// The server owns durable task approval; this cache only avoids repeating a review in this page.
+const taskDuplicateReviews = new Map<string, RedemptionDuplicateReview>()
+let duplicateReviewResolve: ((confirmed: boolean) => void) | undefined
+
+
+const taskDeletionTarget = ref<{ taskId: string | number; taskNumber: string }>()
 const selectedTaskId = computed(() => selectedTaskMembers.value[0]?.detail.batch.taskId ?? selectedTaskMembers.value[0]?.detail.batch.id)
 const selectedTaskDisplayId = computed(() => selectedTaskMembers.value[0]?.detail.batch.taskNumber || String(selectedTaskId.value ?? '—'))
 const publishTarget = ref<CodeGroupRow | CodeGroupTask>()
@@ -135,8 +156,11 @@ function showPublicationResult(row: CodeGroupRow) {
   verificationDialogVisible.value = true
 }
 async function inspectPublication(row: CodeGroupRow) {
-  showPublicationResult(row)
-  await verifyRemotePublication(row, true)
+  try {
+    if (row.detail.overview) row = await loadFullGroup(row)
+    showPublicationResult(row)
+    await verifyRemotePublication(row, true)
+  } catch (error) { ElMessage.error(error instanceof Error ? error.message : '读取任务明细失败') }
 }
 function publicationCheck(row: CodeGroupRow) {
   const check = publicationChecks.value[String(row.detail.batch.id)]
@@ -153,7 +177,7 @@ async function verifyRemotePublication(row: CodeGroupRow, silent = false): Promi
     try {
       const check = await api.redemption.verifyRemotePublication(row.detail.batch.id)
       publicationChecks.value[key] = check
-      if (!silent) ElMessage.info(`${publicationLabel(check)}；${acquisitionLabel(isSuccess(row), row.detail.issues.some(issue => Boolean(issue.remoteError)), check)}`)
+      if (!silent) ElMessage.info(`${publicationLabel(check)}；${acquisitionLabel(isSuccess(row), row.detail.issues.some(issue => Boolean(issue.remoteError || issue.recovery && !['PRESENT', 'COMPLETED'].includes(issue.recovery.status))), check)}`)
       return check
     } catch (error) {
       delete publicationChecks.value[key]
@@ -167,7 +191,7 @@ async function verifyRemotePublication(row: CodeGroupRow, silent = false): Promi
   return request
 }
 function codeAcquisitionStatus(row: CodeGroupRow) {
-  return acquisitionLabel(isSuccess(row), row.detail.issues.some(issue => Boolean(issue.remoteError)), publicationCheck(row))
+  return acquisitionLabel(isSuccess(row), row.detail.issues.some(issue => Boolean(issue.remoteError || issue.recovery && !['PRESENT', 'COMPLETED'].includes(issue.recovery.status))), publicationCheck(row))
 }
 function taskAcquisitionStatus(task: CodeGroupTask) {
   const completed = task.members.filter(isSuccess).length
@@ -298,7 +322,7 @@ watch([() => codeGroupTasks.value.length, codeGroupTaskPageSize], () => {
   const lastPage = Math.max(1, Math.ceil(codeGroupTasks.value.length / codeGroupTaskPageSize.value))
   if (codeGroupTaskCurrentPage.value > lastPage) codeGroupTaskCurrentPage.value = lastPage
 })
-const failedRemoteCreationCount = computed(() => selectedGroup.value ? failedRemoteCreationIssues(selectedGroup.value).length : 0)
+const failedRemoteCreationCount = computed(() => selectedGroup.value ? countIssues(failedRemoteCreationIssues(selectedGroup.value)) : 0)
 const selectedFailedIssueCount = computed(() => selectedFailedRemoteCreations().length)
 const tagOptions = computed(() => {
   const tags = new Map<string, RedemptionRemoteTag>()
@@ -422,6 +446,12 @@ function redemptionTypeLabel(type: RedemptionCodeType) {
   return type === 'PREVIOUS_DAY_DEPOSIT' ? '日充值' : '近 7 天充值'
 }
 
+const specialCodeExample = computed(() => {
+  const date = form.value.dateRange[0].replaceAll('-', '').slice(4)
+  const prefix = isPreviousDayDeposit() ? 'raj' : 'raj7days'
+  return `${date}${prefix}${form.value.specialCodeNaming === 'TEN_K' ? '10K' : '10000'}`
+})
+
 function newCodeGroupForm(): CodeGroupForm {
   const range = futureRange(7)
   return {
@@ -431,6 +461,7 @@ function newCodeGroupForm(): CodeGroupForm {
     validToDayOffset: 0,
     remoteMarketIds: [],
     redemptionType: 'SEVEN_DAY_DEPOSIT',
+    specialCodeNaming: 'TEN_K',
     // The selected market supplies its own standard five tiers after the dialog opens.
     tiers: [],
     remoteOptions: defaultRemoteOptions(),
@@ -568,35 +599,59 @@ function expectedTaskCount() {
   return form.value.remoteMarketIds.reduce<number>((total, marketId) => total + (marketTierDrafts.value[marketKey(marketId)]?.tiers.length || 0) * days, 0)
 }
 function isProcessing(row: CodeGroupRow) { return processingGroupIds.value.has(groupKey(row.detail.batch.id)) }
-function isSuccess(row: CodeGroupRow) { return row.detail.batch.status === 'COMPLETED' }
+function needsCreationReconciliation(issue: RedemptionCodeIssue) { return issue.creationNeedsReconciliation === true }
+function needsCreationRewardCheck(issue: RedemptionCodeIssue) {
+  return ['REWARD_CHECK_REQUIRED', 'REWARD_CONFIRM_REQUIRED'].includes(issue.workflowStatus || '')
+}
+function creationRewardIssues(row: CodeGroupRow) { return row.detail.issues.filter(needsCreationRewardCheck) }
+function creationRewardLabel(issues: RedemptionCodeIssue[]) {
+  return issues.some(issue => issue.workflowStatus === 'REWARD_CONFIRM_REQUIRED') ? '待确认奖励修改' : '实际奖励待核验'
+}
+function countIssues(issues: RedemptionCodeIssue[]) {
+  return issues.reduce((total, issue) => total + (issue.overviewCount ?? 1), 0)
+}
+function reconciliationIssues(row: CodeGroupRow) { return row.detail.issues.filter(needsCreationReconciliation) }
+function awaitingReviewIssues(row: CodeGroupRow) { return row.detail.issues.filter(issue => issue.creationAwaitingRemoteReview === true) }
+function creationHoldSummary(rows: CodeGroupRow[]) {
+  const review = rows.reduce((total, row) => total + countIssues(awaitingReviewIssues(row)), 0)
+  const uncertain = rows.reduce((total, row) => total + countIssues(reconciliationIssues(row)), 0) - review
+  return [review ? `${review} 条待远端主管审核` : '', uncertain ? `${uncertain} 条结果待核对` : ''].filter(Boolean).join('，')
+}
+function issueRemark(issue: RedemptionCodeIssue) {
+  if (issue.creationAwaitingRemoteReview) return issue.remoteError || '配置触发风控规则，待远端主管审核；请勿重复创建，审核通过后核对配置再登记和发布。'
+  return needsCreationReconciliation(issue)
+    ? '远端创建回执无效，尚不能确认配置是否创建；请先核对，暂停重试和发布。'
+    : issue.remoteError
+}
+function isSuccess(row: CodeGroupRow) { return row.detail.batch.status === 'COMPLETED' && !creationRewardIssues(row).length }
 function isRepairing(row: CodeGroupRow) { return row.detail.batch.status === 'CREATING' && Boolean(row.detail.batch.publishedAt) }
 function pendingRemoteCreationIssues(row: CodeGroupRow) {
   return row.detail.issues.filter((issue) => issue.workflowStatus === 'PENDING_CREATION')
 }
 function hasRemoteCreationInProgress(row: CodeGroupRow) {
-  return row.detail.issues.some((issue) => issue.workflowStatus === 'CREATING_REMOTE')
+  return countIssues(reconciliationIssues(row)) > 0 || row.detail.issues.some((issue) => issue.workflowStatus === 'CREATING_REMOTE')
 }
 function isCreatingConfigurations(row: CodeGroupRow) {
   return row.detail.batch.status === 'CREATING' && isProcessing(row)
 }
 function confirmedConfigurationCount(row: CodeGroupRow) {
-  return row.detail.issues.filter(issue => ['CREATED', 'PUBLISHED', 'CODE_IMPORTED'].includes(issue.workflowStatus || '')).length
+  return countIssues(row.detail.issues.filter(issue => !needsCreationReconciliation(issue) && ['CREATED', 'PUBLISHED', 'CODE_IMPORTED'].includes(issue.workflowStatus || '')))
 }
 function uncreatedIssues(row: CodeGroupRow) {
-  return pendingRemoteCreationIssues(row).filter(issue => !issue.remoteConfigurationId && !issue.remoteReferenceId)
+  return pendingRemoteCreationIssues(row).filter(issue => !issue.remoteConfigurationId && !issue.remoteReferenceId && !issue.overviewHasConfiguration && !issue.overviewHasReference)
 }
 function canContinuePendingCreation(row: CodeGroupRow) {
   return canGenerate.value && row.detail.batch.status === 'CREATING' && !row.detail.batch.publishedAt
-    && !hasRemoteCreationInProgress(row) && uncreatedIssues(row).length > 0
+    && !hasRemoteCreationInProgress(row) && countIssues(uncreatedIssues(row)) > 0
 }
 function failedIssues(row: CodeGroupRow) {
-  return row.detail.issues.filter((issue) => issue.workflowStatus === 'FAILED' || (issue.workflowStatus === 'PUBLISHED' && Boolean(issue.remoteError)))
+  return row.detail.issues.filter((issue) => !needsCreationReconciliation(issue) && (issue.workflowStatus === 'FAILED' || (issue.workflowStatus === 'PUBLISHED' && Boolean(issue.remoteError || issue.recovery && !['PRESENT', 'COMPLETED'].includes(issue.recovery.status)))))
 }
 function failedRemoteCreationIssues(row: CodeGroupRow) {
-  return row.detail.issues.filter((issue) => issue.workflowStatus === 'FAILED')
+  return row.detail.issues.filter(isFailedRemoteCreation)
 }
 function isFailedRemoteCreation(issue: RedemptionCodeIssue) {
-  return issue.workflowStatus === 'FAILED'
+  return !needsCreationReconciliation(issue) && issue.workflowStatus === 'FAILED'
 }
 function selectedFailedRemoteCreations() {
   const group = selectedGroup.value
@@ -612,11 +667,19 @@ function clearFailedIssueSelection() {
   failedIssueTable.value?.clearSelection()
 }
 function groupRemark(row: CodeGroupRow) {
-  const reasons = [publicationCheckErrors.value[String(row.detail.batch.id)], row.detail.batch.remotePublishNote, row.detail.batch.remotePublishError, ...row.detail.issues.map((issue) => issue.remoteError)]
+  const reasons = [publicationCheckErrors.value[String(row.detail.batch.id)], row.detail.batch.remotePublishNote, row.detail.batch.remotePublishError, ...row.detail.issues.map(issueRemark)]
     .filter((reason): reason is string => Boolean(reason))
   return [...new Set(reasons)].join('；') || '—'
 }
+function deletionHeld(issue: RedemptionCodeIssue) { return ['REMOTE_DELETE_PENDING', 'REMOTE_DELETED'].includes(issue.workflowStatus || '') }
+function deletionLabel(issues: RedemptionCodeIssue[]) {
+  return issues.some(issue => issue.workflowStatus === 'REMOTE_DELETE_PENDING') ? '删除结果待核对' : '远端配置已删除'
+}
 function groupStatus(row: CodeGroupRow) {
+  if (row.detail.issues.some(deletionHeld)) return { text: deletionLabel(row.detail.issues), type: 'danger' as const }
+  if (creationRewardIssues(row).length) return { text: creationRewardLabel(creationRewardIssues(row)), type: 'warning' as const }
+  if (countIssues(awaitingReviewIssues(row))) return { text: '待远端主管审核', type: 'warning' as const }
+  if (countIssues(reconciliationIssues(row))) return { text: '创建结果待核对', type: 'warning' as const }
   if (isSuccess(row)) return { text: '发布完成', type: 'success' as const }
   if (isRepairing(row)) return { text: isCreatingConfigurations(row) ? '补齐缺失配置中' : hasRemoteCreationInProgress(row) ? '创建结果待确认' : repairReadyForPublish(row) ? '待发布' : '待补齐缺失配置', type: 'warning' as const }
   if (row.detail.batch.status === 'PUBLISHED') {
@@ -624,22 +687,25 @@ function groupStatus(row: CodeGroupRow) {
     return { text: publicationLabel(check), type: check?.publicationState === 'COMPLETED' ? 'success' as const : check?.publicationState === 'FAILED' ? 'danger' as const : 'info' as const }
   }
   if (row.detail.batch.remotePublishError) return { text: '发布失败', type: 'danger' as const }
-  if (failedRemoteCreationIssues(row).length) return { text: '配置创建失败', type: 'danger' as const }
+  if (countIssues(failedRemoteCreationIssues(row))) return { text: '配置创建失败', type: 'danger' as const }
   if (row.detail.batch.status === 'READY_TO_PUBLISH') return { text: '待发布', type: 'info' as const }
   if (isCreatingConfigurations(row)) return { text: '配置创建中', type: 'warning' as const }
   if (hasRemoteCreationInProgress(row)) return { text: '创建结果待确认', type: 'warning' as const }
-  if (pendingRemoteCreationIssues(row).length) return { text: '待继续创建', type: 'warning' as const }
+  if (countIssues(pendingRemoteCreationIssues(row))) return { text: '待继续创建', type: 'warning' as const }
   return { text: '创建状态待核对', type: 'warning' as const }
 }
 function groupProgress(row: CodeGroupRow) {
+  if (row.detail.issues.some(deletionHeld)) return `${deletionLabel(row.detail.issues)}；历史库存保留，任务不能继续发布或下载`
   const batch = row.detail.batch
+  const review = countIssues(reconciliationIssues(row))
+  if (review) return `${confirmedConfigurationCount(row)} / ${batch.expectedCodeCount} 条远端配置已创建，${countIssues(failedIssues(row))} 个失败，${creationHoldSummary([row])}`
   if (isSuccess(row)) return `${batch.importedCodeCount} / ${batch.plannedCodeCount} 个兑换码已入库`
   if (isRepairing(row)) return `${batch.importedCodeCount} / ${batch.plannedCodeCount} 个兑换码已入库；${groupStatus(row).text}`
   if (batch.remotePublishError) return `远端发布失败：${batch.remotePublishError}`
   if (batch.status === 'PUBLISHED') return `${publicationLabel(publicationCheck(row))}；${codeAcquisitionStatus(row)}`
-  if (failedIssues(row).length) return `${batch.createdCount} / ${batch.expectedCodeCount} 条远端配置已创建，${failedIssues(row).length} 个任务失败`
+  if (countIssues(failedIssues(row))) return `${batch.createdCount} / ${batch.expectedCodeCount} 条远端配置已创建，${countIssues(failedIssues(row))} 个任务失败`
   if (batch.status === 'READY_TO_PUBLISH') return `${batch.createdCount} / ${batch.expectedCodeCount} 条远端配置已创建，待发布`
-  const pending = pendingRemoteCreationIssues(row).length
+  const pending = countIssues(pendingRemoteCreationIssues(row))
   if (pending) return `${batch.createdCount} / ${batch.expectedCodeCount} 条远端配置已创建，${pending} 条待创建（尚未向远端发起）`
   return `${batch.createdCount} / ${batch.expectedCodeCount} 条远端配置已创建`
 }
@@ -692,13 +758,22 @@ function taskSingleKeyLimit(task: CodeGroupTask) {
   return task.members.map((member) => `${remoteMarketLabel(member)}：${singleKeyLimitLabel(member)}`).join('；')
 }
 function taskStatus(task: CodeGroupTask) {
+  const deleted = task.members.flatMap(member => member.detail.issues).filter(deletionHeld)
+  if (deleted.length) return { text: deletionLabel(deleted), type: 'danger' as const }
+  const pendingRewards = task.members.flatMap(creationRewardIssues)
+  if (pendingRewards.length) return { text: creationRewardLabel(pendingRewards), type: 'warning' as const }
+  const recovery = task.members.flatMap(member => member.detail.issues).find(issue => issue.recovery && !['PRESENT', 'COMPLETED'].includes(issue.recovery.status))?.recovery
+  if (recovery) return { text: recoveryStatusLabel(recovery.status), type: 'warning' as const }
+
+  if (task.members.some(member => countIssues(awaitingReviewIssues(member)) > 0)) return { text: '待远端主管审核', type: 'warning' as const }
+  if (task.members.some(member => countIssues(reconciliationIssues(member)) > 0)) return { text: '创建结果待核对', type: 'warning' as const }
   if (!isMultiMarketTask(task)) return groupStatus(taskPrimary(task))
   // Creation problems must remain visible even when other markets have already published.
-  if (task.members.some(member => failedRemoteCreationIssues(member).length > 0)) return { text: '配置创建失败', type: 'danger' as const }
+  if (task.members.some(member => countIssues(failedRemoteCreationIssues(member)) > 0)) return { text: '配置创建失败', type: 'danger' as const }
   if (task.members.some(isCreatingConfigurations)) return { text: task.members.some(isRepairing) ? '补齐缺失配置中' : '配置创建中', type: 'warning' as const }
   if (task.members.some(hasRemoteCreationInProgress)) return { text: '创建结果待确认', type: 'warning' as const }
   if (task.members.some(member => isRepairing(member) && !repairReadyForPublish(member))) return { text: '待补齐缺失配置', type: 'warning' as const }
-  if (task.members.some(member => member.detail.batch.status === 'CREATING' && pendingRemoteCreationIssues(member).length > 0)) return { text: '待继续创建', type: 'warning' as const }
+  if (task.members.some(member => member.detail.batch.status === 'CREATING' && countIssues(pendingRemoteCreationIssues(member)) > 0)) return { text: '待继续创建', type: 'warning' as const }
   if (task.members.some(member => member.detail.batch.remotePublishError)) return { text: '部分发布失败', type: 'danger' as const }
   if (task.members.every(isSuccess)) return { text: '生成成功', type: 'success' as const }
   if (task.members.every(member => isSuccess(member) || publicationCheck(member)?.publicationState === 'COMPLETED')) return { text: '发布完成', type: 'success' as const }
@@ -709,10 +784,11 @@ function taskStatus(task: CodeGroupTask) {
 }
 function taskCreationSummary(task: CodeGroupTask) {
   return task.members.filter(member => member.detail.batch.status === 'CREATING').map(member => {
-    const pending = pendingRemoteCreationIssues(member).length
-    const failed = failedRemoteCreationIssues(member).length
-    const uncertain = member.detail.issues.filter(issue => issue.workflowStatus === 'CREATING_REMOTE').length
-    const states = [failed ? `${failed} 条创建失败` : '', uncertain && !isCreatingConfigurations(member) ? `${uncertain} 条请求待确认` : '', pending ? `${pending} 条待创建` : ''].filter(Boolean)
+    const pending = countIssues(pendingRemoteCreationIssues(member))
+    const failed = countIssues(failedRemoteCreationIssues(member))
+    const uncertain = countIssues(member.detail.issues.filter(issue => issue.workflowStatus === 'CREATING_REMOTE'))
+    const rewards = countIssues(creationRewardIssues(member))
+    const states = [rewards ? `${rewards} 条奖励待核验或确认` : '', failed ? `${failed} 条创建失败` : '', creationHoldSummary([member]), uncertain && !isCreatingConfigurations(member) ? `${uncertain} 条请求待确认` : '', pending ? `${pending} 条待创建` : ''].filter(Boolean)
     if (isCreatingConfigurations(member)) states.unshift('正在创建')
     return states.length ? `${remoteMarketLabel(member)}：${states.join('，')}` : ''
   }).filter(Boolean).join('；')
@@ -721,7 +797,7 @@ function taskPendingCreationMembers(task: CodeGroupTask) {
   return task.members.filter(canContinuePendingCreation)
 }
 function taskPendingCreationCount(task: CodeGroupTask) {
-  return taskPendingCreationMembers(task).reduce((total, member) => total + uncreatedIssues(member).length, 0)
+  return taskPendingCreationMembers(task).reduce((total, member) => total + countIssues(uncreatedIssues(member)), 0)
 }
 function canOpenPendingCreationTask(task: CodeGroupTask) {
   return taskPendingCreationCount(task) > 0 && !working.value && continuingCreationBatchId.value === undefined
@@ -738,13 +814,15 @@ function taskProgress(task: CodeGroupTask) {
   const created = task.members.reduce((total, member) => total + confirmedConfigurationCount(member), 0)
   const imported = task.members.reduce((total, member) => total + member.detail.batch.importedCodeCount, 0)
   const plannedCodes = task.members.reduce((total, member) => total + member.detail.batch.plannedCodeCount, 0)
+  const review = task.members.reduce((total, member) => total + countIssues(reconciliationIssues(member)), 0)
+  if (review) return `${created} / ${expected} 条远端配置已创建，${task.members.reduce((total, member) => total + countIssues(failedIssues(member)), 0)} 个失败，${creationHoldSummary(task.members)}`
   if (task.members.every(isSuccess)) return `${imported} / ${plannedCodes} 个兑换码已入库`
   if (task.members.every((member) => member.detail.batch.status === 'PUBLISHED')) {
     return task.members.map(member => `${remoteMarketLabel(member)}：${groupProgress(member)}`).join('；')
   }
-  const failed = task.members.reduce((total, member) => total + failedIssues(member).length, 0)
+  const failed = task.members.reduce((total, member) => total + countIssues(failedIssues(member)), 0)
   if (failed) return `${created} / ${expected} 条远端配置已创建，${failed} 个失败`
-  const pending = task.members.reduce((total, member) => total + pendingRemoteCreationIssues(member).length, 0)
+  const pending = task.members.reduce((total, member) => total + countIssues(pendingRemoteCreationIssues(member)), 0)
   if (pending) return `${created} / ${expected} 条远端配置已创建，${pending} 条待创建（尚未向远端发起）`
   return `${created} / ${expected} 条远端配置已创建（按盘口串行执行）`
 }
@@ -760,7 +838,7 @@ function canExportMultiMarketTask(task: CodeGroupTask) {
   return Boolean(task.exportGroupKey) && isMultiMarketTask(task) && task.members.every(isSuccess)
 }
 function canPublishMultiMarketTask(task: CodeGroupTask) {
-  return isMultiMarketTask(task) && task.members.every((member) => member.detail.batch.status === 'READY_TO_PUBLISH')
+  return isMultiMarketTask(task) && task.members.every((member) => member.detail.batch.status === 'READY_TO_PUBLISH' && !countIssues(reconciliationIssues(member)))
 }
 function isMultiMarketPublishTarget(target?: CodeGroupRow | CodeGroupTask): target is CodeGroupTask {
   return Boolean(target && 'members' in target)
@@ -778,8 +856,12 @@ function isScheduledPublish(row: CodeGroupRow) {
   return batch.status === 'PUBLISHED' && batch.remotePublishMode === 'SCHEDULED' && !batch.remotePublishCancelledAt
 }
 function canDownloadScheduledCodes(row: CodeGroupRow) {
+  if (row.detail.batch.status === 'PUBLISHED' && !row.detail.batch.remotePublishTaskId) {
+    return row.detail.issues.some(issue => issue.workflowStatus === 'PUBLISHED')
+      && row.detail.issues.every(issue => ['PUBLISHED', 'CODE_IMPORTED'].includes(issue.workflowStatus || ''))
+  }
   return row.detail.batch.status === 'PUBLISHED' && publicationCheck(row)?.publicationState === 'COMPLETED'
-    && row.detail.issues.some(issue => issue.workflowStatus !== 'CODE_IMPORTED' && publicationCheck(row)?.configurations.some(config => config.configurationId === issue.remoteConfigurationId && config.state === 'MATCHED'))
+    && row.detail.issues.some(issue => issue.workflowStatus !== 'CODE_IMPORTED' && publicationCheck(row)?.configurations.some(config => (issue.overviewConfigurationIds || [issue.remoteConfigurationId]).includes(config.configurationId) && config.state === 'MATCHED'))
 }
 function publishTime(row: CodeGroupRow) {
   const batch = row.detail.batch
@@ -801,6 +883,11 @@ function tiersFor(row: CodeGroupRow) {
   return row.campaign.tiers.map((tier) => `${tier.displayName || `充值 ≥ ${formatAmount(tier.minDepositAmount)}`}：${formatAmount(tier.bonusAmount)}–${formatAmount(tier.bonusMaxAmount || tier.bonusAmount)}`).join('；')
 }
 function issueStatus(issue: RedemptionCodeIssue) {
+  if (deletionHeld(issue)) return { text: deletionLabel([issue]), type: 'danger' as const }
+  if (needsCreationRewardCheck(issue)) return { text: creationRewardLabel([issue]), type: 'warning' as const }
+  if (issue.recovery && !['PRESENT', 'COMPLETED'].includes(issue.recovery.status)) return { text: recoveryStatusLabel(issue.recovery.status), type: 'warning' as const }
+  if (issue.creationAwaitingRemoteReview) return { text: '待远端主管审核', type: 'warning' as const }
+  if (needsCreationReconciliation(issue)) return { text: '创建结果待核对', type: 'warning' as const }
   if (issue.workflowStatus === 'CODE_IMPORTED') return { text: '兑换码已下载', type: 'success' as const }
   if (issue.workflowStatus === 'FAILED') return { text: '生成失败', type: 'danger' as const }
   if (issue.workflowStatus === 'PUBLISHED' && issue.remoteError) return { text: '下载失败', type: 'danger' as const }
@@ -811,7 +898,15 @@ function issueStatus(issue: RedemptionCodeIssue) {
 }
 
 function canRetryRemoteCreation(issue: RedemptionCodeIssue) {
-  return !issue.remoteConfigurationId && (issue.workflowStatus === 'FAILED' || issue.workflowStatus === 'CREATING_REMOTE')
+  return issue.overviewCount === undefined && (!issue.recovery || ['PRESENT', 'COMPLETED'].includes(issue.recovery.status)) && !needsCreationReconciliation(issue) && !issue.remoteConfigurationId && (issue.workflowStatus === 'FAILED' || issue.workflowStatus === 'CREATING_REMOTE')
+}
+
+function canCreatePendingRemoteConfiguration(issue: RedemptionCodeIssue) {
+  const group = selectedGroup.value
+  return Boolean(group && canContinuePendingCreation(group) && !isProcessing(group)
+    && continuingCreationBatchId.value === undefined && retryingIssueId.value === undefined
+    && !reusingConfigurations.value && issue.overviewCount === undefined && issue.workflowStatus === 'PENDING_CREATION'
+    && !needsCreationReconciliation(issue) && !issue.remoteConfigurationId && !issue.remoteReferenceId && !issue.overviewHasConfiguration && !issue.overviewHasReference)
 }
 
 async function loadRemoteConnections() {
@@ -1229,18 +1324,116 @@ function validateForm() {
   return ''
 }
 
+async function checkCreationDuplicates() {
+  duplicateCreationReview.value = undefined
+  if (!usesSpecialCode.value) return true
+  const markets: RedemptionDuplicateMarket[] = form.value.remoteMarketIds.map(marketId => ({
+    marketId, redemptionType: form.value.redemptionType, specialCodeNaming: form.value.specialCodeNaming,
+    from: form.value.dateRange[0], to: form.value.dateRange[1],
+    deposits: marketTierDrafts.value[marketKey(marketId)].tiers.map(tier => String(tier.minDepositAmount)),
+  }))
+  duplicateConflicts.value = []
+  duplicateCheckProgress.value = '正在进行本地查重…'
+  const local = await api.redemption.checkDuplicates(markets, false)
+  duplicateConflicts.value = local.conflicts
+  if (checkRemoteDuplicates.value) {
+    for (const [index, market] of markets.entries()) {
+      duplicateCheckProgress.value = `正在远端查重（${index + 1}/${markets.length}）：${marketLabel(market.marketId)}，可能耗时较长…`
+      const checked = await api.redemption.checkDuplicates([market], true)
+      if (!checked.remoteChecked) throw Error('远端查重未完成，本次未创建配置')
+      const combined = new Map([...duplicateConflicts.value, ...checked.conflicts].map(conflict =>
+        [`${conflict.marketId}:${conflict.code}:${conflict.issueId || conflict.configurationId}`, conflict]))
+      duplicateConflicts.value = [...combined.values()]
+    }
+  }
+  if (duplicateConflicts.value.length) {
+    duplicateReviewAcknowledged.value = false
+    duplicateDialogVisible.value = true
+    const confirmed = await new Promise<boolean>(resolve => { duplicateReviewResolve = resolve })
+    if (!confirmed) return false
+    duplicateCreationReview.value = { confirmed: true, fingerprints: Object.fromEntries(duplicateConflicts.value
+      .filter(conflict => conflict.source === 'LOCAL' && conflict.issueId && conflict.reviewFingerprint)
+      .map(conflict => [String(conflict.issueId), conflict.reviewFingerprint!])) }
+  }
+  return true
+}
+
+function creationReviewKey(detail: RedemptionBatchDetail) {
+  return detail.batch.taskId != null ? `task:${detail.batch.taskId}` : `batch:${detail.batch.id}`
+}
+
+async function checkPendingCreationDuplicates(detail: RedemptionBatchDetail): Promise<RedemptionDuplicateReview | false | undefined> {
+  if (duplicateReviewResolve) throw new Error('请先完成当前同码记录的阅览确认')
+  const result = await api.redemption.checkPendingTaskDuplicates(detail.batch.id)
+  if (result.reviewConfirmed) return undefined // Execution loads the persisted task approval.
+  const key = creationReviewKey(detail)
+  const previous = taskDuplicateReviews.get(key)
+  if (!result.conflicts.length) return previous || { confirmed: true, fingerprints: {} }
+  if (previous?.confirmed && result.conflicts.every(conflict => conflict.source === 'LOCAL'
+    && conflict.issueId != null && conflict.reviewFingerprint
+    && previous.fingerprints[String(conflict.issueId)] === conflict.reviewFingerprint)) return previous
+  duplicateConflicts.value = result.conflicts
+  duplicateReviewAcknowledged.value = false
+  duplicateDialogVisible.value = true
+  const confirmed = await new Promise<boolean>(resolve => { duplicateReviewResolve = resolve })
+  if (!confirmed) return false
+  const review: RedemptionDuplicateReview = { confirmed: true, fingerprints: Object.fromEntries(result.conflicts
+    .filter(conflict => conflict.source === 'LOCAL' && conflict.issueId != null && conflict.reviewFingerprint)
+    .map(conflict => [String(conflict.issueId), conflict.reviewFingerprint!])) }
+  await api.redemption.confirmTaskDuplicateReview(detail.batch.id, review)
+  taskDuplicateReviews.set(key, review)
+  return review
+}
+
+function finishDuplicateReview(confirmed: boolean) {
+  if (confirmed && !duplicateReviewAcknowledged.value) return
+  const resolve = duplicateReviewResolve
+  duplicateReviewResolve = undefined
+  duplicateDialogVisible.value = false
+  resolve?.(confirmed)
+}
+
+async function openDuplicateTask(conflict: RedemptionDuplicateConflict) {
+  if (!conflict.batchId) return
+  try {
+    const detail = await api.redemption.batch(conflict.batchId)
+    const campaign = await api.redemption.get(detail.batch.campaignId)
+    finishDuplicateReview(false)
+    codeGroupDialogVisible.value = false
+    await openGroupDetail({ campaign, detail })
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '旧任务读取失败，请刷新后重试')
+  }
+}
+
 async function createCodeGroup() {
+  if (working.value || checkingDuplicates.value) return
+  checkingDuplicates.value = true
+  try {
   await ensureSelectedMarketDrafts()
   const message = validateForm()
   if (message) { ElMessage.warning(message); return }
+  const creationIntent = JSON.stringify({ form: form.value, tiers: form.value.remoteMarketIds.map(id => marketTierDrafts.value[marketKey(id)].tiers) })
+  if (!await checkCreationDuplicates()) return
   try {
     await ElMessageBox.confirm(
       `系统会将 ${form.value.remoteMarketIds.length} 个盘口汇总为一条任务，并按盘口顺序串行创建 ${expectedTaskCount()} 组远端配置，每组 ${codesPerGroup.value} 个${usesSpecialCode.value ? '特殊' : '普通'}兑换码，共 ${expectedTaskCount() * codesPerGroup.value} 个；生效规则为“${validityRuleSummary.value}”。后续发布仍按盘口分别执行全量发布，并可能发布该盘口所有待发布的兑换码配置，请确认各远端后台不存在不应发布的内容。`,
       '确认批量生成兑换码组',
       { type: 'warning', confirmButtonText: '确认并开始生成', cancelButtonText: '取消' },
     )
+    if (creationIntent !== JSON.stringify({ form: form.value, tiers: form.value.remoteMarketIds.map(id => marketTierDrafts.value[marketKey(id)].tiers) })) {
+      ElMessage.warning('创建参数已变化，请重新查重并确认')
+      return
+    }
   } catch {
     return
+  }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '查重未完成，本次未创建配置')
+    return
+  } finally {
+    checkingDuplicates.value = false
+    duplicateCheckProgress.value = ''
   }
   const [claimDateFrom, claimDateTo] = form.value.dateRange
   const [validFromDayOffset, validToDayOffset] = validityOffsets.value
@@ -1253,6 +1446,7 @@ async function createCodeGroup() {
       const draft = marketTierDrafts.value[marketKey(marketId)]
       if (!draft) continue
       const input: RedemptionCodeGroupInput = {
+        duplicateReview: duplicateCreationReview.value,
         code: makeGroupCode(marketId, index + 1),
         name: generatedGroupName(form.value.dateRange, marketId),
         claimDateFrom,
@@ -1272,6 +1466,7 @@ async function createCodeGroup() {
         remoteMarketId: marketId,
         exportGroupKey,
         redemptionType: form.value.redemptionType,
+        specialCodeNaming: usesSpecialCode.value ? form.value.specialCodeNaming : 'ORIGINAL',
         tierUserTypes: draft.tiers.map((tier) => tier.userType),
         tierLabelIds: draft.tiers.map((tier) => tier.userType === 'ALL_USERS' ? [] : tier.labelIds),
         remoteOptions: { ...form.value.remoteOptions, keyNumber: codesPerGroup.value },
@@ -1292,7 +1487,10 @@ async function createCodeGroup() {
     ElMessage[failedMarkets.length ? 'warning' : 'success'](failedMarkets.length
       ? `已创建 1 条多盘口任务，包含 ${created.length} 个盘口、${taskCount} 条远端配置；${failedMarkets.join('；')}`
       : `已创建 1 条${created.length > 1 ? '多盘口' : ''}任务，包含 ${created.length} 个盘口、${taskCount} 条远端配置，正在按盘口顺序自动生成`)
-    for (const detail of created) await generateCodes(detail)
+    for (const detail of created) {
+      if (duplicateCreationReview.value) taskDuplicateReviews.set(creationReviewKey(detail), duplicateCreationReview.value)
+      if (!await generateCodes(detail, duplicateCreationReview.value)) break
+    }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '创建兑换码组失败')
   } finally {
@@ -1307,32 +1505,71 @@ function markProcessing(batchId: string | number, active: boolean) {
   processingGroupIds.value = next
 }
 
-async function generateCodes(initial: RedemptionBatchDetail) {
+async function generateCodes(initial: RedemptionBatchDetail, duplicateReview?: RedemptionDuplicateReview) {
   let detail = initial
-  let failed = false
   markProcessing(detail.batch.id, true)
   try {
+    detail = await api.redemption.batch(detail.batch.id)
+    if (detail.issues.some(needsCreationReconciliation)) {
+      ElMessage.warning('任务含待审核或待核对的配置，已停止自动创建，请查看任务明细')
+      return false
+    }
+    if (detail.issues.some(issue => issue.workflowStatus === 'RECOVERY_REQUIRED')) {
+      ElMessage.warning('已保存进度：旧配置需要核验或重建，请点击“重试并重建”后继续')
+      return false
+    }
     const pendingIssues = detail.issues.filter((issue) => issue.workflowStatus === 'PENDING_CREATION')
+    const reviewed = duplicateReview ?? (pendingIssues.length ? await checkPendingCreationDuplicates(detail) : undefined)
+    if (reviewed === false) return false
     const intervalMs = Math.max(1, detail.batch.remoteOptions?.creationIntervalSeconds ?? form.value.remoteOptions.creationIntervalSeconds ?? 5) * 1000
     for (const [index, issue] of pendingIssues.entries()) {
       if (issue.workflowStatus !== 'PENDING_CREATION') continue
       const requestStartedAt = Date.now()
-      try {
-        detail = await api.redemption.createRemoteConfiguration(issue.id)
-      } catch {
-        failed = true
-      }
+      detail = reviewed
+        ? await api.redemption.createRemoteConfiguration(issue.id, false, reviewed)
+        : await api.redemption.createRemoteConfiguration(issue.id)
       if (index < pendingIssues.length - 1) await wait(Math.max(0, intervalMs - (Date.now() - requestStartedAt)))
     }
-    ElMessage[failed ? 'warning' : 'success'](failed ? '部分远端配置创建失败，请在任务列表中查看失败原因' : '远端配置已全部创建，请在任务列表中选择发布方式后发布')
+    const verified = await confirmCreationRewards(detail)
+    if (!verified) return false
+    detail = verified
+    if (detail.issues.some(issue => !['CREATED', 'PUBLISHED', 'CODE_IMPORTED'].includes(issue.workflowStatus || ''))) {
+      ElMessage.warning('仍有配置待处理，当前任务尚未完成创建')
+      return false
+    }
+    ElMessage.success('远端配置已全部创建且实际奖励核验一致，请在任务列表中选择发布方式后发布')
+    return true
+  } catch (error) {
+    ElMessage.warning(`已停止后续自动创建：${error instanceof Error ? error.message : '请求结果未确认，请查看任务明细'}`)
+    return false
   } finally {
     markProcessing(detail.batch.id, false)
-    await loadCodeGroups()
-    if (selectedGroup.value?.detail.batch.id === detail.batch.id) replaceCodeGroup({ campaign: selectedGroup.value.campaign, detail })
+    try {
+      detail = await api.redemption.batch(detail.batch.id)
+      await loadCodeGroups()
+      if (selectedGroup.value?.detail.batch.id === detail.batch.id) replaceCodeGroup({ campaign: selectedGroup.value.campaign, detail })
+    } catch { ElMessage.warning('任务明细刷新失败，请点击刷新查看最新状态') }
   }
 }
 
-function openPublishDialog(target: CodeGroupRow | CodeGroupTask) {
+async function openPublishDialog(target: CodeGroupRow | CodeGroupTask) {
+  if (publishRows(target).some(row => row.detail.overview)) {
+    try {
+      const rows = await Promise.all(publishRows(target).map(loadFullGroup))
+      target = isMultiMarketPublishTarget(target) ? { ...target, members: rows } : rows[0]
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : '读取完整任务明细失败')
+      return
+    }
+  }
+  if (publishRows(target).some(row => creationRewardIssues(row).length)) {
+    ElMessage.warning('实际奖励尚未核验一致，请先确认并完成奖励核验')
+    return
+  }
+  if (publishRows(target).some(row => countIssues(reconciliationIssues(row)) > 0)) {
+    ElMessage.warning('有创建结果待核对的配置，请先核对后再发布')
+    return
+  }
   publishTarget.value = target
   publishForm.value = { mode: 'IMMEDIATE', fallbackToScheduled: true }
   publishOptionsOpen.value = []
@@ -1389,12 +1626,12 @@ function hasPendingPublishReservation(row: CodeGroupRow) {
 }
 
 function repairReadyForPublish(row: CodeGroupRow) {
-  return isRepairing(row) && row.detail.issues.some(issue => issue.workflowStatus === 'CREATED')
+  return !countIssues(reconciliationIssues(row)) && isRepairing(row) && row.detail.issues.some(issue => issue.workflowStatus === 'CREATED')
     && row.detail.issues.every(issue => ['CREATED', 'PUBLISHED', 'CODE_IMPORTED'].includes(issue.workflowStatus || ''))
 }
 
 function canContinueRepair(row: CodeGroupRow) {
-  return isRepairing(row) && !hasPendingPublishReservation(row)
+  return !countIssues(reconciliationIssues(row)) && isRepairing(row) && !hasPendingPublishReservation(row)
     && (repairReadyForPublish(row) || row.detail.issues.some(issue => issue.workflowStatus === 'PENDING_CREATION'))
 }
 
@@ -1435,6 +1672,10 @@ async function recoverPublishReservation(row: CodeGroupRow) {
 async function submitPublish() {
   const target = publishTarget.value
   if (!target) return
+  if (publishRows(target).some(row => countIssues(reconciliationIssues(row)) > 0)) {
+    ElMessage.warning('有创建结果待核对的配置，请先核对后再发布')
+    return
+  }
   if (publishForm.value.mode === 'SCHEDULED' && !publishForm.value.scheduledTime) { ElMessage.warning('请选择定时发布时间（印度时间）'); return }
   const rows = publishRows(target)
   if (rows.some((row) => row.detail.batch.status !== 'READY_TO_PUBLISH' && !repairReadyForPublish(row))) {
@@ -1483,18 +1724,27 @@ async function submitPublish() {
 }
 
 async function downloadPublishedCodes(row: CodeGroupRow) {
+  if (row.detail.overview) {
+    try { row = await loadFullGroup(row) }
+    catch (error) { ElMessage.error(error instanceof Error ? error.message : '读取完整任务明细失败'); return false }
+  }
   let detail = row.detail
   let failed = false
   let attemptedDownload = false
   markProcessing(detail.batch.id, true)
   try {
-    const check = await verifyRemotePublication(row, true)
-    if (!check || check.publicationState !== 'COMPLETED') {
+    // Shared configurations may have been published by several original tasks.
+    // The server resolves and verifies each original publication before its download.
+    const sharedPublication = detail.batch.status === 'PUBLISHED' && !detail.batch.remotePublishTaskId
+    const check = sharedPublication ? undefined : await verifyRemotePublication(row, true)
+    if (!sharedPublication && (!check || check.publicationState !== 'COMPLETED')) {
       showPublicationResult(row)
       return false
     }
     const pending = detail.issues.filter(item => item.workflowStatus !== 'CODE_IMPORTED')
-    const downloadable = pending.filter(item => check.configurations.some(config => config.configurationId === item.remoteConfigurationId && config.state === 'MATCHED'))
+    const downloadable = pending.filter(item => sharedPublication
+      ? item.workflowStatus === 'PUBLISHED'
+      : check?.configurations.some(config => config.configurationId === item.remoteConfigurationId && config.state === 'MATCHED'))
     if (pending.length && !downloadable.length) {
       showPublicationResult(row)
       return false
@@ -1526,6 +1776,15 @@ async function cancelScheduledPublish(row: CodeGroupRow) {
     ElMessage.success('已撤销定时发布')
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : '撤销定时发布失败') }
   finally { cancellingPublishId.value = undefined }
+}
+
+async function loadFullGroup(row: CodeGroupRow): Promise<CodeGroupRow> {
+  if (!row.detail.overview) return row
+  const detail = await api.redemption.batch(row.detail.batch.id)
+  if (detail.overview) throw new Error('未读取到完整任务明细，请刷新后重试')
+  const replacement = { campaign: row.campaign, detail }
+  replaceCodeGroup(replacement)
+  return replacement
 }
 
 async function openGroupDetail(row: CodeGroupRow) {
@@ -1566,6 +1825,350 @@ function replaceCodeGroup(replacement: CodeGroupRow) {
   }
 }
 
+const checkingRewardPolicy = ref(false)
+const applyingRewardPolicy = ref(false)
+const rewardPolicyDialog = ref(false)
+const rewardPolicyPlans = ref<RedemptionRewardPolicyView[]>([])
+const rewardPolicyProgress = ref('')
+function rewardPolicyIntent(view: RedemptionRewardPolicyView) {
+  const { issueVersion, ownerVersion, batchVersion, sharedBatches, ...intent } = view.parameters
+  return JSON.stringify(intent)
+}
+function rewardConfirmationKey(view: RedemptionRewardPolicyView) {
+  return JSON.stringify([view.configurationId, view.previousMin, view.previousMax, rewardPolicyIntent(view)])
+}
+function rewardPolicySummary(plans: RedemptionRewardPolicyView[]) {
+  return plans.map(plan => `${plan.parameters.marketName} ${plan.parameters.claimDate}：实际 ${plan.previousMin}–${plan.previousMax} → 本任务 ${plan.parameters.bonusMin}–${plan.parameters.bonusMax}，共享 ${plan.parameters.sharedBatches?.length || 0} 个批次`).join('\n')
+}
+
+/** Creation waits here for one explicit confirmation per market; cancellation leaves the durable pending state. */
+async function confirmCreationRewards(initial: RedemptionBatchDetail): Promise<RedemptionBatchDetail | undefined> {
+  let detail = await api.redemption.batch(initial.batch.id)
+  const pending = detail.issues.filter(needsCreationRewardCheck)
+  if (!pending.length) return detail
+  const plans: RedemptionRewardPolicyView[] = []
+  for (const issue of pending) {
+    const plan = await api.redemption.checkRewardPolicy(issue.id)
+    if (plan.status !== 'MATCHED') plans.push(plan)
+  }
+  if (plans.length) {
+    if (plans.some(plan => !['CHECKED', 'UPDATED', 'UNCONFIRMED'].includes(plan.status))) {
+      ElMessage.warning('奖励修改仍在执行或结果待核对，当前任务尚未完成，请稍后核验')
+      return undefined
+    }
+    try {
+      await ElMessageBox.confirm(
+        `发现 ${plans.length} 条配置的实际奖励尚未满足本任务：\n${rewardPolicySummary(plans)}\n确认后按本任务奖励修改，共享这些配置的历史任务也会受到影响。保留原码、配置 ID 和库存。取消将保存进度并保持待确认状态。`,
+        '确认修改同码配置的实际奖励',
+        { type: 'warning', confirmButtonText: '确认修改并继续', cancelButtonText: '暂不修改', customClass: 'redemption-recovery-confirm' },
+      )
+    } catch {
+      ElMessage.warning('已保存进度，奖励尚未确认，任务未完成；可从“核验实际奖励”继续')
+      return undefined
+    }
+    for (const plan of plans) {
+      const started = Date.now()
+      const fresh = await api.redemption.checkRewardPolicy(plan.requestedIssueId)
+      if (fresh.status === 'MATCHED') continue
+      if (rewardConfirmationKey(fresh) !== rewardConfirmationKey(plan)) throw new Error('实际奖励、任务参数或共享范围已变化，请重新确认')
+      if (!['CHECKED', 'UPDATED', 'UNCONFIRMED'].includes(fresh.status) || fresh.id == null || fresh.rowVersion == null)
+        throw new Error('奖励修改尚未就绪，请核验后继续')
+      detail = await api.redemption.applyRewardPolicy(fresh.requestedIssueId, fresh.id, fresh.rowVersion)
+      if (detail.issues.some(issue => String(issue.id) === String(fresh.requestedIssueId) && needsCreationRewardCheck(issue)))
+        throw new Error('修改后的实际奖励尚未核验一致，已停止后续处理')
+      await wait(Math.max(0, Math.max(5, fresh.parameters.options.creationIntervalSeconds || 5) * 1000 - (Date.now() - started)))
+    }
+  }
+  detail = await api.redemption.batch(initial.batch.id)
+  if (detail.issues.some(needsCreationRewardCheck)) throw new Error('仍有实际奖励待核验或确认，当前任务未完成')
+  return detail
+}
+async function openTaskRewardPolicies(task: CodeGroupTask) {
+  await openTaskDetail(task)
+  await inspectRewardPolicies()
+}
+async function inspectRewardPolicies(onlyIssue?: RedemptionCodeIssue) {
+  if (!canGenerate.value || checkingRewardPolicy.value || applyingRewardPolicy.value) return
+  const group = selectedGroup.value
+  if (!group) return
+  checkingRewardPolicy.value = true
+  rewardPolicyDialog.value = true
+  rewardPolicyPlans.value = []
+  let checked = 0, matched = 0, unavailable = 0
+  try {
+    const members = onlyIssue ? [group] : selectedTaskMembers.value.length ? selectedTaskMembers.value : [group]
+    for (const member of members) {
+      const fresh = await api.redemption.batch(member.detail.batch.id)
+      for (const issue of fresh.issues.filter(issue => !onlyIssue || String(issue.id) === String(onlyIssue.id))) {
+        rewardPolicyProgress.value = `正在回读实际奖励 ${++checked} 条，已匹配 ${matched} 条`
+        try {
+          const plan = await api.redemption.checkRewardPolicy(issue.id, issue.rowVersion)
+          if (plan.status === 'MATCHED' || plan.status === 'APPLIED') matched++
+          else rewardPolicyPlans.value.push(plan)
+        } catch { unavailable++ }
+      }
+    }
+    rewardPolicyProgress.value = `已核验 ${checked} 条：${matched} 条实际匹配，${rewardPolicyPlans.value.length} 条需处理${unavailable ? `，${unavailable} 条不可核验，请先处理配置缺失或读取问题` : ''}。本次核验没有修改远端奖励。`
+  } finally {
+    checkingRewardPolicy.value = false
+    await refreshRecoveryGroups()
+  }
+}
+async function applyRewardPolicies() {
+  if (checkingRewardPolicy.value || applyingRewardPolicy.value) return
+  const candidates = rewardPolicyPlans.value.filter(plan => ['CHECKED', 'UPDATED', 'UNCONFIRMED'].includes(plan.status))
+  if (!candidates.length) return
+  try {
+    await ElMessageBox.confirm(`确认处理 ${candidates.length} 条已有配置奖励：\n${rewardPolicySummary(candidates)}\n保留原配置 ID、原码、描述和库存；仅对齐奖励。结果未知的请求只核对回读，不重复提交。调整后仍需单独发布和下载核验。`, '确认修改实际奖励', { type: 'warning', confirmButtonText: '确认对齐奖励 / 恢复登记', cancelButtonText: '取消', customClass: 'redemption-recovery-confirm' })
+  } catch { return }
+  applyingRewardPolicy.value = true
+  let done = 0
+  let attempted: RedemptionRewardPolicyView | undefined
+  try {
+    for (const plan of candidates) {
+      attempted = plan
+      const started = Date.now()
+      rewardPolicyProgress.value = `正在对齐奖励 ${done + 1} / ${candidates.length}；已完成 ${done} 条`
+      const fresh = await api.redemption.checkRewardPolicy(plan.requestedIssueId)
+      if (fresh.status === 'MATCHED' || fresh.status === 'APPLIED') { done++; continue }
+      if (rewardConfirmationKey(fresh) !== rewardConfirmationKey(plan)) throw new Error('实际奖励、任务参数或共享范围已变化，请重新核验确认')
+      if (fresh.id == null || fresh.rowVersion == null) throw new Error('奖励修改记录无效，请重新核验')
+      const detail = await api.redemption.applyRewardPolicy(fresh.requestedIssueId, fresh.id, fresh.rowVersion)
+      const member = selectedTaskMembers.value.find(member => String(member.detail.batch.id) === String(detail.batch.id))
+      if (member) replaceCodeGroup({ campaign: member.campaign, detail })
+      done++
+      await wait(Math.max(0, Math.max(5, fresh.parameters.options.creationIntervalSeconds || 5) * 1000 - (Date.now() - started)))
+    }
+    rewardPolicyProgress.value = `已回读确认 ${done} 条实际奖励符合本次任务快照；请单独确认发布。`
+    ElMessage.success(rewardPolicyProgress.value)
+    rewardPolicyPlans.value = []
+    rewardPolicyDialog.value = false
+    await refreshRecoveryGroups()
+    for (const member of selectedTaskMembers.value) {
+      if (member.detail.issues.some(issue => issue.workflowStatus === 'PENDING_CREATION')) {
+        if (!await generateCodes(member.detail)) break
+      }
+    }
+  } catch (error) {
+    if (attempted) {
+      try { const latest = await api.redemption.checkRewardPolicy(attempted.requestedIssueId)
+        rewardPolicyPlans.value = rewardPolicyPlans.value.map(plan => String(plan.requestedIssueId) === String(latest.requestedIssueId) ? latest : plan)
+      } catch { /* leave the durable state for the next explicit check */ }
+    }
+    rewardPolicyProgress.value = `已保存 ${done} 条进度；${error instanceof Error ? error.message : '奖励修改中断'}。请核验后继续。`
+    ElMessage.warning(rewardPolicyProgress.value)
+  } finally {
+    applyingRewardPolicy.value = false
+    await refreshRecoveryGroups()
+  }
+}
+
+const deletingIssueId = ref<string | number>()
+async function deleteRemoteConfiguration(issue: RedemptionCodeIssue) {
+  if (!canGenerate.value || deletingIssueId.value || !issue.remoteConfigurationId) return
+  deletingIssueId.value = issue.id
+  try {
+    if (deletionHeld(issue)) {
+      const result = await api.redemption.reconcileDeletion(issue.id)
+      ElMessage.info(result.message)
+      return
+    }
+    const plan = await api.redemption.previewDeletion(issue.id, issue.rowVersion)
+    if (plan.status !== 'CHECKED') { ElMessage.warning(plan.message); return }
+    const related = plan.parameters.sharedBatches?.map(batch => `#${batch.id}`).join('、') || '—'
+    try {
+      await ElMessageBox.confirm(`即将永久删除 ${plan.parameters.marketName} 的配置 ${plan.configurationId}（${plan.remote.description || issue.tierName || '—'}，指定码 ${plan.remote.giftCode || '普通兑换码'}）。共享批次：${related}，共 ${plan.parameters.sharedBatches?.length || 0} 个。所有共享任务都会受到影响。原码、历史库存和审计保留，删除后本系统将阻止继续发布、下载和自动重建。已发布的兑换码是否立即失效需单独核验。此操作不可恢复。`, '确认永久删除远端配置', { type: 'warning', confirmButtonText: `确认真删除 ${plan.configurationId}`, cancelButtonText: '取消', customClass: 'redemption-recovery-confirm' })
+    } catch { return }
+    const result = await api.redemption.confirmDeletion(issue.id, plan)
+    ElMessage.success(result.message)
+  } catch (error) {
+    ElMessage.warning(error instanceof Error ? error.message : '删除未完成，请核对结果')
+  } finally {
+    deletingIssueId.value = undefined
+    await refreshRecoveryGroups()
+  }
+}
+
+const checkingRecovery = ref(false)
+const rebuildingMissing = ref(false)
+const recoveryDialogVisible = ref(false)
+const recoveryViews = ref<RedemptionRecoveryView[]>([])
+const recoveryProgress = ref('')
+function recoveryStatusLabel(status: string) {
+  return ({ CHECK_UNAVAILABLE: '核验不可用', PRESENT: '配置仍存在', MISSING: '配置缺失，待重建', CREATING: '重建中', UNCONFIRMED: '创建结果待核对', RECEIPT_SAVED: '登记待恢复', APPLYING: '登记中', COMPLETED: '重建完成，待发布' } as Record<string, string>)[status] || status
+}
+function taskRecoveries(task: CodeGroupTask) {
+  return task.members.flatMap(member => member.detail.issues).filter(issue => issue.recovery && !['PRESENT', 'COMPLETED'].includes(issue.recovery.status))
+}
+async function openTaskRecovery(task: CodeGroupTask) {
+  await openTaskDetail(task)
+  await inspectMissingConfigurations()
+}
+function recoveryParameterKey(view: RedemptionRecoveryView) {
+  const { issueVersion, ownerVersion, batchVersion, sharedBatches, ...parameters } = view.parameters
+  return JSON.stringify(parameters)
+}
+async function inspectMissingConfigurations(onlyIssue?: RedemptionCodeIssue) {
+  if (checkingRecovery.value || rebuildingMissing.value || !canGenerate.value) return
+  const group = selectedGroup.value
+  if (!group) return
+  checkingRecovery.value = true
+  recoveryViews.value = []
+  recoveryDialogVisible.value = true
+  const members = onlyIssue ? [group] : selectedTaskMembers.value.length ? selectedTaskMembers.value : [group]
+  let checked = 0, unavailable = 0
+  const seen = new Set<string>()
+  try {
+    for (const member of members) {
+      const fresh = await api.redemption.batch(member.detail.batch.id)
+      for (const issue of fresh.issues.filter(issue => !onlyIssue || String(issue.id) === String(onlyIssue.id))) {
+        const identity = `${fresh.batch.remoteMarketCode}:${issue.reusedFromIssueId || issue.id}`
+        if (seen.has(identity)) continue
+        seen.add(identity)
+        recoveryProgress.value = `正在核验 ${++checked} 条，已发现 ${recoveryViews.value.filter(view => view.status === 'MISSING').length} 条缺失`
+        try {
+          const view = await api.redemption.inspectRecovery(issue.id, issue.rowVersion)
+          if (view.status !== 'PRESENT' && view.status !== 'COMPLETED') recoveryViews.value.push(view)
+        } catch { unavailable++ }
+      }
+    }
+    const count = recoveryViews.value.filter(view => view.status === 'MISSING').length
+    recoveryProgress.value = `已保存进度：核验 ${checked} 条，${count} 条旧配置确认缺失${unavailable ? `，${unavailable} 条未取得有效核验` : ''}。${count ? '请点击“重试并重建”，按本次任务参数重新创建缺失部分。' : '已有配置保持当前状态。'}`
+  } finally {
+    checkingRecovery.value = false
+    await refreshRecoveryGroups()
+  }
+}
+async function refreshRecoveryGroups() {
+  const members = selectedTaskMembers.value.length ? [...selectedTaskMembers.value] : selectedGroup.value ? [selectedGroup.value] : []
+  for (const member of members) {
+    try { replaceCodeGroup({ campaign: member.campaign, detail: await api.redemption.batch(member.detail.batch.id) }) } catch { /* the persistent journal remains available on refresh */ }
+  }
+  await loadCodeGroups()
+}
+async function rebuildMissingConfigurations() {
+  if (rebuildingMissing.value || checkingRecovery.value) return
+  const candidates = recoveryViews.value.filter(view => ['MISSING', 'RECEIPT_SAVED'].includes(view.status))
+  if (!candidates.length) return
+  const descriptions = candidates.map(view => {
+    const p = view.parameters
+    return `${p.marketName} · ${p.claimDate} · 奖励 ${p.bonusMin}–${p.bonusMax} · 每码 ${p.options.singleKeyLimit} 次 / 每用户 ${p.options.singleUserLimit} 次 · 每组 ${p.options.keyNumber} 码 · ${p.validFrom} 至 ${p.validTo} · ${p.labels.length ? '标签 ' + p.labels.join('、') : '全部用户'} · 影响 ${view.relatedBatchCount} 个共享批次`
+  })
+  try {
+    await ElMessageBox.confirm(`将按以下任务快照处理 ${candidates.length} 条配置：\n${descriptions.join('\n')}\n保留旧身份和历史库存；已有回执仅恢复登记。创建后仍需单独确认发布。`, '确认重试并重建', { type: 'warning', confirmButtonText: '确认重新创建 / 恢复登记', cancelButtonText: '取消', customClass: 'redemption-recovery-confirm' })
+  } catch { return }
+  rebuildingMissing.value = true
+  let completed = 0
+  let attempted: RedemptionRecoveryView | undefined
+  try {
+    for (const preview of candidates) {
+      attempted = preview
+      recoveryProgress.value = `正在恢复 ${completed + 1} / ${candidates.length}，已登记 ${completed} 条`
+      const fresh = await api.redemption.inspectRecovery(preview.requestedIssueId)
+      if (fresh.status === 'PRESENT' || fresh.status === 'COMPLETED') continue
+      if (recoveryParameterKey(fresh) !== recoveryParameterKey(preview)) throw new Error('任务参数已变化，请重新核验并确认')
+      const detail = await api.redemption.rebuildMissing(fresh.requestedIssueId, fresh.id, fresh.rowVersion)
+      const member = selectedTaskMembers.value.find(member => String(member.detail.batch.id) === String(detail.batch.id))
+      if (member) replaceCodeGroup({ campaign: member.campaign, detail })
+      completed++
+    }
+    recoveryProgress.value = `已恢复登记 ${completed} 条，正在继续本任务余下的待创建项。创建完成后请单独确认发布。`
+    let continuationStopped = false
+    for (const member of [...selectedTaskMembers.value]) {
+      const detail = await api.redemption.batch(member.detail.batch.id)
+      if (detail.issues.some(issue => issue.workflowStatus === 'RECOVERY_REQUIRED')
+          || detail.issues.some(issue => issue.workflowStatus === 'PENDING_CREATION') && !await generateCodes(detail)) {
+        continuationStopped = true
+        break
+      }
+    }
+    if (continuationStopped) {
+      recoveryProgress.value = `已保存进度：${completed} 条重建已登记，余下配置尚未完成，请查看任务原因后重试。`
+      ElMessage.warning(recoveryProgress.value)
+      return
+    }
+    ElMessage.success(`已恢复登记 ${completed} 条；创建结果请查看任务明细，发布需单独确认`)
+    recoveryViews.value = []
+    recoveryDialogVisible.value = false
+  } catch (error) {
+    if (attempted) {
+      try {
+        const fresh = await api.redemption.inspectRecovery(attempted.requestedIssueId)
+        recoveryViews.value = recoveryViews.value.map(view => String(view.id) === String(fresh.id) ? fresh : view)
+      } catch { /* keep the last confirmed journal state */ }
+    }
+    recoveryProgress.value = `已保存 ${completed} 条进度；${error instanceof Error ? error.message : '恢复中断，请重新核验'}。请重新核验后重试。`
+    ElMessage.warning(recoveryProgress.value)
+  } finally {
+    rebuildingMissing.value = false
+    await refreshRecoveryGroups()
+  }
+}
+
+const reusingConfigurations = ref(false)
+const reuseCheckErrors = ref<Record<string, string>>({})
+function canReuseExistingConfiguration(issue: RedemptionCodeIssue) {
+  return canGenerate.value && issue.overviewCount === undefined && !issue.reusedFromIssueId && issue.rowVersion !== undefined
+    && (needsCreationReconciliation(issue) || !issue.remoteConfigurationId)
+    && ['PENDING_CREATION', 'FAILED', 'CREATING_REMOTE', 'CREATED'].includes(issue.workflowStatus || '')
+}
+function reusedIssueLimitLabel(group: CodeGroupRow, issue: RedemptionCodeIssue) {
+  return issue.reusedFromIssueId ? '沿用远端已有配置' : singleKeyLimitLabel(group)
+}
+function reuseOrigin(issue: RedemptionCodeIssue) {
+  if (issue.recovery?.status === 'COMPLETED') return `已按重建任务快照创建新配置 ${issue.recovery.newConfigurationId}；${issue.recovery.reason}`
+  if (!issue.reusedFromIssueId) return ''
+  const origin = codeGroups.value.find(row => String(row.detail.batch.id) === String(issue.reusedFromBatchId))
+  const source = origin?.detail.batch.taskNumber ? `复用任务 ${origin.detail.batch.taskNumber}` : '已复用现有配置'
+  return `${source}；实际奖励须与本任务一致，领取次数、标签及有效期沿用远端已有配置`
+}
+async function reuseExistingConfigurations(onlyIssue?: RedemptionCodeIssue) {
+  const group = selectedGroup.value
+  if (!group || reusingConfigurations.value || isProcessing(group)) return
+  reusingConfigurations.value = true
+  let matched = 0
+  let unresolved = 0
+  try {
+    const fresh = await api.redemption.batch(group.detail.batch.id)
+    replaceCodeGroup({ campaign: group.campaign, detail: fresh })
+    const candidates = fresh.issues.filter(issue => canReuseExistingConfiguration(issue)
+      && (!onlyIssue || String(issue.id) === String(onlyIssue.id)))
+    for (const issue of candidates) {
+      try {
+        let detail: RedemptionBatchDetail
+        try { detail = await api.redemption.reuseExistingConfiguration(issue.id, issue.rowVersion!) }
+        catch (failure) {
+          const problem = failure as { code?: string; details?: { candidates?: Array<{configurationId: string}> } }
+          if (!onlyIssue || problem.code !== 'REUSE_AMBIGUOUS_CONFIGURATION') throw failure
+          const ids = [...new Set((problem.details?.candidates || []).map(c => c.configurationId))]
+          if (!ids.length) throw failure
+          const { value } = await ElMessageBox.prompt(
+            `本地有多个同码历史配置：${ids.join('、')}。请输入你已核验仍存在且要沿用的配置 ID。系统会再次回读并检查任务参数、共享身份和删除保护；本次不会新建或修改远端配置。`,
+            '明确选择复用配置', { inputValidator: value => ids.includes(value.trim()) || '请输入清单中的配置 ID', confirmButtonText: '核验并关联所选配置', cancelButtonText: '取消' })
+          detail = await api.redemption.reuseExistingConfiguration(issue.id, issue.rowVersion!, value.trim())
+        }
+        replaceCodeGroup({ campaign: group.campaign, detail })
+        delete reuseCheckErrors.value[String(issue.id)]
+        matched++
+      } catch (error) {
+        unresolved++
+        reuseCheckErrors.value[String(issue.id)] = error instanceof Error ? error.message : '配置复用核验失败'
+      }
+    }
+    const verified = await confirmCreationRewards(await api.redemption.batch(group.detail.batch.id))
+    if (!verified) return
+    replaceCodeGroup({ campaign: group.campaign, detail: verified })
+    const message = `已复用 ${matched} 条配置${unresolved ? `，${unresolved} 条未关联，请查看核验说明` : ''}`
+    if (unresolved) ElMessage.warning(message)
+    else ElMessage.success(message)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '读取任务失败')
+  } finally {
+    reusingConfigurations.value = false
+    try { await loadCodeGroups() } catch { ElMessage.warning('列表刷新失败，请手动刷新') }
+  }
+}
+
 async function retryRemoteCreation(issue: RedemptionCodeIssue) {
   const group = selectedGroup.value
   if (!group || !canRetryRemoteCreation(issue)) return
@@ -1578,14 +2181,50 @@ async function retryRemoteCreation(issue: RedemptionCodeIssue) {
   }
   retryingIssueId.value = issue.id
   try {
-    const detail = await api.redemption.createRemoteConfiguration(issue.id, true)
+    const review = await checkPendingCreationDuplicates(await api.redemption.batch(group.detail.batch.id))
+    if (review === false) return
+    const created = await api.redemption.createRemoteConfiguration(issue.id, true, review)
+    const detail = await confirmCreationRewards(created)
+    if (!detail) return
     const replacement = { campaign: group.campaign, detail }
     replaceCodeGroup(replacement)
-    ElMessage.success('已重新创建远端兑换码配置')
+    ElMessage.success(detail.issues.find(item => String(item.id) === String(issue.id))?.reusedFromIssueId ? '已复用现有配置' : '已重新创建远端兑换码配置')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '重试创建远端配置失败')
   } finally {
     retryingIssueId.value = undefined
+    try {
+      replaceCodeGroup({ campaign: group.campaign, detail: await api.redemption.batch(group.detail.batch.id) })
+      await loadCodeGroups()
+    } catch { ElMessage.warning('任务明细刷新失败，请点击刷新查看最新状态') }
+  }
+}
+
+async function createOnePendingRemoteConfiguration(issue: RedemptionCodeIssue) {
+  const group = selectedGroup.value
+  if (!group || !canCreatePendingRemoteConfiguration(issue)) return
+  retryingIssueId.value = issue.id
+  markProcessing(group.detail.batch.id, true)
+  try {
+    const fresh = await api.redemption.batch(group.detail.batch.id)
+    replaceCodeGroup({ campaign: group.campaign, detail: fresh })
+    if (!canContinuePendingCreation({ campaign: group.campaign, detail: fresh })
+      || !uncreatedIssues({ campaign: group.campaign, detail: fresh }).some(item => String(item.id) === String(issue.id))) {
+      ElMessage.warning('任务状态已变化，请查看最新明细')
+      return
+    }
+    const detail = await api.redemption.createRemoteConfiguration(issue.id)
+    replaceCodeGroup({ campaign: group.campaign, detail })
+    ElMessage.success('本条配置已处理，请核对明细；其余待创建项保留')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '单条配置创建失败，请核对最新明细')
+  } finally {
+    retryingIssueId.value = undefined
+    markProcessing(group.detail.batch.id, false)
+    try {
+      replaceCodeGroup({ campaign: group.campaign, detail: await api.redemption.batch(group.detail.batch.id) })
+      await loadCodeGroups()
+    } catch { ElMessage.warning('任务明细刷新失败，请点击刷新查看最新状态') }
   }
 }
 
@@ -1599,6 +2238,8 @@ async function continuePendingCreation(row: CodeGroupRow) {
     replaceCodeGroup(current)
     if (!canContinuePendingCreation(current)) { ElMessage.warning('任务状态已变化，请查看最新明细'); return }
     const targets = uncreatedIssues(current).map(issue => issue.id)
+    const review = await checkPendingCreationDuplicates(current.detail)
+    if (review === false) return
     try {
       await ElMessageBox.confirm(
         `将继续创建 ${remoteMarketLabel(row)} 的 ${targets.length} 条待创建配置。已有配置将保留；创建完成后请另行选择发布方式。`,
@@ -1615,13 +2256,17 @@ async function continuePendingCreation(row: CodeGroupRow) {
       }
       if (!uncreatedIssues(current).some(issue => String(issue.id) === String(issueId))) continue
       const requestStartedAt = Date.now()
-      current.detail = await api.redemption.createRemoteConfiguration(issueId)
+      current.detail = await api.redemption.createRemoteConfiguration(issueId, false, review)
       replaceCodeGroup(current)
       if (index < targets.length - 1) {
         const intervalMs = Math.max(1, current.detail.batch.remoteOptions?.creationIntervalSeconds ?? 5) * 1000
         await wait(Math.max(0, intervalMs - (Date.now() - requestStartedAt)))
       }
     }
+    const verified = await confirmCreationRewards(current.detail)
+    if (!verified) return
+    current.detail = verified
+    replaceCodeGroup(current)
     ElMessage.success(current.detail.batch.status === 'READY_TO_PUBLISH'
       ? '剩余配置已创建完成，请选择发布方式后发布' : '本次待创建项已处理，请查看最新任务明细')
   } catch (error) {
@@ -1657,22 +2302,30 @@ async function retrySelectedFailedRemoteCreations() {
   let succeeded = 0
   const failures: string[] = []
   try {
+    const review = await checkPendingCreationDuplicates(await api.redemption.batch(group.detail.batch.id))
+    if (review === false) return
     for (const [index, { row, issue }] of targets.entries()) {
       const requestStartedAt = Date.now()
       try {
-        const detail = await api.redemption.createRemoteConfiguration(issue.id, true)
+        const detail = await api.redemption.createRemoteConfiguration(issue.id, true, review)
         replaceCodeGroup({ campaign: row.campaign, detail })
         succeeded += 1
       } catch (error) {
         failures.push(`${remoteMarketLabel(row)} · ${formatDate(issue.claimDate)}：${error instanceof Error ? error.message : '重试失败'}`)
+        break
       }
       if (index < targets.length - 1) {
         const intervalMs = Math.max(1, row.detail.batch.remoteOptions?.creationIntervalSeconds ?? form.value.remoteOptions.creationIntervalSeconds ?? 5) * 1000
         await wait(Math.max(0, intervalMs - (Date.now() - requestStartedAt)))
       }
     }
+    if (!failures.length) {
+      const verified = await confirmCreationRewards(await api.redemption.batch(group.detail.batch.id))
+      if (!verified) return
+      replaceCodeGroup({ campaign: group.campaign, detail: verified })
+    }
     ElMessage[failures.length ? 'warning' : 'success'](failures.length
-      ? `${succeeded} 条已选任务重试成功，${failures.length} 条仍失败：${failures.join('；')}`
+      ? `${succeeded} 条已选任务重试成功，已停止后续重试：${failures.join('；')}`
       : `${succeeded} 条已选失败任务已全部重新创建，请选择发布方式后发布`)
   } finally {
     retryingSelectedFailedTasks.value = false
@@ -1733,6 +2386,7 @@ async function continueMissingConfigurationRepair(row: CodeGroupRow) {
   resolvingMissingBatchId.value = row.detail.batch.id
   let detail = row.detail
   try {
+    if (row.detail.overview) { row = await loadFullGroup(row); detail = row.detail }
     // Each POST is separately recorded. A failed or uncertain create stops before any publish call.
     const pending = detail.issues.filter(item => item.workflowStatus === 'PENDING_CREATION')
     for (const [index, issue] of pending.entries()) {
@@ -1741,6 +2395,9 @@ async function continueMissingConfigurationRepair(row: CodeGroupRow) {
       replaceCodeGroup({ campaign: row.campaign, detail })
       if (index < pending.length - 1) await new Promise(resolve => window.setTimeout(resolve, Math.max(1, detail.batch.remoteOptions?.creationIntervalSeconds ?? 5) * 1000))
     }
+    const verified = await confirmCreationRewards(detail)
+    if (!verified) return
+    detail = verified
     if (!detail.issues.some(item => item.workflowStatus === 'CREATED')
       || detail.issues.some(item => !['CREATED', 'PUBLISHED', 'CODE_IMPORTED'].includes(item.workflowStatus || ''))) {
       ElMessage.warning('仍有配置待创建或待核对，暂不能重新发布')
@@ -1847,6 +2504,7 @@ onUnmounted(() => {
                 <span v-else-if="column.key === 'market'" class="virtual-cell" :title="taskMarkets(row)">{{ taskMarkets(row) }}</span>
                 <div v-else-if="column.key === 'status'" class="publication-status-cell">
                   <el-tag :type="taskStatus(row).type" effect="light">{{ taskStatus(row).text }}</el-tag>
+                  <small v-if="taskRecoveries(row).length" class="creation-status-summary" :title="taskRecoveries(row)[0]?.recovery?.reason">{{ taskRecoveries(row)[0]?.recovery?.reason }}</small>
                   <small v-if="taskCreationSummary(row)" class="creation-status-summary" :title="taskCreationSummary(row)">{{ taskCreationSummary(row) }}</small>
                   <small v-if="taskAcquisitionStatus(row)">{{ taskAcquisitionStatus(row) }}</small>
                 </div>
@@ -1861,6 +2519,9 @@ onUnmounted(() => {
                 <div v-else-if="column.key === 'actions'" class="virtual-actions">
                   <el-button link type="primary" size="small" :loading="row.members.some(isProcessing)" @click="isMultiMarketTask(row) ? openTaskDetail(row) : openGroupDetail(taskPrimary(row))">查看任务</el-button>
                   <el-button link type="primary" size="small" @click="openClaimStatistics(row)">领取统计</el-button>
+                  <el-button v-if="canGenerate && taskRecoveries(row).length" link type="warning" size="small" @click="openTaskRecovery(row)">重试并重建（{{ taskRecoveries(row).length }}）</el-button>
+                  <el-button v-if="canGenerate" link type="primary" size="small" @click="openTaskRewardPolicies(row)">核验实际奖励</el-button>
+                  <el-button v-if="canGenerate" link type="danger" size="small" @click="taskDeletionTarget = { taskId: row.taskId, taskNumber: taskDisplayId(row) }">批量删除</el-button>
                   <el-button v-if="taskPendingCreationCount(row)" link type="warning" size="small" :disabled="!canOpenPendingCreationTask(row)" @click="openPendingCreationTask(row)">处理待创建（{{ taskPendingCreationCount(row) }}）</el-button>
                   <template v-if="!isMultiMarketTask(row)">
                     <el-button v-if="taskPrimary(row).detail.batch.status === 'PUBLISHED'" link type="primary" size="small" :loading="verifyingPublicationIds.has(String(taskPrimary(row).detail.batch.id))" @click="inspectPublication(taskPrimary(row))">{{ missingConfigurations(taskPrimary(row)).length ? '处理缺失配置' : '查看核验结果' }}</el-button>
@@ -1895,8 +2556,8 @@ onUnmounted(() => {
       <el-empty v-else-if="!codeGroupLoadError" :image-size="68" description="还没有兑换码组，点击右上角“批量生成兑换码组”开始创建" />
     </article>
 
-    <el-dialog v-model="codeGroupDialogVisible" title="批量生成兑换码组" width="1040px" destroy-on-close>
-      <el-form label-position="top" class="code-group-form">
+    <el-dialog v-model="codeGroupDialogVisible" title="批量生成兑换码组" width="1040px" destroy-on-close :close-on-click-modal="!checkingDuplicates && !working" :close-on-press-escape="!checkingDuplicates && !working" :show-close="!checkingDuplicates && !working">
+      <el-form label-position="top" class="code-group-form" :disabled="checkingDuplicates || working">
         <div class="code-group-form__grid">
           <el-form-item class="code-group-form__date-range" label="开始兑换日期范围（表格列）" required>
             <el-date-picker v-model="form.dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" :disabled-date="(date: Date) => date < new Date(`${todayIso()}T00:00:00`)" style="width: 100%" />
@@ -1930,6 +2591,16 @@ onUnmounted(() => {
               <el-radio value="AGENT">代理</el-radio>
             </el-radio-group>
             <p class="field-note">日充值只核验开始兑换日前一天的充值金额；代理类型将按生效首日生成“9-02代理全部 / 9-02代理存款200”名称，并导出代理模板样式。兑换码实际有效期以上方规则为准。</p>
+          </el-form-item>
+          <el-form-item v-if="usesSpecialCode" class="code-group-form__code-type" label="10000 档位码串后缀">
+            <div>
+              <el-radio-group v-model="form.specialCodeNaming">
+                <el-radio value="TEN_K">10K</el-radio>
+                <el-radio value="ORIGINAL">10000</el-radio>
+              </el-radio-group>
+              <p class="field-note">码串示例：{{ specialCodeExample }}。仅改变 10000 档位的码串后缀，充值门槛与奖励不变。</p>
+              <p class="field-note">选择会随任务保存；刷新、继续创建及重试仍使用本次命名方式。</p>
+            </div>
           </el-form-item>
           <el-form-item v-if="isPreviousDayDeposit() && form.remoteMarketId" class="code-group-form__code-type" label="当前编辑盘口的日充值标签方案">
             <el-tag type="info">使用当前盘口标签与档位配置</el-tag>
@@ -1987,6 +2658,12 @@ onUnmounted(() => {
           </div>
         </section>
 
+        <el-form-item v-if="usesSpecialCode" label="创建前查重">
+          <el-checkbox v-model="checkRemoteDuplicates">同时进行远端查重</el-checkbox>
+          <p class="field-note">本地查重始终执行。开启远端查重后会读取所选盘口的配置目录，配置较多时可能耗时较长。</p>
+          <p v-if="!checkRemoteDuplicates" class="field-note">当前仅检查本系统记录，无法发现只在远端后台创建的同码配置。创建后的实际奖励核验仍会执行。</p>
+        </el-form-item>
+
         <el-collapse v-model="advancedOptionsOpen" class="advanced-options">
           <el-collapse-item name="options">
             <template #title><el-icon><Setting /></el-icon><span>其他创建参数（已预填）</span></template>
@@ -2022,7 +2699,25 @@ onUnmounted(() => {
         </el-collapse>
         <p v-if="form.remoteMarketIds.length" class="submit-hint">已选择 {{ form.remoteMarketIds.length }} 个盘口，共创建 {{ expectedTaskCount() }} 组远端配置，预计 {{ expectedTaskCount() * (codesPerGroup || 1) }} 个兑换码。远端生效时间：{{ validityRuleSummary }}。全部创建完成后，可在任务列表按盘口分别选择发布方式。</p>
       </el-form>
-      <template #footer><el-button @click="codeGroupDialogVisible = false">取消</el-button><el-button type="primary" :loading="working" @click="createCodeGroup">开始生成</el-button></template>
+      <template #footer><span v-if="checkingDuplicates" role="status" class="field-note">{{ duplicateCheckProgress }}</span><el-button :disabled="checkingDuplicates || working" @click="codeGroupDialogVisible = false">取消</el-button><el-button type="primary" :loading="checkingDuplicates || working" @click="createCodeGroup">{{ checkingDuplicates ? '正在查重' : '开始生成' }}</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="duplicateDialogVisible" title="发现同码记录，请确认是否继续创建" width="1000px" append-to-body @close="finishDuplicateReview(false)">
+      <el-alert type="warning" :closable="false" show-icon title="发现同码记录。阅览并确认后，仍可按本次任务参数继续创建。" />
+      <p class="field-note">以下 {{ duplicateConflicts.length }} 条同码记录集中确认一次，无需逐码确认。确认随任务保存，刷新页面、继续创建和重试均会沿用；只有新增或实质变化的冲突才需重新阅览。</p>
+      <p class="field-note">本地记录是历史资料，不代表远端配置仍然存在或仍是表中奖励。管理员在远端删除后，本系统可能尚未记录；无需删除本地历史记录才能继续。</p>
+      <p class="field-note">本次确认用于创建新配置；旧记录会保留，不会自动复用旧配置。若远端仍有同码，可能拒绝创建；系统会展示实际结果，结果不明时暂停。</p>
+      <el-table :data="duplicateConflicts" max-height="420" :row-key="row => `${row.marketId}:${row.code}:${row.issueId || row.configurationId}`">
+        <el-table-column label="盘口" min-width="120"><template #default="{ row }">{{ marketLabel(row.marketId) }}</template></el-table-column>
+        <el-table-column prop="code" label="兑换码" min-width="170" />
+        <el-table-column label="来源" width="90"><template #default="{ row }">{{ row.source === 'LOCAL' ? '本地记录' : '远端目录' }}</template></el-table-column>
+        <el-table-column label="旧任务" min-width="140"><template #default="{ row }">{{ row.taskNumber || '本地未登记' }}</template></el-table-column>
+        <el-table-column label="配置 ID" width="100"><template #default="{ row }">{{ row.configurationId || '待核对' }}</template></el-table-column>
+        <el-table-column label="本地记录奖励" width="125"><template #default="{ row }">{{ row.localRewardMin == null ? '—' : `${row.localRewardMin}–${row.localRewardMax}` }}</template></el-table-column>
+        <el-table-column label="操作" width="110"><template #default="{ row }"><el-button v-if="row.batchId" link type="primary" @click="openDuplicateTask(row)">查看旧任务</el-button></template></el-table-column>
+      </el-table>
+      <el-checkbox v-model="duplicateReviewAcknowledged">我已阅览以上同码记录，确认按本次任务参数继续创建</el-checkbox>
+      <template #footer><el-button @click="finishDuplicateReview(false)">返回调整</el-button><el-button type="primary" :disabled="!duplicateReviewAcknowledged" @click="finishDuplicateReview(true)">确认，继续创建</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="publishDialogVisible" title="选择发布方式" width="560px" destroy-on-close>
@@ -2069,19 +2764,51 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
-    <el-drawer v-model="detailDrawerVisible" :title="selectedTaskMembers.length > 1 ? `任务 ${selectedTaskDisplayId} · 多盘口兑换码组任务明细` : (selectedGroup ? `任务 ${selectedTaskDisplayId} · ${selectedGroup.campaign.name} · 任务明细` : '兑换码组任务明细')" size="720px">
+    <RedemptionTaskDeletionDialog v-if="taskDeletionTarget" :key="String(taskDeletionTarget.taskId)" :task-id="taskDeletionTarget.taskId" :task-number="taskDeletionTarget.taskNumber" @close="taskDeletionTarget = undefined" @changed="refreshRecoveryGroups" />
+    <el-dialog v-model="rewardPolicyDialog" title="核验并对齐实际奖励" width="900px" :close-on-click-modal="!applyingRewardPolicy" :close-on-press-escape="!applyingRewardPolicy" :show-close="!applyingRewardPolicy">
+    <el-alert :title="rewardPolicyProgress || '正在读取远端实际奖励'" type="warning" :closable="false" show-icon />
+    <el-table :data="rewardPolicyPlans" max-height="450">
+      <el-table-column label="盘口 / 日期" min-width="180"><template #default="{ row }">{{ row.parameters.marketName }} · {{ row.parameters.claimDate }}</template></el-table-column>
+      <el-table-column label="原配置" prop="configurationId" width="110" />
+      <el-table-column label="实际奖励 → 本次任务" min-width="180"><template #default="{ row }">{{ row.previousMin }}–{{ row.previousMax }} → {{ row.parameters.bonusMin }}–{{ row.parameters.bonusMax }}</template></el-table-column>
+      <el-table-column label="状态 / 说明" min-width="260"><template #default="{ row }">{{ row.status }}：{{ row.reason }}</template></el-table-column>
+    </el-table>
+    <template #footer><el-button :disabled="applyingRewardPolicy" @click="rewardPolicyDialog = false">关闭</el-button><el-button type="warning" :loading="applyingRewardPolicy" :disabled="checkingRewardPolicy || !rewardPolicyPlans.some(plan => ['CHECKED', 'UPDATED', 'UNCONFIRMED'].includes(plan.status))" @click="applyRewardPolicies()">确认对齐奖励 / 恢复登记</el-button></template>
+  </el-dialog>
+
+  <el-dialog v-model="recoveryDialogVisible" title="缺失配置恢复" width="850px" :close-on-click-modal="!rebuildingMissing" :close-on-press-escape="!rebuildingMissing" :show-close="!rebuildingMissing">
+    <el-alert :title="recoveryProgress || '正在核验远端配置；核验本身不会创建配置'" type="warning" :closable="false" show-icon />
+    <el-table :data="recoveryViews" max-height="450">
+      <el-table-column label="盘口 / 日期" min-width="150"><template #default="{ row }">{{ row.parameters.marketName }} · {{ row.parameters.claimDate }}</template></el-table-column>
+      <el-table-column label="原配置 ID" prop="oldConfigurationId" width="100" />
+      <el-table-column label="状态 / 原因" min-width="240"><template #default="{ row }">{{ recoveryStatusLabel(row.status) }}：{{ row.reason }}</template></el-table-column>
+      <el-table-column label="本次任务参数" min-width="230"><template #default="{ row }">奖励 {{ row.parameters.bonusMin }}–{{ row.parameters.bonusMax }}；每码 {{ row.parameters.options.singleKeyLimit }} 次；每组 {{ row.parameters.options.keyNumber }} 码；共享 {{ row.relatedBatchCount }} 批次</template></el-table-column>
+    </el-table>
+    <template #footer>
+      <el-button :disabled="rebuildingMissing" @click="recoveryDialogVisible = false">关闭</el-button>
+      <el-button type="warning" :loading="rebuildingMissing" :disabled="checkingRecovery || recoveryViews.some(view => ['CREATING', 'UNCONFIRMED', 'APPLYING'].includes(view.status)) || !recoveryViews.some(view => ['MISSING', 'RECEIPT_SAVED'].includes(view.status))" @click="rebuildMissingConfigurations()">重试并重建 / 恢复登记</el-button>
+    </template>
+  </el-dialog>
+
+  <el-drawer v-model="detailDrawerVisible" :title="selectedTaskMembers.length > 1 ? `任务 ${selectedTaskDisplayId} · 多盘口兑换码组任务明细` : (selectedGroup ? `任务 ${selectedTaskDisplayId} · ${selectedGroup.campaign.name} · 任务明细` : '兑换码组任务明细')" size="720px">
       <template v-if="selectedGroup">
         <el-tabs v-if="selectedTaskMembers.length > 1" v-model="activeTaskBatchId" class="task-market-tabs" @tab-change="selectTaskMember">
           <el-tab-pane v-for="member in selectedTaskMembers" :key="member.detail.batch.id" :name="String(member.detail.batch.id)" :label="taskMemberLabel(member)" />
         </el-tabs>
         <p v-if="selectedTaskMembers.length > 1" class="field-note task-detail-note">各盘口保留独立的远端创建、发布与下载进度；系统会按盘口顺序完成创建，所有盘口完成后可在任务列表下载同一份多 Sheet Excel。</p>
         <div v-if="canContinuePendingCreation(selectedGroup)" class="repair-action-strip" role="status">
-          <span>当前盘口还有 {{ uncreatedIssues(selectedGroup).length }} 条配置待创建，可继续处理。</span>
-          <el-button type="warning" :loading="continuingCreationBatchId === selectedGroup.detail.batch.id" :disabled="isProcessing(selectedGroup) || continuingCreationBatchId !== undefined" @click="continuePendingCreation(selectedGroup)">继续创建剩余配置（{{ uncreatedIssues(selectedGroup).length }}）</el-button>
+          <span>当前盘口还有 {{ countIssues(uncreatedIssues(selectedGroup)) }} 条配置待创建，可继续处理。</span>
+          <el-button type="warning" :loading="continuingCreationBatchId === selectedGroup.detail.batch.id" :disabled="isProcessing(selectedGroup) || continuingCreationBatchId !== undefined" @click="continuePendingCreation(selectedGroup)">继续创建剩余配置（{{ countIssues(uncreatedIssues(selectedGroup)) }}）</el-button>
         </div>
         <div v-if="isRepairing(selectedGroup)" class="repair-action-strip" role="status">
           <span>{{ repairReadyForPublish(selectedGroup) ? '补齐配置已创建，尚未再次发布；请选择发布方式。' : '缺失配置仍在补齐；完成后再选择发布方式。' }}</span>
           <el-button v-if="canContinueRepair(selectedGroup)" type="warning" :loading="resolvingMissingBatchId === selectedGroup.detail.batch.id || publishing" @click="handleRepairAction(selectedGroup)">{{ repairActionLabel(selectedGroup) }}</el-button>
+        </div>
+        <div v-if="selectedGroup.detail.issues.some(canReuseExistingConfiguration)" class="repair-action-strip">
+          <span>创建时阅览确认过的同码记录会随任务保存，刷新页面、继续创建和重试会自动沿用。仅新增或实质变化的冲突需要重新确认。</span>
+          <el-button type="primary" :loading="checkingRewardPolicy" :disabled="applyingRewardPolicy" @click="inspectRewardPolicies()">核验并对齐实际奖励</el-button>
+          <el-button type="warning" :loading="checkingRecovery" :disabled="rebuildingMissing" @click="inspectMissingConfigurations()">核验缺失 / 重试重建</el-button>
+          <el-button type="primary" :loading="reusingConfigurations" :disabled="isProcessing(selectedGroup)" @click="reuseExistingConfigurations()">核验并复用已有配置</el-button>
         </div>
         <el-descriptions :column="2" border class="group-detail-summary">
           <el-descriptions-item label="任务编号">{{ selectedTaskDisplayId }}</el-descriptions-item>
@@ -2095,8 +2822,9 @@ onUnmounted(() => {
           <el-descriptions-item label="远端账号">{{ selectedGroup.detail.batch.remoteConnectionName || '—' }}</el-descriptions-item>
           <el-descriptions-item label="盘口">{{ remoteMarketLabel(selectedGroup) }}</el-descriptions-item>
           <el-descriptions-item label="兑换码类型">{{ redemptionTypeLabel(selectedGroup.detail.batch.redemptionType) }}</el-descriptions-item>
+          <el-descriptions-item v-if="selectedGroup.detail.batch.redemptionType !== 'AGENT'" label="10000 档位码串后缀">{{ selectedGroup.detail.batch.specialCodeNaming === 'TEN_K' ? '10K' : '10000' }}</el-descriptions-item>
           <el-descriptions-item label="用户类型 / 标签 ID">{{ labelsFor(selectedGroup) }}</el-descriptions-item>
-          <el-descriptions-item label="单兑换码领取次数">{{ singleKeyLimitLabel(selectedGroup) }}</el-descriptions-item>
+          <el-descriptions-item label="本任务填写的单码领取上限">{{ singleKeyLimitLabel(selectedGroup) }}</el-descriptions-item>
           <el-descriptions-item label="远端生效规则" :span="2">{{ batchValidityRuleLabel(selectedGroup.detail.batch) }}</el-descriptions-item>
           <el-descriptions-item label="发布时间" :span="2">{{ publishTime(selectedGroup) }}</el-descriptions-item>
           <el-descriptions-item v-if="groupRemark(selectedGroup) !== '—'" label="备注" :span="2">{{ groupRemark(selectedGroup) }}</el-descriptions-item>
@@ -2113,15 +2841,16 @@ onUnmounted(() => {
           <el-table-column label="远端生效日期" min-width="220"><template #default="{ row }">{{ issueValidityLabel(selectedGroup.detail.batch, row.claimDate) }}</template></el-table-column>
           <el-table-column label="充值档位" min-width="150"><template #default="{ row }">{{ row.tierName || `充值 ≥ ${formatAmount(row.minDepositAmount)}` }}</template></el-table-column>
           <el-table-column label="兑换金额" width="128"><template #default="{ row }">{{ formatAmount(row.bonusAmount) }}–{{ formatAmount(row.bonusMaxAmount || row.bonusAmount) }}</template></el-table-column>
-          <el-table-column label="单兑换码领取次数" width="154"><template #default>{{ singleKeyLimitLabel(selectedGroup) }}</template></el-table-column>
+          <el-table-column label="单兑换码领取次数" width="154"><template #default="{ row }">{{ reusedIssueLimitLabel(selectedGroup, row) }}</template></el-table-column>
           <el-table-column label="状态" width="116"><template #default="{ row }"><el-tag :type="issueStatus(row).type" size="small">{{ issueStatus(row).text }}</el-tag></template></el-table-column>
-          <el-table-column label="兑换码 / 备注" min-width="180"><template #default="{ row }"><span style="white-space: pre-line">{{ row.redemptionCode || row.remoteError || '—' }}</span></template></el-table-column>
-          <el-table-column label="操作" width="96"><template #default="{ row }"><el-button v-if="canRetryRemoteCreation(row)" link type="primary" :loading="retryingIssueId === row.id" :disabled="retryingSelectedFailedTasks" @click="retryRemoteCreation(row)">{{ row.workflowStatus === 'CREATING_REMOTE' ? '恢复重试' : '重试创建' }}</el-button></template></el-table-column>
+          <el-table-column label="兑换码 / 备注" min-width="180"><template #default="{ row }"><span style="white-space: pre-line">{{ row.redemptionCode || issueRemark(row) || '—' }}</span></template></el-table-column>
+          <el-table-column label="复用关联 / 核验说明" min-width="220"><template #default="{ row }">{{ row.recovery?.reason || reuseCheckErrors[String(row.id)] || reuseOrigin(row) || '—' }}</template></el-table-column>
+          <el-table-column label="操作" width="220"><template #default="{ row }"><el-button v-if="canGenerate && row.remoteConfigurationId" link type="danger" :loading="deletingIssueId === row.id" :disabled="Boolean(deletingIssueId)" @click="deleteRemoteConfiguration(row)">{{ deletionHeld(row) ? '核对删除结果' : '删除配置' }}</el-button><el-button v-if="canGenerate && !deletionHeld(row)" link type="primary" :disabled="checkingRewardPolicy || applyingRewardPolicy" @click="inspectRewardPolicies(row)">核验奖励</el-button><el-button v-if="canGenerate && !deletionHeld(row)" link type="warning" :disabled="checkingRecovery || rebuildingMissing" @click="inspectMissingConfigurations(row)">{{ row.recovery ? '核验 / 重试重建' : '核验缺失' }}</el-button><el-button v-if="canCreatePendingRemoteConfiguration(row)" link type="primary" :loading="retryingIssueId === row.id" @click="createOnePendingRemoteConfiguration(row)">创建此配置</el-button><el-button v-if="canReuseExistingConfiguration(row)" link type="primary" :loading="reusingConfigurations" @click="reuseExistingConfigurations(row)">核验复用</el-button><el-button v-if="canRetryRemoteCreation(row)" link type="primary" :loading="retryingIssueId === row.id" :disabled="retryingSelectedFailedTasks" @click="retryRemoteCreation(row)">{{ row.workflowStatus === 'CREATING_REMOTE' ? '恢复重试' : '重试创建' }}</el-button></template></el-table-column>
         </el-table>
         <div class="drawer-actions">
           <el-button v-if="hasPendingPublishReservation(selectedGroup)" type="warning" :loading="recoveringPublishId === selectedGroup.detail.batch.id" @click="recoverPublishReservation(selectedGroup)">恢复发布</el-button>
           <el-button v-else-if="selectedGroup.detail.batch.status === 'READY_TO_PUBLISH'" type="primary" @click="openPublishDialog(selectedGroup)">选择发布方式</el-button>
-          <el-button v-if="selectedGroup.detail.batch.status === 'PUBLISHED'" :loading="verifyingPublicationIds.has(String(selectedGroup.detail.batch.id))" @click="inspectPublication(selectedGroup)">{{ missingConfigurations(selectedGroup).length ? '处理缺失配置' : '查看核验结果' }}</el-button>
+          <el-button v-if="selectedGroup.detail.batch.status === 'PUBLISHED' && selectedGroup.detail.batch.remotePublishTaskId" :loading="verifyingPublicationIds.has(String(selectedGroup.detail.batch.id))" @click="inspectPublication(selectedGroup)">{{ missingConfigurations(selectedGroup).length ? '处理缺失配置' : '查看核验结果' }}</el-button>
           <el-button v-if="(missingConfigurations(selectedGroup).length || isRepairing(selectedGroup)) && selectedGroup.detail.batch.importedCount > 0 && canExport" :loading="resolvingMissingBatchId === selectedGroup.detail.batch.id" @click="acceptAvailableCodes(selectedGroup)">仅下载已有兑换码</el-button>
           <el-button v-if="canCancelScheduledPublish(selectedGroup)" type="danger" :disabled="!canCancelScheduledPublish(selectedGroup)" :loading="cancellingPublishId === selectedGroup.detail.batch.id" @click="cancelScheduledPublish(selectedGroup)">撤销发布</el-button>
           <el-button v-if="canDownloadScheduledCodes(selectedGroup)" type="primary" :loading="isProcessing(selectedGroup)" @click="downloadPublishedCodes(selectedGroup)">{{ selectedGroup.detail.issues.some(issue => issue.remoteError) ? '重试下载' : '下载兑换码' }}</el-button>

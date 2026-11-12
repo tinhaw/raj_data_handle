@@ -1,0 +1,171 @@
+html {
+  scroll-padding-top: 76px;
+}
+
+/* Shared dark roles. Local component fallbacks retain the original light UI. */
+html.dark {
+  color-scheme: dark;
+  --page-bg: #0B1423;
+  --surface: #121F32;
+  --surface-muted: #1A2A40;
+  --ink-strong: #E6EDF7;
+  --ink: #B1C2D9;
+  --ink-muted: #8195B0;
+  --border: #2C405B;
+  --primary: #326BB0;
+  --teal: #76D5C5;
+  --gold: #F1C46B;
+  --danger: #F18E96;
+
+  --theme-surface: var(--surface);
+  --theme-surface-muted: var(--surface-muted);
+  --theme-text-strong: var(--ink-strong);
+  --theme-text: var(--ink);
+  --theme-text-muted: #9BAEC6;
+  --theme-border: var(--border);
+  --theme-info: #78B3F5;
+  --theme-info-bg: #192F4D;
+  --theme-info-border: #345A83;
+  --theme-success: #76D5A1;
+  --theme-success-bg: #17382F;
+  --theme-success-border: #2D5E50;
+  --theme-warning: #F1C46B;
+  --theme-warning-bg: #382F20;
+  --theme-warning-border: #655336;
+  --theme-danger: #F18E96;
+  --theme-danger-bg: #3A2532;
+  --theme-danger-border: #69404D;
+  --theme-purple: #C1ACF5;
+  --theme-purple-bg: #2B2845;
+
+  --el-bg-color: var(--surface);
+  --el-bg-color-page: var(--page-bg);
+  --el-bg-color-overlay: #1A2A40;
+  --el-text-color-primary: var(--ink-strong);
+  --el-text-color-regular: var(--ink);
+  --el-text-color-secondary: #9BAEC6;
+  --el-text-color-placeholder: var(--ink-muted);
+  --el-text-color-disabled: #647892;
+  --el-border-color: var(--border);
+  --el-border-color-light: #283A52;
+  --el-border-color-lighter: #24354B;
+  --el-border-color-extra-light: #213146;
+  --el-border-color-dark: #3A506C;
+  --el-border-color-darker: #4A6280;
+  --el-fill-color: #22334B;
+  --el-fill-color-light: #1A2A40;
+  --el-fill-color-lighter: #17263B;
+  --el-fill-color-extra-light: #152338;
+  --el-fill-color-dark: #2C405B;
+  --el-fill-color-darker: #3A506C;
+  --el-fill-color-blank: var(--surface);
+  --el-mask-color: rgba(4, 10, 19, 0.72);
+  --el-mask-color-extra-light: rgba(11, 20, 35, 0.8);
+  --el-overlay-color: rgba(4, 10, 19, 0.8);
+  --el-overlay-color-light: rgba(4, 10, 19, 0.7);
+  --el-overlay-color-lighter: rgba(4, 10, 19, 0.6);
+  --el-box-shadow-light: 0 8px 28px rgba(0, 0, 0, 0.28);
+  --el-color-primary: #78B3F5;
+  --el-color-primary-light-3: #527EAF;
+  --el-color-primary-light-5: #3C5E84;
+  --el-color-primary-light-7: #2B4665;
+  --el-color-primary-light-8: #223B57;
+  --el-color-primary-light-9: #192F4D;
+  --el-color-primary-dark-2: #A0CBFA;
+  --el-color-success: #76D5A1;
+  --el-color-success-light-3: #4F916F;
+  --el-color-success-light-5: #386B54;
+  --el-color-success-light-7: #2D5E50;
+  --el-color-success-light-8: #234A3D;
+  --el-color-success-light-9: #17382F;
+  --el-color-success-dark-2: #9AE4BB;
+  --el-color-warning: #F1C46B;
+  --el-color-warning-light-3: #A88B50;
+  --el-color-warning-light-5: #7C6840;
+  --el-color-warning-light-7: #655336;
+  --el-color-warning-light-8: #4D402B;
+  --el-color-warning-light-9: #382F20;
+  --el-color-warning-dark-2: #F8D995;
+  --el-color-danger: #F18E96;
+  --el-color-danger-light-3: #A76573;
+  --el-color-danger-light-5: #7D4C5B;
+  --el-color-danger-light-7: #69404D;
+  --el-color-danger-light-8: #512F3E;
+  --el-color-danger-light-9: #3A2532;
+  --el-color-danger-dark-2: #F6B0B6;
+  --el-color-error: var(--el-color-danger);
+  --el-color-error-light-3: var(--el-color-danger-light-3);
+  --el-color-error-light-5: var(--el-color-danger-light-5);
+  --el-color-error-light-7: var(--el-color-danger-light-7);
+  --el-color-error-light-8: var(--el-color-danger-light-8);
+  --el-color-error-light-9: var(--el-color-danger-light-9);
+  --el-color-error-dark-2: var(--el-color-danger-dark-2);
+  --el-color-info: #9BAEC6;
+  --el-color-info-light-3: #71849D;
+  --el-color-info-light-5: #52667F;
+  --el-color-info-light-7: #3A4D65;
+  --el-color-info-light-8: #2C405B;
+  --el-color-info-light-9: #1A2A40;
+  --el-color-info-dark-2: #B1C2D9;
+}
+
+html.dark .surface-card {
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.16);
+}
+
+html.dark .source-card__header .el-tag {
+  color: var(--el-tag-text-color);
+}
+
+html.dark .table-card .el-table {
+  --el-table-header-bg-color: var(--surface-muted);
+  --el-table-row-hover-bg-color: #20344F;
+}
+
+html.dark .el-button--primary:not(.is-text, .is-link, .is-plain) {
+  --el-button-text-color: #FFFFFF;
+  --el-button-bg-color: #326BB0;
+  --el-button-border-color: #326BB0;
+  --el-button-hover-bg-color: #3C7CC5;
+  --el-button-hover-border-color: #3C7CC5;
+  --el-button-active-bg-color: #295C99;
+  --el-button-active-border-color: #295C99;
+  --el-button-disabled-text-color: #8195B0;
+  --el-button-disabled-bg-color: #223B57;
+  --el-button-disabled-border-color: #2C405B;
+}
+
+html.dark .el-button--primary.is-plain {
+  --el-button-text-color: #78B3F5;
+  --el-button-bg-color: #192F4D;
+  --el-button-border-color: #345A83;
+}
+
+html.dark .erp-compat-page .el-input__wrapper.is-focus,
+html.dark .erp-compat-page .el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px #78B3F5 inset !important;
+}
+
+html.dark .login-form {
+  background: var(--surface);
+}
+
+html.dark .login-form h2 {
+  color: var(--ink-strong);
+}
+
+html.dark .login-form .captcha-image {
+  border-color: var(--border);
+  background: var(--surface-muted);
+}
+
+html.dark .withdraw-scoring-details__grid > div {
+  background: var(--surface);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-toggle .el-switch__core,
+  .theme-toggle .el-switch__action {
+    transition: none;
+  }
+}
