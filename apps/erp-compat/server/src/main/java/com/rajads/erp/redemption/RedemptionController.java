@@ -203,8 +203,8 @@ public class RedemptionController {
 
     @PostMapping("/code-tasks/{issueId}/remote-download")
     @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
-    public RedemptionDtos.BatchDetailResponse downloadRemoteCode(@PathVariable Long issueId) {
-        return service.batch(remoteOperations.downloadCode(issueId));
+    public RedemptionDtos.BatchDetailResponse downloadRemoteCode(@PathVariable Long issueId, @RequestParam(defaultValue = "false") boolean withoutPublication) {
+        return service.batch(remoteOperations.downloadCode(issueId, withoutPublication));
     }
 
     @PostMapping("/batches/{batchId}/publish")
@@ -216,9 +216,9 @@ public class RedemptionController {
 
     @PostMapping("/batches/{batchId}/remote-publish")
     @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
-    public RedemptionDtos.BatchDetailResponse publishRemote(@PathVariable Long batchId,
+    public RedemptionDtos.BatchDetailResponse publishRemote(@PathVariable Long batchId, @RequestParam(required = false) String failedTaskId,
                                                              @Valid @RequestBody RedemptionDtos.RemotePublishRequest request) {
-        return service.batch(remoteOperations.publish(batchId, request));
+        return service.batch(remoteOperations.publish(batchId, request, failedTaskId));
     }
 
     @PostMapping("/batches/{batchId}/external-publication")

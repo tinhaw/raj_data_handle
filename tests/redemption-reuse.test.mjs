@@ -47,7 +47,7 @@ test('shared published configurations remain downloadable without inventing a ba
   const calls = []
   const detail = { batch: { id: 9, status: 'PUBLISHED', remotePublishTaskId: null },
     issues: [{ id: 1, workflowStatus: 'PUBLISHED' }, { id: 2, workflowStatus: 'CODE_IMPORTED' }] }
-  const context = load(section('function canDownloadScheduledCodes(', 'function publishTime(')
+  const context = load(section('function canDownloadScheduledCodes(', 'const externalTarget')
       + section('async function downloadPublishedCodes(', 'async function cancelScheduledPublish('), {
     publicationCheck: () => undefined, markProcessing: () => {}, replaceCodeGroup: () => {}, loadCodeGroups: async () => {},
     ElMessage: { success: () => {}, warning: () => {}, error: () => {} },

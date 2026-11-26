@@ -39,6 +39,7 @@ public class RedemptionService {
     private final ObjectMapper objectMapper;
     private final CurrentUser currentUser;
     private final AuditService auditService;
+    private final RedemptionDirectDownloadEvidence directDownloads;
     private final RedemptionCodeStorage codeStorage;
     private final RedemptionBatchProgress batchProgress;
     private final RedemptionDuplicateCheckService duplicateChecks;
@@ -562,9 +563,9 @@ public class RedemptionService {
     }
 
     private RedemptionDtos.BatchDetailResponse batchDetail(RedemptionCodeBatch batch) {
+        var rows = issueRepository.findByBatchIdOrderByClaimDateAscCampaignTierIdAsc(batch.getId());
         return new RedemptionDtos.BatchDetailResponse(batchResponse(batch),
-                issueRepository.findByBatchIdOrderByClaimDateAscCampaignTierIdAsc(batch.getId()).stream()
-                        .map(issue -> issueResponse(issue, batch)).toList());
+                rows.stream().map(issue -> issueResponse(issue, batch)).toList(), directDownloads.allImportedDirectly(batch.getId(), rows));
     }
 
     @Transactional(readOnly = true)

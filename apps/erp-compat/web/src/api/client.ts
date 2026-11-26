@@ -704,7 +704,7 @@ function normalizeRedemptionBatchDetail(raw: unknown): RedemptionBatchDetail {
     })
     return { batch, issues, overview: true }
   }
-  return { batch: normalizeRedemptionBatch(value.batch), issues: (Array.isArray(value.issues) ? value.issues : []).map(normalizeRedemptionIssue) }
+  return { batch: normalizeRedemptionBatch(value.batch), allImportedDirectly: value.allImportedDirectly === true, issues: (Array.isArray(value.issues) ? value.issues : []).map(normalizeRedemptionIssue) }
 }
 
 function redemptionCampaignRequest(campaign: Partial<RedemptionCampaign>, patch = false) {
@@ -912,9 +912,9 @@ export const api = {
     rebuildMissing: async (issueId: string | number, recoveryId: string | number, rowVersion: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/rebuild`, { recoveryId, rowVersion, confirmed: true }, { timeout: 180_000 }))),
     reuseExistingConfiguration: async (issueId: string | number, rowVersion: number, configurationId?: string) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/reuse`, { rowVersion, configurationId }))),
     createRemoteConfiguration: async (issueId: string | number, retryFailed = false, review?: RedemptionDuplicateReview) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/remote-create`, review, { params: { retryFailed }, timeout: 180_000 }))),
-    downloadRemoteCode: async (issueId: string | number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/remote-download`))),
+    downloadRemoteCode: async (issueId: string | number, withoutPublication = false) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/code-tasks/${issueId}/remote-download`, null, { params: { withoutPublication } }))),
     publishBatch: async (batchId: string | number, rowVersion?: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/publish`, { rowVersion }))),
-    publishRemoteBatch: async (batchId: string | number, rowVersion: number | undefined, mode: 'IMMEDIATE' | 'SCHEDULED' = 'IMMEDIATE', scheduledTime?: string, fallbackToScheduled = true) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/remote-publish`, { rowVersion, mode, scheduledTime, fallbackToScheduled }))),
+    publishRemoteBatch: async (batchId: string | number, rowVersion: number | undefined, mode: 'IMMEDIATE' | 'SCHEDULED' = 'IMMEDIATE', scheduledTime?: string, fallbackToScheduled = true, failedTaskId?: string) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/remote-publish`, { rowVersion, mode, scheduledTime, fallbackToScheduled }, { params: { failedTaskId } }))),
     adoptExternalPublication: async (batchId: string | number, rowVersion: number, remotePublishTaskId: string) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/external-publication`, { rowVersion, remotePublishTaskId }))),
     verifyRemotePublication: async (batchId: string | number) => request<PublicationVerification>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/remote-publish/verify`)),
     startMissingConfigurationRepair: async (batchId: string | number, rowVersion?: number) => normalizeRedemptionBatchDetail(await request<unknown>(() => apiClient.post(`/redemption-campaigns/batches/${batchId}/missing-configurations/repair`, { rowVersion }))),

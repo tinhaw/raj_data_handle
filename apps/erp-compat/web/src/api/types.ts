@@ -421,6 +421,7 @@ export interface RedemptionCodeBatch {
 }
 
 export interface RedemptionBatchDetail {
+  allImportedDirectly?: boolean
   overview?: boolean
   batch: RedemptionCodeBatch
   issues: RedemptionCodeIssue[]

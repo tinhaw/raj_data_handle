@@ -63,7 +63,7 @@ test('the missing RajSpin item is selectable while 149 existing configurations a
   assert.equal(fixture.detail.batch.status, 'READY_TO_PUBLISH')
   assert.equal(fixture.context.continuingCreationBatchId.value, undefined)
   assert.equal(fixture.processing.size, 0)
-  assert.match(fixture.messages.at(-1)[1], /请选择发布方式/)
+  assert.match(fixture.messages.at(-1)[1], /下载时可选择是否先发布/)
 })
 
 test('permissions, publication, active requests and remote receipts prevent continuing', () => {

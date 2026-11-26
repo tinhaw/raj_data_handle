@@ -11,11 +11,19 @@ export function publicationLabel(result?: PublicationVerification) {
   const labels = { WAITING: '等待远端发布', RUNNING: '远端发布中', FAILED: '发布不成功', COMPLETED: '发布完成', CANCELLED: '发布不成功', UNKNOWN: '发布待核验' }
   return result ? labels[result.publicationState] : '发布待核验'
 }
-export function acceptsManualPublication(batch: { status: string; remotePublishTaskId?: string | null; remotePublishMode?: string }, check?: PublicationVerification) {
-  if (batch.status === 'PUBLISHED') return ['IMMEDIATE', 'SCHEDULED'].includes(batch.remotePublishMode || '')
+export function configurationPublicationLabel(configurationId: string | undefined, result?: PublicationVerification) {
+  if (result?.publicationState !== 'COMPLETED') return publicationLabel(result)
+  const match = result.configurations.find(item => item.configurationId === configurationId)
+  if (match?.state === 'MATCHED') return '已发布，待下载'
+  if (match?.state === 'MISSING') return '远端未找到配置'
+  return '配置待核对'
+}
+export function acceptsManualPublication(batch: { status: string; remotePublishTaskId?: string | null; remotePublishMode?: string }, check?: PublicationVerification, allImportedDirectly = false) {
+  const completedDirectly = batch.status === 'COMPLETED' && allImportedDirectly
+  if (batch.status === 'PUBLISHED' || (completedDirectly && batch.remotePublishTaskId && !batch.remotePublishTaskId.startsWith('PENDING:'))) return ['IMMEDIATE', 'SCHEDULED'].includes(batch.remotePublishMode || '')
     && Boolean(batch.remotePublishTaskId && !batch.remotePublishTaskId.startsWith('PENDING:'))
     && check?.remotePublishTaskId === batch.remotePublishTaskId && (check?.publicationState === 'FAILED' || check?.publicationState === 'CANCELLED')
-  return batch.status === 'READY_TO_PUBLISH' && (!batch.remotePublishTaskId || batch.remotePublishTaskId.startsWith('PENDING:'))
+  return (batch.status === 'READY_TO_PUBLISH' || completedDirectly) && (!batch.remotePublishTaskId || batch.remotePublishTaskId.startsWith('PENDING:'))
 }
 export function acquisitionLabel(imported: boolean, hasError: boolean, result?: PublicationVerification) {
   if (imported) return '兑换码已入库'

@@ -174,7 +174,9 @@ public final class RedemptionDtos {
     }
     public record TaskDetailResponse(List<CampaignResponse> campaigns, List<BatchDetailResponse> batches) { }
 
-    public record BatchDetailResponse(BatchResponse batch, List<CodeIssueResponse> issues) { }
+    public record BatchDetailResponse(BatchResponse batch, List<CodeIssueResponse> issues, boolean allImportedDirectly) {
+        public BatchDetailResponse(BatchResponse batch, List<CodeIssueResponse> issues) { this(batch, issues, false); }
+    }
 
     /** Counted list states have no issue identity and cannot be used for writes. */
     public record IssueSummaryResponse(String state, String workflowStatus, String remoteError,

@@ -1,6 +1,7 @@
 package com.rajads.erp.redemption;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import java.time.Instant;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rajads.erp.config.RemoteOperationGate;
 import org.junit.jupiter.api.Test;
@@ -37,6 +38,86 @@ class RedemptionRemoteIdentityHttpTest {
         when(executor.checkReuse(anyLong(), anyLong(), anyString(), anyString(), any(), any(), any(), anyList(), any(), any(), any(), any()))
                 .thenAnswer(call -> new UnifiedRedemptionRemoteExecutorClient.ReuseCheck(call.getArgument(2), true,
                         java.util.List.of(), null, call.getArgument(8), call.getArgument(9)));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"CANCELLED", "FAILED", "RUNNING", "UNKNOWN"})
+    void retryAtDownloadRequiresConfirmedUnsuccessfulReceipt(String state) throws Exception {
+        var session = login();
+        long market = market(session, "RETRY_DOWNLOAD_" + state);
+        long account = account(session, market, "retry-" + state);
+        var group = group(session, market, "RETRY_AT_DOWNLOAD_" + state);
+        register(session, group).andExpect(status().isOk());
+        long batch = group.at("/batch/id").asLong();
+        jdbc.update("update erp_compat_redemption_code_batches set status='PUBLISHED',remote_publish_mode='SCHEDULED',remote_publish_task_id='123' where id=?", batch);
+        long version = jdbc.queryForObject("select row_version from erp_compat_redemption_code_batches where id=?", Long.class, batch);
+        when(executor.verifyPublication(eq(account), eq(batch), eq("123"), anyString(), anyList())).thenReturn(
+                new UnifiedRedemptionRemoteExecutorClient.PublicationVerification("123", null, state, false, java.util.List.of(), java.time.Instant.now().toString(), null));
+        when(executor.publish(eq(account), eq(batch), anyString(), eq(false), isNull(), eq(false)))
+                .thenReturn(new UnifiedRedemptionRemoteExecutorClient.PublishedBatch("456", null));
+        var result = mvc.perform(post("/api/v1/redemption-campaigns/batches/" + batch + "/remote-publish")
+                .param("failedTaskId", "123").session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsBytes(java.util.Map.of("rowVersion", version, "mode", "IMMEDIATE", "fallbackToScheduled", false))));
+        if (state.equals("CANCELLED") || state.equals("FAILED")) {
+            result.andExpect(status().isOk()).andExpect(jsonPath("$.data.batch.remotePublishTaskId").value("456"));
+        } else {
+            result.andExpect(status().isConflict());
+            verify(executor, never()).publish(anyLong(), anyLong(), anyString(), anyBoolean(), any(), anyBoolean());
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"register", "FAILED", "CANCELLED", "RUNNING", "COMPLETED", "UNKNOWN", "legacy", "mismatch"})
+    void directDownloadThenRegisterOrRebindPreservesExcel(String scenario) throws Exception {
+        var session = login();
+        long market = market(session, "DIRECT_" + scenario);
+        long account = account(session, market, "direct-" + scenario);
+        var group = group(session, market, "DIRECT_GROUP_" + scenario);
+        register(session, group).andExpect(status().isOk());
+        long issue = group.at("/issues/0/id").asLong();
+        long batch = group.at("/batch/id").asLong();
+        String path = "/api/v1/redemption-campaigns/code-tasks/" + issue + "/remote-download";
+        mvc.perform(post(path).session(session).with(csrf())).andExpect(status().isConflict());
+        boolean hasOriginal = !java.util.Set.of("register", "legacy").contains(scenario);
+        if (hasOriginal) jdbc.update("update erp_compat_redemption_code_batches set status='PUBLISHED', remote_publish_mode='SCHEDULED',remote_publish_task_id='111' where id=?", batch);
+        when(executor.download(eq(account), eq(issue), eq("manual-scope-id"), any(), eq(1)))
+                .thenReturn(new UnifiedRedemptionRemoteExecutorClient.DownloadedCodes(java.util.List.of(), "group"),
+                            new UnifiedRedemptionRemoteExecutorClient.DownloadedCodes(java.util.List.of("DIRECT-CODE"), "group"));
+        mvc.perform(post(path).param("withoutPublication", "true").session(session).with(csrf()))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post(path).param("withoutPublication", "true").session(session).with(csrf()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.batch.status").value("COMPLETED"))
+                .andExpect(jsonPath("$.data.issues[0].redemptionCode").value("DIRECT-CODE"));
+        if (scenario.equals("legacy")) jdbc.update("update erp_compat_audit_logs set after_json='{}' where action='REDEMPTION_REMOTE_CODE_DOWNLOADED' and entity_id=?", Long.toString(issue));
+        var stock = jdbc.queryForList("select * from erp_compat_redemption_issue_codes where issue_id=?", issue);
+        var detail = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/redemption-campaigns/batches/" + batch).session(session))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.allImportedDirectly").value(!scenario.equals("legacy")))
+                .andReturn().getResponse();
+        long version = mapper.readTree(detail.getContentAsString()).at("/data/batch/rowVersion").asLong();
+        var configs = java.util.List.of(new UnifiedRedemptionRemoteExecutorClient.ConfigurationVerification("manual-scope-id", scenario.equals("mismatch") ? "MISMATCH" : "MATCHED"));
+        if (hasOriginal) when(executor.verifyPublication(eq(account), eq(batch), eq("111"), anyString(), anyList())).thenReturn(
+                new UnifiedRedemptionRemoteExecutorClient.PublicationVerification("111", null, scenario.equals("mismatch") ? "FAILED" : scenario, false, configs, Instant.now().toString(), null));
+        when(executor.verifyPublication(eq(account), eq(batch), eq("222"), anyString(), anyList())).thenReturn(
+                new UnifiedRedemptionRemoteExecutorClient.PublicationVerification("222", null, "COMPLETED", false, configs, Instant.now().toString(), null));
+        var link = mvc.perform(post("/api/v1/redemption-campaigns/batches/" + batch + "/external-publication").session(session).with(csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsBytes(java.util.Map.of("rowVersion", version, "remotePublishTaskId", "222"))));
+        boolean allowed = java.util.Set.of("register", "FAILED", "CANCELLED").contains(scenario);
+        if (allowed) link.andExpect(status().isOk()).andExpect(jsonPath("$.data.batch.status").value("COMPLETED"))
+                .andExpect(jsonPath("$.data.batch.remotePublishTaskId").value("222")).andExpect(jsonPath("$.data.issues[0].workflowStatus").value("CODE_IMPORTED"));
+        else link.andExpect(status().isConflict());
+        assertThat(jdbc.queryForObject("select remote_publish_task_id from erp_compat_redemption_code_batches where id=?", String.class, batch))
+                .isEqualTo(allowed ? "222" : hasOriginal ? "111" : null);
+        assertThat(jdbc.queryForList("select * from erp_compat_redemption_issue_codes where issue_id=?", issue)).isEqualTo(stock);
+        var response = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .get("/api/v1/redemption-campaigns/batches/" + batch + "/export").session(session))
+                .andExpect(status().isOk()).andReturn().getResponse();
+        try (var book = new org.apache.poi.xssf.usermodel.XSSFWorkbook(new java.io.ByteArrayInputStream(response.getContentAsByteArray()))) {
+            assertThat(book.getSheetAt(0)).anyMatch(row -> {
+                for (var cell : row) if ("DIRECT-CODE".equals(cell.toString())) return true;
+                return false;
+            });
+        }
+        verify(executor, never()).publish(anyLong(), anyLong(), anyString(), anyBoolean(), any(), anyBoolean());
     }
 
     @org.junit.jupiter.params.ParameterizedTest

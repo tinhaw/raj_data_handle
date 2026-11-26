@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { publicationLabel, acquisitionLabel, acceptsManualPublication, configurationVerificationSummary } from '../apps/erp-compat/web/src/modules/redemption/publicationStatus.ts'
+import { configurationPublicationLabel, publicationLabel, acquisitionLabel, acceptsManualPublication, configurationVerificationSummary } from '../apps/erp-compat/web/src/modules/redemption/publicationStatus.ts'
 const result = (state, configs = []) => ({ publicationState: state, configurations: configs })
 test('only a confirmed failure or cancellation of the same system publication permits rebinding', () => {
   const batch = { status: 'PUBLISHED', remotePublishMode: 'SCHEDULED', remotePublishTaskId: '123' }
@@ -62,4 +62,33 @@ test('cancelled publication directs operators to rebind a verified new ID', () =
   const message = configurationVerificationSummary(result('CANCELLED'))
   assert.match(message, /已撤销/)
   assert.match(message, /换绑新 ID/)
+})
+
+test('configuration rows follow the verified publication and their own configuration ID', () => {
+  const complete = result('COMPLETED', [
+    { configurationId: '2102', state: 'MATCHED' },
+    { configurationId: '2103', state: 'MISSING' },
+    { configurationId: '2104', state: 'MISMATCH' },
+  ])
+  assert.equal(configurationPublicationLabel('2102', complete), '已发布，待下载')
+  assert.equal(configurationPublicationLabel('2103', complete), '远端未找到配置')
+  assert.equal(configurationPublicationLabel('2104', complete), '配置待核对')
+  assert.equal(configurationPublicationLabel('2105', complete), '配置待核对')
+  for (const state of ['FAILED', 'CANCELLED']) {
+    assert.equal(configurationPublicationLabel('2102', result(state)), '发布不成功')
+  }
+  assert.equal(configurationPublicationLabel('2102'), '发布待核验')
+})
+
+test('completed inventory only unlocks registration or failed-system rebinding with direct-download evidence', () => {
+  const batch = { status: 'COMPLETED' }
+  assert.equal(acceptsManualPublication(batch), false)
+  assert.equal(acceptsManualPublication(batch, undefined, true), true)
+  const system = { ...batch, remotePublishTaskId: '111', remotePublishMode: 'SCHEDULED' }
+  for (const state of ['COMPLETED', 'WAITING', 'UNKNOWN', 'RUNNING', 'FAILED', 'CANCELLED']) {
+    const check = { ...result(state), remotePublishTaskId: '111' }
+    assert.equal(acceptsManualPublication(system, check, true), ['FAILED', 'CANCELLED'].includes(state))
+    assert.equal(acceptsManualPublication(system, check, false), false)
+    assert.equal(acceptsManualPublication({ ...system, remotePublishMode: 'EXTERNAL' }, check, true), false)
+  }
 })
