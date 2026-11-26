@@ -1,12 +1,31 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { publicationLabel, acquisitionLabel, configurationVerificationSummary } from '../apps/erp-compat/web/src/modules/redemption/publicationStatus.ts'
+import { publicationLabel, acquisitionLabel, acceptsManualPublication, configurationVerificationSummary } from '../apps/erp-compat/web/src/modules/redemption/publicationStatus.ts'
 const result = (state, configs = []) => ({ publicationState: state, configurations: configs })
+test('only a confirmed failure or cancellation of the same system publication permits rebinding', () => {
+  const batch = { status: 'PUBLISHED', remotePublishMode: 'SCHEDULED', remotePublishTaskId: '123' }
+  for (const state of ['FAILED', 'CANCELLED', 'UNKNOWN', 'RUNNING', 'WAITING', 'COMPLETED']) {
+    assert.equal(acceptsManualPublication(batch, { ...result(state), remotePublishTaskId: '123' }), ['FAILED', 'CANCELLED'].includes(state))
+  }
+  assert.equal(acceptsManualPublication(batch, { ...result('FAILED'), remotePublishTaskId: '456' }), false)
+  assert.equal(acceptsManualPublication({ ...batch, remotePublishMode: 'EXTERNAL' }, { ...result('FAILED'), remotePublishTaskId: '123' }), false)
+})
+test('manual publication accepts only ready markets without a real receipt', () => {
+  for (const remotePublishTaskId of [undefined, 'PENDING:own-reservation']) {
+    assert.equal(acceptsManualPublication({status: 'READY_TO_PUBLISH', remotePublishTaskId}), true)
+  }
+  for (const status of ['CREATING', 'PUBLISHED', 'COMPLETED']) {
+    assert.equal(acceptsManualPublication({status}), false)
+  }
+  assert.equal(acceptsManualPublication({status: 'READY_TO_PUBLISH', remotePublishTaskId: '123'}), false)
+})
 test('local scheduled time cannot establish remote completion', () => {
   assert.equal(publicationLabel(), '发布待核验')
   assert.equal(publicationLabel(result('WAITING')), '等待远端发布')
   assert.equal(publicationLabel(result('RUNNING')), '远端发布中')
-  assert.equal(publicationLabel(result('FAILED')), '远端发布异常')
+  assert.equal(publicationLabel(result('FAILED')), '发布不成功')
+  assert.equal(publicationLabel(result('CANCELLED')), '发布不成功')
+  assert.match(configurationVerificationSummary(result('FAILED')), /原因：远端执行失败/)
   assert.equal(acquisitionLabel(false, false, result('WAITING')), '发布完成后核验兑换码')
 })
 test('remote completion and code download failure are independent', () => {
@@ -38,4 +57,9 @@ test('failed refresh is shown instead of a cached successful check', () => {
   const message = configurationVerificationSummary(result('COMPLETED'), '连接超时')
   assert.match(message, /本次查询失败：连接超时/)
   assert.doesNotMatch(message, /可以下载兑换码/)
+})
+test('cancelled publication directs operators to rebind a verified new ID', () => {
+  const message = configurationVerificationSummary(result('CANCELLED'))
+  assert.match(message, /已撤销/)
+  assert.match(message, /换绑新 ID/)
 })

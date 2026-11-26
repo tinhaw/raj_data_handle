@@ -5,7 +5,7 @@ import { Download, Plus, Refresh, Setting } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, TableV2FixedDir } from 'element-plus'
 import type { Columns } from 'element-plus'
 import { api } from '@/api/client'
-import { publicationLabel, acquisitionLabel, configurationVerificationSummary, type PublicationVerification } from './publicationStatus'
+import { publicationLabel, acquisitionLabel, acceptsManualPublication, configurationVerificationSummary, type PublicationVerification } from './publicationStatus'
 import type {
   RedemptionBatchDetail,
   RedemptionCampaign,
@@ -695,7 +695,7 @@ function groupStatus(row: CodeGroupRow) {
     const check = publicationCheck(row)
     return { text: publicationLabel(check), type: check?.publicationState === 'COMPLETED' ? 'success' as const : check?.publicationState === 'FAILED' ? 'danger' as const : 'info' as const }
   }
-  if (row.detail.batch.remotePublishError) return { text: '发布失败', type: 'danger' as const }
+  if (row.detail.batch.remotePublishError) return { text: '发布不成功', type: 'danger' as const }
   if (countIssues(failedRemoteCreationIssues(row))) return { text: '配置创建失败', type: 'danger' as const }
   if (row.detail.batch.status === 'READY_TO_PUBLISH') return { text: '待发布', type: 'info' as const }
   if (isCreatingConfigurations(row)) return { text: '配置创建中', type: 'warning' as const }
@@ -710,7 +710,7 @@ function groupProgress(row: CodeGroupRow) {
   if (review) return `${confirmedConfigurationCount(row)} / ${batch.expectedCodeCount} 条远端配置已创建，${countIssues(failedIssues(row))} 个失败，${creationHoldSummary([row])}`
   if (isSuccess(row)) return `${batch.importedCodeCount} / ${batch.plannedCodeCount} 个兑换码已入库`
   if (isRepairing(row)) return `${batch.importedCodeCount} / ${batch.plannedCodeCount} 个兑换码已入库；${groupStatus(row).text}`
-  if (batch.remotePublishError) return `远端发布失败：${batch.remotePublishError}`
+  if (batch.remotePublishError) return `发布不成功：${batch.remotePublishError}`
   if (batch.status === 'PUBLISHED') return `${publicationLabel(publicationCheck(row))}；${codeAcquisitionStatus(row)}`
   if (countIssues(failedIssues(row))) return `${batch.createdCount} / ${batch.expectedCodeCount} 条远端配置已创建，${countIssues(failedIssues(row))} 个任务失败`
   if (batch.status === 'READY_TO_PUBLISH') return `${batch.createdCount} / ${batch.expectedCodeCount} 条远端配置已创建，待发布`
@@ -783,9 +783,10 @@ function taskStatus(task: CodeGroupTask) {
   if (task.members.some(hasRemoteCreationInProgress)) return { text: '创建结果待确认', type: 'warning' as const }
   if (task.members.some(member => isRepairing(member) && !repairReadyForPublish(member))) return { text: '待补齐缺失配置', type: 'warning' as const }
   if (task.members.some(member => member.detail.batch.status === 'CREATING' && countIssues(pendingRemoteCreationIssues(member)) > 0)) return { text: '待继续创建', type: 'warning' as const }
-  if (task.members.some(member => member.detail.batch.remotePublishError)) return { text: '部分发布失败', type: 'danger' as const }
+  if (task.members.some(member => member.detail.batch.remotePublishError)) return { text: '发布不成功', type: 'danger' as const }
   if (task.members.every(isSuccess)) return { text: '生成成功', type: 'success' as const }
   if (task.members.every(member => isSuccess(member) || publicationCheck(member)?.publicationState === 'COMPLETED')) return { text: '发布完成', type: 'success' as const }
+  if (task.members.some(member => member.detail.batch.status === 'PUBLISHED' && ['FAILED', 'CANCELLED'].includes(publicationCheck(member)?.publicationState || ''))) return { text: '发布不成功', type: 'warning' as const }
   if (task.members.some(member => member.detail.batch.status === 'PUBLISHED')) return { text: '发布待核验', type: 'info' as const }
   if (task.members.every((member) => isSuccess(member) || member.detail.batch.status === 'READY_TO_PUBLISH' || repairReadyForPublish(member))) return { text: '待发布', type: 'info' as const }
   if (task.members.some(isScheduledPublish)) return { text: '发布中', type: 'warning' as const }
@@ -847,13 +848,14 @@ function canExportMultiMarketTask(task: CodeGroupTask) {
   return Boolean(task.exportGroupKey) && isMultiMarketTask(task) && task.members.every(isSuccess)
 }
 function canPublishMultiMarketTask(task: CodeGroupTask) {
-  return isMultiMarketTask(task) && task.members.every((member) => member.detail.batch.status === 'READY_TO_PUBLISH' && !countIssues(reconciliationIssues(member)))
+  const rows = publishRows(task)
+  return isMultiMarketTask(task) && rows.length > 0 && rows.every((member) => member.detail.batch.status === 'READY_TO_PUBLISH' && !member.detail.batch.remotePublishTaskId && !countIssues(reconciliationIssues(member)))
 }
 function isMultiMarketPublishTarget(target?: CodeGroupRow | CodeGroupTask): target is CodeGroupTask {
   return Boolean(target && 'members' in target)
 }
 function publishRows(target: CodeGroupRow | CodeGroupTask) {
-  return isMultiMarketPublishTarget(target) ? target.members : [target]
+  return isMultiMarketPublishTarget(target) ? target.members.filter(member => member.detail.batch.remotePublishMode !== 'EXTERNAL') : [target]
 }
 
 function canCancelScheduledPublish(row: CodeGroupRow) {
@@ -872,8 +874,48 @@ function canDownloadScheduledCodes(row: CodeGroupRow) {
   return row.detail.batch.status === 'PUBLISHED' && publicationCheck(row)?.publicationState === 'COMPLETED'
     && row.detail.issues.some(issue => issue.workflowStatus !== 'CODE_IMPORTED' && publicationCheck(row)?.configurations.some(config => (issue.overviewConfigurationIds || [issue.remoteConfigurationId]).includes(config.configurationId) && config.state === 'MATCHED'))
 }
+const externalTarget = ref<CodeGroupRow>()
+const externalChoices = ref<CodeGroupRow[]>([])
+const externalDialog = ref(false)
+const externalTaskId = ref('')
+const externalError = ref('')
+const linkingExternal = ref(false)
+function canLinkExternal(row: CodeGroupRow) {
+  const batch = row.detail.batch
+  if (!canGenerate.value || batch.rowVersion == null || !batch.remoteConnectionId) return false
+  return acceptsManualPublication(batch, publicationCheck(row))
+}
+function openExternalPublication(target: CodeGroupRow | CodeGroupTask) {
+  verificationDialogVisible.value = false
+  publishDialogVisible.value = false
+  externalChoices.value = publishRows(target).filter(canLinkExternal)
+  externalTarget.value = externalChoices.value.length === 1 ? externalChoices.value[0] : undefined
+  externalTaskId.value = ''
+  externalError.value = ''
+  externalDialog.value = true
+}
+async function linkExternalPublication() {
+  const row = externalTarget.value
+  const taskId = externalTaskId.value.trim()
+  if (!row || row.detail.batch.rowVersion == null || linkingExternal.value || !/^[1-9]\d{0,254}$/.test(taskId)) return
+  linkingExternal.value = true
+  externalError.value = ''
+  try {
+    const current = { campaign: row.campaign, detail: await api.redemption.batch(row.detail.batch.id) }
+    if (!canLinkExternal(current) || current.detail.batch.rowVersion == null || (current.detail.batch.status === 'PUBLISHED' && current.detail.batch.remotePublishTaskId !== row.detail.batch.remotePublishTaskId)) throw new Error('当前盘口状态或发布 ID 已变化，请刷新后重新核验')
+    const detail = await api.redemption.adoptExternalPublication(row.detail.batch.id, current.detail.batch.rowVersion, taskId)
+    const replacement = { campaign: row.campaign, detail }
+    replaceCodeGroup(replacement)
+    externalDialog.value = false
+    ElMessage.success('已关联该盘口的远端发布任务，未重新发布')
+    await inspectPublication(replacement)
+  } catch (error) {
+    externalError.value = error instanceof Error ? error.message : '核验未完成，请核对盘口与发布任务 ID'
+  } finally { linkingExternal.value = false }
+}
 function publishTime(row: CodeGroupRow) {
   const batch = row.detail.batch
+  if (batch.remotePublishMode === 'EXTERNAL') return '远端后台手动发布'
   if (batch.remotePublishMode === 'IMMEDIATE') return '立即发布'
   if (batch.remotePublishMode === 'SCHEDULED' && batch.remoteScheduledPublishAt) {
     return `${formatIndiaDateTime(batch.remoteScheduledPublishAt)}（印度时间）${batch.remotePublishCancelledAt ? '，已撤销' : ''}`
@@ -1705,9 +1747,11 @@ async function submitPublish() {
     const failures: string[] = []
     for (const row of rows) {
       try {
+        if (codeGroups.value.find(group => group.detail.batch.id === row.detail.batch.id)?.detail.batch.remotePublishMode === 'EXTERNAL') continue
         const detail = await publishWithSelectedOptions(row, mode, scheduledTime, fallbackToScheduled)
         const replacement = { campaign: row.campaign, detail }
         replaceCodeGroup(replacement)
+        if (detail.batch.remotePublishMode === 'EXTERNAL') continue
         if (detail.batch.remotePublishMode === 'SCHEDULED') {
           ElMessage.info(`远端已接受定时发布（印度时间 ${formatIndiaDateTime(detail.batch.remoteScheduledPublishAt)}）；待执行完成并核验后再下载`)
         }
@@ -1724,7 +1768,7 @@ async function submitPublish() {
     ElMessage[failures.length ? 'warning' : 'success'](failures.length
       ? `${scheduled ? '定时发布' : '发布'}部分失败：${failures.join('；')}`
       : rows.length > 1
-        ? `已提交 ${rows.length} 个盘口的发布请求，请查看各盘口核验结果`
+        ? '各盘口发布处理结束，手动发布的盘口不再提交，请查看各盘口核验结果'
       : '已提交发布请求，请查看实际发布方式和远端核验结果')
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : '远端发布失败') }
   finally {
@@ -2577,6 +2621,7 @@ onUnmounted(() => {
                 <span v-else-if="column.key === 'createdAt'" class="virtual-cell">{{ formatDateTime(taskCreatedAt(row)) }}</span>
                 <div v-else-if="column.key === 'actions'" class="virtual-actions">
                   <el-button link type="primary" size="small" :loading="row.members.some(isProcessing)" @click="navigateTaskDetail(row.taskId)">查看任务</el-button>
+                  <el-button v-if="row.members.some(canLinkExternal)" link type="primary" size="small" @click="openExternalPublication(row)">已手动发布</el-button>
                   <el-button link type="primary" size="small" @click="openClaimStatistics(row)">领取统计</el-button>
                   <el-button v-if="canGenerate && taskRecoveries(row).length" link type="warning" size="small" @click="openTaskRecovery(row)">重试并重建（{{ taskRecoveries(row).length }}）</el-button>
                   <el-button v-if="canGenerate" link type="primary" size="small" @click="openTaskRewardPolicies(row)">核验实际奖励</el-button>
@@ -2794,9 +2839,25 @@ onUnmounted(() => {
           </el-form>
         </el-collapse-item>
       </el-collapse>
-      <template #footer><el-button @click="publishDialogVisible = false">取消</el-button><el-button type="primary" :loading="publishing" @click="submitPublish">确认发布</el-button></template>
+      <template #footer><el-button @click="publishDialogVisible = false">取消</el-button><el-button v-if="publishTarget && publishRows(publishTarget).some(canLinkExternal)" @click="openExternalPublication(publishTarget)">已手动发布</el-button><el-button type="primary" :loading="publishing" @click="submitPublish">确认发布</el-button></template>
     </el-dialog>
 
+    <el-dialog v-model="externalDialog" title="已手动发布 · 填写发布任务 ID" width="min(520px, 95vw)" append-to-body :show-close="!linkingExternal" :close-on-click-modal="false" :close-on-press-escape="!linkingExternal">
+      <el-select v-if="externalChoices.length > 1" v-model="externalTarget" value-key="detail.batch.id" aria-label="手动发布的盘口" placeholder="选择手动发布的盘口" :disabled="linkingExternal" @change="externalTaskId = ''; externalError = ''">
+        <el-option v-for="row in externalChoices" :key="row.detail.batch.id" :value="row" :label="remoteMarketLabel(row)" />
+      </el-select>
+      <template v-if="externalTarget">
+        <p>{{ remoteMarketLabel(externalTarget) }} · {{ externalTarget.detail.batch.remoteConnectionName }} · 子任务 {{ subtaskDisplayId(externalTarget) }}</p>
+        <p v-if="externalTarget.detail.batch.status === 'PUBLISHED'">原系统发布 ID：{{ externalTarget.detail.batch.remotePublishTaskId }}。原发布确认失败或撤销，且新发布已完成、配置匹配后才会换绑。</p>
+        <p>请从此盘口的远端发布记录复制任务 ID，不是 ERP 任务编号或配置 ID。确认后停止该盘口后续系统发布，改为跟踪这个 ID。已经发往远端的请求无法撤回。</p>
+        <el-input v-model.trim="externalTaskId" aria-label="远端发布任务 ID" placeholder="输入远端发布任务 ID（正整数）" maxlength="255" :disabled="linkingExternal" @keyup.enter="linkExternalPublication" />
+        <el-alert v-if="externalError" :title="externalError" type="error" :closable="false" />
+      </template>
+      <template #footer>
+        <el-button :disabled="linkingExternal" @click="externalDialog = false">取消</el-button>
+        <el-button type="primary" :loading="linkingExternal" :disabled="!/^[1-9]\d{0,254}$/.test(externalTaskId)" @click="linkExternalPublication">核验并关联</el-button>
+      </template>
+    </el-dialog>
     <el-dialog v-model="verificationDialogVisible" title="发布与下载检查" width="760px" append-to-body>
       <template v-if="verificationTarget">
         <p>任务 {{ verificationTarget.detail.batch.taskNumber || verificationTarget.detail.batch.id }} · {{ remoteMarketLabel(verificationTarget) }}</p>
@@ -2817,6 +2878,7 @@ onUnmounted(() => {
       </template>
       <template #footer>
         <el-button @click="verificationDialogVisible = false">关闭</el-button>
+        <el-button v-if="verificationTarget && canLinkExternal(verificationTarget)" @click="openExternalPublication(verificationTarget)">换绑手动发布 ID</el-button>
         <el-button v-if="verificationTarget" :loading="verifyingPublicationIds.has(String(verificationTarget.detail.batch.id))" @click="inspectPublication(verificationTarget)">刷新状态</el-button>
         <el-button v-if="verificationTarget && missingConfigurations(verificationTarget).length && canExport" :loading="resolvingMissingBatchId === verificationTarget.detail.batch.id" @click="acceptAvailableCodes(verificationTarget)">接受当前配置，下载已有兑换码</el-button>
         <el-button v-if="verificationTarget && missingConfigurations(verificationTarget).length && canGenerate" type="warning" :loading="resolvingMissingBatchId === verificationTarget.detail.batch.id" @click="regenerateMissingConfigurations(verificationTarget)">重建缺失配置并补齐下载</el-button>
@@ -2875,6 +2937,10 @@ onUnmounted(() => {
           <el-button type="primary" :loading="checkingRewardPolicy" :disabled="applyingRewardPolicy" @click="inspectRewardPolicies()">核验并对齐实际奖励</el-button>
           <el-button type="warning" :loading="checkingRecovery" :disabled="rebuildingMissing" @click="inspectMissingConfigurations()">核验缺失 / 重试重建</el-button>
           <el-button type="primary" :loading="reusingConfigurations" :disabled="isProcessing(selectedGroup)" @click="reuseExistingConfigurations()">核验并复用已有配置</el-button>
+        </div>
+        <div v-if="canLinkExternal(selectedGroup)" class="repair-action-strip">
+          <span>已在远端后台手动发布？关联当前盘口的发布记录后再下载兑换码。</span>
+          <el-button type="primary" plain @click="openExternalPublication(selectedGroup)">{{ selectedGroup.detail.batch.status === 'PUBLISHED' ? '换绑手动发布 ID' : '已手动发布' }}</el-button>
         </div>
         <div class="task-summary-strip">
           <div><span>当前盘口</span><strong>{{ remoteMarketLabel(selectedGroup) }}</strong></div>

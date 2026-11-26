@@ -8,8 +8,14 @@ export interface PublicationVerification {
   checkedAt: string
 }
 export function publicationLabel(result?: PublicationVerification) {
-  const labels = { WAITING: '等待远端发布', RUNNING: '远端发布中', FAILED: '远端发布异常', COMPLETED: '发布完成', CANCELLED: '远端已撤销', UNKNOWN: '发布待核验' }
+  const labels = { WAITING: '等待远端发布', RUNNING: '远端发布中', FAILED: '发布不成功', COMPLETED: '发布完成', CANCELLED: '发布不成功', UNKNOWN: '发布待核验' }
   return result ? labels[result.publicationState] : '发布待核验'
+}
+export function acceptsManualPublication(batch: { status: string; remotePublishTaskId?: string | null; remotePublishMode?: string }, check?: PublicationVerification) {
+  if (batch.status === 'PUBLISHED') return ['IMMEDIATE', 'SCHEDULED'].includes(batch.remotePublishMode || '')
+    && Boolean(batch.remotePublishTaskId && !batch.remotePublishTaskId.startsWith('PENDING:'))
+    && check?.remotePublishTaskId === batch.remotePublishTaskId && (check?.publicationState === 'FAILED' || check?.publicationState === 'CANCELLED')
+  return batch.status === 'READY_TO_PUBLISH' && (!batch.remotePublishTaskId || batch.remotePublishTaskId.startsWith('PENDING:'))
 }
 export function acquisitionLabel(imported: boolean, hasError: boolean, result?: PublicationVerification) {
   if (imported) return '兑换码已入库'
@@ -25,6 +31,7 @@ export function configurationVerificationSummary(result?: PublicationVerificatio
   issues: Array<{ remoteConfigurationId?: string; remoteConfigurationName?: string; remoteConfigurationRemark?: string }> = []) {
   if (error) return `本次查询失败：${error}。尚未发起下载，请稍后刷新状态。`
   if (!result) return '正在查询远端发布任务和兑换码配置…'
+  if (result.publicationState === 'CANCELLED' || result.publicationState === 'FAILED') return `发布不成功。原因：${result.publicationState === 'CANCELLED' ? '定时任务已撤销' : '远端执行失败'}。若为系统发布任务，可在对应盘口手动发布后核验并换绑新 ID；已手动发布的不要重复提交。`
   if (result.publicationState !== 'COMPLETED') return `当前状态：${publicationLabel(result)}。尚未确认发布完成，暂不能下载。`
   if (result.configurationError) return `发布已完成，但配置查询失败：${result.configurationError}。请先恢复配置查询。`
   const missing = result.configurations.filter(item => item.state === 'MISSING')

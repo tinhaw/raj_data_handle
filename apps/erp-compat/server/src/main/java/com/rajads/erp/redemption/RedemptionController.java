@@ -221,6 +221,13 @@ public class RedemptionController {
         return service.batch(remoteOperations.publish(batchId, request));
     }
 
+    @PostMapping("/batches/{batchId}/external-publication")
+    @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
+    public RedemptionDtos.BatchDetailResponse adoptExternalPublication(@PathVariable Long batchId,
+            @Valid @RequestBody RedemptionDtos.ExternalPublicationRequest request) {
+        return service.batch(remoteOperations.adoptExternalPublication(batchId, request));
+    }
+
     @PostMapping("/batches/{batchId}/remote-publish/verify")
     @PreAuthorize("hasAuthority('REDEMPTION_GENERATE')")
     public UnifiedRedemptionRemoteExecutorClient.PublicationVerification verifyRemotePublish(@PathVariable Long batchId) {

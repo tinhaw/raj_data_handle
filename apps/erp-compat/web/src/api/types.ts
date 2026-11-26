@@ -413,7 +413,7 @@ export interface RedemptionCodeBatch {
   exportGroupKey?: string
   remotePublishTaskId?: string
   remotePublishError?: string
-  remotePublishMode?: 'IMMEDIATE' | 'SCHEDULED'
+  remotePublishMode?: 'IMMEDIATE' | 'SCHEDULED' | 'EXTERNAL'
   remoteScheduledPublishAt?: string
   remotePublishNote?: string
   remotePublishCancelledAt?: string
